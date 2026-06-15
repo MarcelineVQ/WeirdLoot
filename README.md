@@ -1,0 +1,2 @@
+# weirdloot
+Loot addon
