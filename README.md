@@ -4,12 +4,12 @@ WeirdLoot is a World of Warcraft 3.3.5a addon for end-of-raid loot processing.
 
 ## Features
 
-- Server/client raid workflow with the loot master as the authority
+- Server/client loot mechanism with the loot master as the authority
 - Master roster, loot priority, and named-item priority imports
 - Raid roster enrichment with configured class/spec/status metadata
-- Loot-master bag scan for epic items gained during the current session
+- Loot-master bag scan for tradable epic items
 - Client roll/pass selection with pass as the default
-- Deterministic loot resolution with named, class/spec, and main/alt priority
+- Interpretable and explicit loot resolution with named, class/spec, and main/alt priority
 - Result history with a detailed audit trail per item
 
 ## Files
@@ -33,3 +33,5 @@ Install the addon on a 3.3.5a client and test with at least two raid members:
 - Loot epic items after the session starts, scan bags, and broadcast the session.
 - Confirm clients default each item to `Pass` and can switch to `Roll`.
 - Process loot and verify the results tab and raid chat summary.
+
+Made by and for `Weird Vibes`.

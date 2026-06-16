@@ -9,6 +9,18 @@ local TAB_LABELS = {
     results = "Results",
     master = "Loot Master",
 }
+local GROUP_LOOT_TEXTURES = {
+    roll = {
+        up = "Interface\\Buttons\\UI-GroupLoot-Dice-Up",
+        down = "Interface\\Buttons\\UI-GroupLoot-Dice-Down",
+        highlight = "Interface\\Buttons\\UI-GroupLoot-Dice-Highlight",
+    },
+    pass = {
+        up = "Interface\\Buttons\\UI-GroupLoot-Pass-Up",
+        down = "Interface\\Buttons\\UI-GroupLoot-Pass-Down",
+        highlight = "Interface\\Buttons\\UI-GroupLoot-Pass-Highlight",
+    },
+}
 
 local function isItemUsableForPlayer(itemLink)
     if not itemLink or itemLink == "" then
@@ -111,6 +123,26 @@ local function createButton(parent, text, width, height)
     button:SetHeight(height)
     button:SetText(text)
     return button
+end
+
+local function createLootChoiceButton(parent, textures)
+    local button = CreateFrame("CheckButton", nil, parent)
+    button:SetWidth(24)
+    button:SetHeight(24)
+    button:SetNormalTexture(textures.up)
+    button:SetPushedTexture(textures.down)
+    button:SetHighlightTexture(textures.highlight, "ADD")
+    button:SetCheckedTexture(textures.down)
+    return button
+end
+
+local function setLootChoiceButtonState(button, shouldRoll)
+    local textures = shouldRoll and GROUP_LOOT_TEXTURES.roll or GROUP_LOOT_TEXTURES.pass
+    button:SetNormalTexture(textures.up)
+    button:SetPushedTexture(textures.down)
+    button:SetHighlightTexture(textures.highlight, "ADD")
+    button:SetCheckedTexture(textures.down)
+    button:SetChecked(shouldRoll and true or false)
 end
 
 local function createBackdropFrame(name, parent)
@@ -362,40 +394,26 @@ function addon:BuildLootTab()
         row.name = createLabel(row, "", "LEFT", row.icon, "RIGHT", 8, 0)
         row.name:SetWidth(340)
 
-        row.roll = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
-        row.roll:SetPoint("LEFT", row.name, "RIGHT", 16, 0)
-        row.roll:SetScript("OnClick", function(button)
+        row.choice = createLootChoiceButton(row, GROUP_LOOT_TEXTURES.pass)
+        row.choice:SetPoint("LEFT", row.name, "RIGHT", 16, 0)
+        row.choice:SetScript("OnClick", function(button)
             if not row.item then
                 return
             end
-            row.pass:SetChecked(not button:GetChecked())
-            local playerName = util:GetPlayerName("player")
-            addon:SetPlayerResponse(row.item.id, playerName, button:GetChecked())
-            addon:BroadcastSelectionState(row.item.id, playerName, button:GetChecked())
-            addon:SendSelection(row.item.id, button:GetChecked())
-        end)
-        row.rollText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        row.rollText:SetPoint("LEFT", row.roll, "RIGHT", 2, 0)
-        row.rollText:SetText("Roll")
 
-        row.pass = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
-        row.pass:SetPoint("LEFT", row.rollText, "RIGHT", 24, 0)
-        row.pass:SetScript("OnClick", function(button)
-            if not row.item then
-                return
-            end
-            row.roll:SetChecked(not button:GetChecked())
             local playerName = util:GetPlayerName("player")
-            local shouldRoll = row.roll:GetChecked()
+            local shouldRoll = not addon:GetPlayerResponse(row.item.id, playerName)
             addon:SetPlayerResponse(row.item.id, playerName, shouldRoll)
             addon:BroadcastSelectionState(row.item.id, playerName, shouldRoll)
             addon:SendSelection(row.item.id, shouldRoll)
+            setLootChoiceButtonState(button, shouldRoll)
+            row.choiceText:SetText(shouldRoll and "Roll" or "Pass")
         end)
-        row.passText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        row.passText:SetPoint("LEFT", row.pass, "RIGHT", 2, 0)
-        row.passText:SetText("Pass")
+        row.choiceText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        row.choiceText:SetPoint("LEFT", row.choice, "RIGHT", 2, 0)
+        row.choiceText:SetText("Pass")
 
-        row.state = createLabel(row, "", "LEFT", row.passText, "RIGHT", 20, 0)
+        row.state = createLabel(row, "", "LEFT", row.choiceText, "RIGHT", 20, 0)
         row.state:SetWidth(240)
         row.stateHitbox = CreateFrame("Frame", nil, row)
         row.stateHitbox:SetPoint("TOPLEFT", row.state, "TOPLEFT", -4, 4)
@@ -803,8 +821,8 @@ function addon:RefreshLootTab()
         row.name:SetText(itemText)
 
         local shouldRoll = self:GetPlayerResponse(item.id, playerName)
-        row.roll:SetChecked(shouldRoll)
-        row.pass:SetChecked(not shouldRoll)
+        setLootChoiceButtonState(row.choice, shouldRoll)
+        row.choiceText:SetText(shouldRoll and "Roll" or "Pass")
 
         local rollCount = 0
         for _, shouldPlayerRoll in pairs(self.session.responses[item.id] or {}) do
