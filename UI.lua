@@ -602,14 +602,58 @@ function addon:BuildResultsTab()
     self.ui.panels.results = panel
 
     local list = createScrollList(panel, "WeirdLootResultsList", 16, function(row)
-        row.name = createLabel(row, "", "LEFT", row, "LEFT", 8, 0)
-        row.name:SetWidth(320)
+        row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+
+        row.icon = row:CreateTexture(nil, "ARTWORK")
+        row.icon:SetWidth(18)
+        row.icon:SetHeight(18)
+        row.icon:SetPoint("LEFT", row, "LEFT", 4, 0)
+
+        row.name = createLabel(row, "", "LEFT", row.icon, "RIGHT", 8, 0)
+        row.name:SetWidth(290)
         row.winner = createLabel(row, "", "LEFT", row.name, "RIGHT", 12, 0)
         row.winner:SetWidth(200)
+
+        row:SetScript("OnEnter", function(selfRow)
+            local result = selfRow.result
+            if not result or not result.itemLink or result.itemLink == "" then
+                return
+            end
+
+            GameTooltip:SetOwner(selfRow, "ANCHOR_NONE")
+            GameTooltip:ClearAllPoints()
+            GameTooltip:SetPoint("TOPRIGHT", selfRow, "TOPLEFT", -8, 0)
+            GameTooltip:SetHyperlink(result.itemLink)
+            GameTooltip:Show()
+        end)
+
+        row:SetScript("OnLeave", function()
+            GameTooltip:Hide()
+        end)
+
         row:SetScript("OnClick", function()
             if row.result then
                 addon.ui.selectedResult = row.result
                 addon:RefreshUI()
+            end
+
+            if not row.result or not row.result.itemLink or row.result.itemLink == "" then
+                return
+            end
+
+            if IsShiftKeyDown() and ChatEdit_GetActiveWindow() then
+                ChatEdit_InsertLink(row.result.itemLink)
+                return
+            end
+
+            if DressUpItemLink then
+                DressUpItemLink(row.result.itemLink)
+            else
+                GameTooltip:SetOwner(row, "ANCHOR_NONE")
+                GameTooltip:ClearAllPoints()
+                GameTooltip:SetPoint("TOPRIGHT", row, "TOPLEFT", -8, 0)
+                GameTooltip:SetHyperlink(row.result.itemLink)
+                GameTooltip:Show()
             end
         end)
     end)
@@ -824,6 +868,7 @@ function addon:RefreshResultsTab()
             return
         end
         row:Show()
+        row.icon:SetTexture(result.itemIcon or result.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
         local itemText = (result.itemLink and result.itemLink ~= "" and result.itemLink) or result.itemName or ""
         if (result.quantity or 1) > 1 then
             itemText = string.format("%s x%d", itemText, result.quantity)

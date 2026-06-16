@@ -161,6 +161,7 @@ function addon:BuildResultRecord(item, allRollerNames, namedTierText, lootTierTe
         itemId = item.id,
         itemName = item.name,
         itemLink = item.link,
+        itemIcon = item.icon,
         quantity = item.quantity or 1,
         allRollers = allRollerNames,
         namedTierText = namedTierText,
