@@ -863,8 +863,47 @@ function addon:BuildResultsTab()
     detailFrame:SetPoint("TOPLEFT", list, "TOPRIGHT", 8, 0)
     detailFrame:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", 0, 0)
 
+    local itemHeader = CreateFrame("Button", nil, detailFrame)
+    itemHeader:SetPoint("TOPLEFT", detailFrame, "TOPLEFT", 8, -8)
+    itemHeader:SetPoint("TOPRIGHT", detailFrame, "TOPRIGHT", -30, -8)
+    itemHeader:SetHeight(20)
+    itemHeader.text = itemHeader:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    itemHeader.text:SetPoint("LEFT", itemHeader, "LEFT", 0, 0)
+    itemHeader.text:SetJustifyH("LEFT")
+    itemHeader.text:SetWidth(360)
+    itemHeader:SetScript("OnEnter", function()
+        local result = addon.ui and addon.ui.selectedResult
+        if not result or not result.itemLink or result.itemLink == "" then
+            return
+        end
+
+        GameTooltip:SetOwner(itemHeader, "ANCHOR_NONE")
+        GameTooltip:ClearAllPoints()
+        GameTooltip:SetPoint("TOPLEFT", itemHeader, "BOTTOMLEFT", 0, -4)
+        GameTooltip:SetHyperlink(result.itemLink)
+        GameTooltip:Show()
+    end)
+    itemHeader:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+    itemHeader:SetScript("OnClick", function()
+        local result = addon.ui and addon.ui.selectedResult
+        if not result or not result.itemLink or result.itemLink == "" then
+            return
+        end
+
+        if IsShiftKeyDown() and ChatEdit_GetActiveWindow() then
+            ChatEdit_InsertLink(result.itemLink)
+            return
+        end
+
+        if DressUpItemLink then
+            DressUpItemLink(result.itemLink)
+        end
+    end)
+
     local scroll = CreateFrame("ScrollFrame", "WeirdLootResultDetailScroll", detailFrame, "UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT", 8, -8)
+    scroll:SetPoint("TOPLEFT", itemHeader, "BOTTOMLEFT", 0, -8)
     scroll:SetPoint("BOTTOMRIGHT", -30, 8)
 
     local editBox = CreateFrame("EditBox", "WeirdLootResultDetailText", scroll)
@@ -901,6 +940,7 @@ function addon:BuildResultsTab()
     tradeHelp:SetTextColor(0.85, 0.85, 0.85)
 
     self.ui.resultsList = list
+    self.ui.resultItemHeader = itemHeader
     self.ui.resultDetail = editBox
     self.ui.resultTargetButton = targetButton
     self.ui.resultTradeButton = tradeButton
@@ -1078,6 +1118,14 @@ function addon:RefreshResultsTab()
     if not selected and results[1] then
         selected = results[1]
         self.ui.selectedResult = selected
+    end
+
+    if self.ui.resultItemHeader and self.ui.resultItemHeader.text then
+        local itemHeaderText = selected and (((selected.itemLink and selected.itemLink ~= "" and selected.itemLink) or selected.itemName or "")) or "No results yet."
+        if selected and (selected.quantity or 1) > 1 then
+            itemHeaderText = string.format("%s x%d", itemHeaderText, selected.quantity)
+        end
+        self.ui.resultItemHeader.text:SetText(itemHeaderText)
     end
 
     self.ui.resultDetail:SetText(selected and selected.detailText or "No results yet.")

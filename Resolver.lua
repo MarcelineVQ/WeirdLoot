@@ -91,15 +91,6 @@ end
 
 function addon:RollCandidates(candidates)
     local rolls = {}
-    if #candidates == 1 then
-        rolls[1] = {
-            name = candidates[1].name,
-            roll = 100,
-            auto = true,
-        }
-        return rolls
-    end
-
     for _, candidate in ipairs(candidates) do
         rolls[#rolls + 1] = {
             name = candidate.name,
@@ -119,8 +110,9 @@ function addon:RollCandidates(candidates)
 end
 
 local function formatCandidateSummary(candidate)
+    local nameText = (util:GetClassColorCode(candidate.className) or "|cffffffff") .. (candidate.name or "Unknown") .. "|r"
     local parts = {
-        candidate.name or "Unknown",
+        nameText,
         util:TitleCaseWords(string.trim((candidate.className or "") .. " " .. (candidate.specName or ""))),
         util:PlayerDisplayStatus(candidate.status),
     }
@@ -185,7 +177,8 @@ function addon:BuildResultDetail(result)
     else
         for _, winner in ipairs(result.winnerDetails or {}) do
             local rollValue = winner.auto and "AUTO" or tostring(winner.roll or "")
-            lines[#lines + 1] = string.format("%s (%s)", winner.name or "Unknown", rollValue)
+            local winnerName = (util:GetClassColorCode(winner.className) or "|cffffffff") .. (winner.name or "Unknown") .. "|r"
+            lines[#lines + 1] = string.format("%s (%s)", winnerName, rollValue)
         end
     end
     return table.concat(lines, "\n")
@@ -287,8 +280,10 @@ function addon:ProcessLoot()
             local prioritizedNames = {}
             local rollDetails = {}
             local rollByName = {}
+            local survivorByName = {}
             for _, player in ipairs(statusSurvivors) do
                 prioritizedNames[#prioritizedNames + 1] = player.name
+                survivorByName[util:NormalizeKey(player.name)] = player
             end
             for _, roll in ipairs(rolls) do
                 rollByName[util:NormalizeKey(roll.name)] = roll
@@ -312,8 +307,10 @@ function addon:ProcessLoot()
             local winnerDetails = {}
             for _, winnerName in ipairs(self:SelectWinningRolls(rolls, item.quantity or 1)) do
                 local matchedRoll = rollByName[util:NormalizeKey(winnerName)]
+                local winnerCandidate = survivorByName[util:NormalizeKey(winnerName)] or {}
                 winnerDetails[#winnerDetails + 1] = {
                     name = winnerName,
+                    className = winnerCandidate.className,
                     roll = matchedRoll and matchedRoll.roll or nil,
                     auto = matchedRoll and matchedRoll.auto or false,
                 }
@@ -337,8 +334,10 @@ function addon:ProcessLoot()
             local prioritizedNames = {}
             local rollDetails = {}
             local rollByName = {}
+            local survivorByName = {}
             for _, player in ipairs(statusSurvivors) do
                 prioritizedNames[#prioritizedNames + 1] = player.name
+                survivorByName[util:NormalizeKey(player.name)] = player
             end
             for _, roll in ipairs(rolls) do
                 rollByName[util:NormalizeKey(roll.name)] = roll
@@ -362,8 +361,10 @@ function addon:ProcessLoot()
             local winnerDetails = {}
             for _, winnerName in ipairs(self:SelectWinningRolls(rolls, item.quantity or 1)) do
                 local matchedRoll = rollByName[util:NormalizeKey(winnerName)]
+                local winnerCandidate = survivorByName[util:NormalizeKey(winnerName)] or {}
                 winnerDetails[#winnerDetails + 1] = {
                     name = winnerName,
+                    className = winnerCandidate.className,
                     roll = matchedRoll and matchedRoll.roll or nil,
                     auto = matchedRoll and matchedRoll.auto or false,
                 }

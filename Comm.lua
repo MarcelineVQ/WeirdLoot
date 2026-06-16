@@ -87,6 +87,10 @@ function addon:BroadcastSession()
         end
     end
 
+    if #(session.results or {}) > 0 then
+        self:BroadcastResults(session.results)
+    end
+
     self:Print("Session broadcast to raid.")
 end
 
