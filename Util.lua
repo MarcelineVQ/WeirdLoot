@@ -1,0 +1,191 @@
+local addon = WeirdLoot
+
+addon.util = {}
+local util = addon.util
+
+function string.trim(value)
+    return (value or ""):match("^%s*(.-)%s*$")
+end
+
+function util:Split(value, delimiter)
+    local results = {}
+    if value == nil or value == "" then
+        return results
+    end
+
+    delimiter = delimiter or ","
+    local startIndex = 1
+
+    while true do
+        local foundIndex = string.find(value, delimiter, startIndex, true)
+        if not foundIndex then
+            table.insert(results, string.sub(value, startIndex))
+            break
+        end
+
+        table.insert(results, string.sub(value, startIndex, foundIndex - 1))
+        startIndex = foundIndex + string.len(delimiter)
+    end
+
+    return results
+end
+
+function util:SplitLines(value)
+    local lines = {}
+    value = string.gsub(value or "", "\r\n", "\n")
+    value = string.gsub(value, "\r", "\n")
+
+    for line in string.gmatch(value, "([^\n]+)") do
+        line = string.trim(line)
+        if line ~= "" then
+            table.insert(lines, line)
+        end
+    end
+
+    return lines
+end
+
+function util:NormalizeKey(value)
+    value = string.lower(string.trim(value or ""))
+    value = string.gsub(value, "%s+", " ")
+    return value
+end
+
+function util:CloneTable(source)
+    if type(source) ~= "table" then
+        return source
+    end
+
+    local copy = {}
+    for key, value in pairs(source) do
+        copy[key] = self:CloneTable(value)
+    end
+    return copy
+end
+
+function util:Contains(list, expected)
+    if type(list) ~= "table" then
+        return false
+    end
+
+    for _, value in ipairs(list) do
+        if value == expected then
+            return true
+        end
+    end
+
+    return false
+end
+
+function util:TableCount(map)
+    local count = 0
+    if type(map) ~= "table" then
+        return count
+    end
+
+    for _ in pairs(map) do
+        count = count + 1
+    end
+    return count
+end
+
+function util:SortByName(list, field)
+    table.sort(list, function(left, right)
+        local leftName = field and left[field] or left.name or left
+        local rightName = field and right[field] or right.name or right
+        leftName = leftName or ""
+        rightName = rightName or ""
+        return string.lower(leftName) < string.lower(rightName)
+    end)
+end
+
+function util:EncodeField(value)
+    value = tostring(value or "")
+    value = string.gsub(value, "%%", "%%25")
+    value = string.gsub(value, "|", "%%7C")
+    value = string.gsub(value, "\n", "%%0A")
+    value = string.gsub(value, ":", "%%3A")
+    return value
+end
+
+function util:DecodeField(value)
+    value = tostring(value or "")
+    value = string.gsub(value, "%%3A", ":")
+    value = string.gsub(value, "%%0A", "\n")
+    value = string.gsub(value, "%%7C", "|")
+    value = string.gsub(value, "%%25", "%%")
+    return value
+end
+
+function util:JoinEncoded(values)
+    local encoded = {}
+    for index, value in ipairs(values or {}) do
+        encoded[index] = self:EncodeField(value)
+    end
+    return table.concat(encoded, "|")
+end
+
+function util:SplitEncoded(payload)
+    local fields = self:Split(payload, "|")
+    for index, value in ipairs(fields) do
+        fields[index] = self:DecodeField(value)
+    end
+    return fields
+end
+
+function util:PlayerDisplayStatus(status)
+    local normalized = self:NormalizeKey(status)
+    if normalized == "main" then
+        return "Main"
+    elseif normalized == "designatedalt" then
+        return "Designated Alt"
+    end
+
+    return "Nil"
+end
+
+function util:StatusRank(status)
+    local normalized = self:NormalizeKey(status)
+    if normalized == "main" then
+        return 3
+    elseif normalized == "designatedalt" then
+        return 2
+    end
+
+    return 1
+end
+
+function util:GetPlayerName(unit)
+    local name = UnitName(unit)
+    if not name then
+        return nil
+    end
+
+    local shortName = string.match(name, "^[^-]+")
+    return shortName or name
+end
+
+function util:GetClassColorCode(className)
+    local normalized = self:NormalizeKey(className)
+    local tokenByName = {
+        ["death knight"] = "DEATHKNIGHT",
+        druid = "DRUID",
+        hunter = "HUNTER",
+        mage = "MAGE",
+        paladin = "PALADIN",
+        priest = "PRIEST",
+        rogue = "ROGUE",
+        shaman = "SHAMAN",
+        warlock = "WARLOCK",
+        warrior = "WARRIOR",
+    }
+
+    local classToken = tokenByName[normalized]
+    local colors = CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS
+    local color = classToken and colors and colors[classToken]
+    if not color then
+        return "|cffffffff"
+    end
+
+    return string.format("|cff%02x%02x%02x", color.r * 255, color.g * 255, color.b * 255)
+end

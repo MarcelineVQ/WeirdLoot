@@ -1,0 +1,15 @@
+## Interface: 30300
+## Title: WeirdLoot
+## Notes: End-of-raid loot coordination for Wrath 3.3.5a raids
+## Author: OpenAI Codex
+## Version: 0.1.0
+## SavedVariables: WeirdLootDB, WeirdLootSessionDB
+
+Core.lua
+Util.lua
+Config.lua
+Roster.lua
+Session.lua
+Comm.lua
+Resolver.lua
+UI.lua
