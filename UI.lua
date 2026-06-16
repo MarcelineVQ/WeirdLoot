@@ -160,6 +160,42 @@ local function getLootItemColumns(itemLink)
     return typeText, slotText
 end
 
+local function getLootItemLookupName(item)
+    if not item then
+        return ""
+    end
+
+    local resolvedName = item.link and GetItemInfo(item.link)
+    if resolvedName and resolvedName ~= "" then
+        return resolvedName
+    end
+
+    if item.link and item.link ~= "" then
+        local linkedName = string.match(item.link, "%[(.+)%]")
+        if linkedName and linkedName ~= "" then
+            return linkedName
+        end
+    end
+
+    return item.name or ""
+end
+
+local function getLootItemInfoText(item)
+    local lookupName = getLootItemLookupName(item)
+    local entry = addon.defaultItemInfo and addon.defaultItemInfo[util:NormalizeKey(lookupName)]
+    if not entry then
+        return ""
+    end
+
+    local note = string.trim(entry.note or "")
+    local role = string.trim(entry.role or "")
+    if note ~= "" and role ~= "" then
+        return string.format("%s, %s", note, role)
+    end
+
+    return note ~= "" and note or role
+end
+
 local function createLabel(parent, text, anchor, relativeTo, relativePoint, offsetX, offsetY)
     local fontString = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     fontString:SetPoint(anchor, relativeTo, relativePoint, offsetX, offsetY)
@@ -439,13 +475,29 @@ function addon:BuildLootTab()
 
     local headerChoice = createLabel(panel, "Roll", "TOPLEFT", header, "BOTTOMLEFT", 347, -8)
     headerChoice:SetTextColor(0.8, 0.8, 0.8)
-    local headerType = createLabel(panel, "Type", "TOPLEFT", header, "BOTTOMLEFT", 429, -8)
-    headerType:SetTextColor(0.8, 0.8, 0.8)
-    local headerSlot = createLabel(panel, "Slot", "TOPLEFT", header, "BOTTOMLEFT", 511, -8)
-    headerSlot:SetTextColor(0.8, 0.8, 0.8)
-    local headerInfo = createLabel(panel, "Info", "TOPLEFT", header, "BOTTOMLEFT", 585, -8)
-    headerInfo:SetTextColor(0.8, 0.8, 0.8)
-    local headerRollers = createLabel(panel, "Rollers", "TOPLEFT", header, "BOTTOMLEFT", 760, -8)
+
+    local headerType = createButton(panel, "Type", 70, 18)
+    headerType:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 422, -12)
+    headerType:SetScript("OnClick", function()
+        addon:SetLootSortMode("type")
+    end)
+    panel.headerType = headerType
+
+    local headerSlot = createButton(panel, "Slot", 62, 18)
+    headerSlot:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 500, -12)
+    headerSlot:SetScript("OnClick", function()
+        addon:SetLootSortMode("slot")
+    end)
+    panel.headerSlot = headerSlot
+
+    local headerInfo = createButton(panel, "Info", 78, 18)
+    headerInfo:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 570, -12)
+    headerInfo:SetScript("OnClick", function()
+        addon:SetLootSortMode("info")
+    end)
+    panel.headerInfo = headerInfo
+
+    local headerRollers = createLabel(panel, "Rollers", "TOPLEFT", header, "BOTTOMLEFT", 836, -8)
     headerRollers:SetTextColor(0.8, 0.8, 0.8)
 
     local list = createScrollList(panel, "WeirdLootLootList", 20, function(row)
@@ -474,17 +526,17 @@ function addon:BuildLootTab()
             setLootChoiceButtonState(button, shouldRoll)
         end)
 
-        row.itemType = createLabel(row, "", "LEFT", row, "LEFT", 430, 0)
+        row.itemType = createLabel(row, "", "LEFT", row, "LEFT", 422, 0)
         row.itemType:SetWidth(72)
 
-        row.itemSlot = createLabel(row, "", "LEFT", row, "LEFT", 512, 0)
+        row.itemSlot = createLabel(row, "", "LEFT", row, "LEFT", 500, 0)
         row.itemSlot:SetWidth(64)
 
-        row.info = createLabel(row, "", "LEFT", row, "LEFT", 586, 0)
-        row.info:SetWidth(150)
+        row.info = createLabel(row, "", "LEFT", row, "LEFT", 570, 0)
+        row.info:SetWidth(222)
 
-        row.state = createLabel(row, "", "LEFT", row, "LEFT", 760, 0)
-        row.state:SetWidth(96)
+        row.state = createLabel(row, "", "LEFT", row, "LEFT", 836, 0)
+        row.state:SetWidth(72)
         row.state:SetJustifyH("LEFT")
         row.stateHitbox = CreateFrame("Frame", nil, row)
         row.stateHitbox:SetPoint("TOPLEFT", row.state, "TOPLEFT", -4, 4)
@@ -584,6 +636,11 @@ function addon:ToggleLootSortMode()
     self:RefreshLootTab()
 end
 
+function addon:SetLootSortMode(sortMode)
+    self.db.ui.lootSortMode = sortMode or "name"
+    self:RefreshLootTab()
+end
+
 function addon:ToggleLootUsabilitySort()
     self.db.ui.lootUsabilitySort = not self.db.ui.lootUsabilitySort
     self:RefreshLootTab()
@@ -614,6 +671,57 @@ function addon:GetSortedLootItems()
             end
             if leftInfo.subtype ~= rightInfo.subtype then
                 return leftInfo.subtype < rightInfo.subtype
+            end
+            return util:NormalizeKey(left.name or "") < util:NormalizeKey(right.name or "")
+        end)
+    elseif sortMode == "type" then
+        table.sort(items, function(left, right)
+            if self.db.ui.lootUsabilitySort then
+                local leftUsable = isItemUsableForPlayer(left.link)
+                local rightUsable = isItemUsableForPlayer(right.link)
+                if leftUsable ~= rightUsable then
+                    return leftUsable
+                end
+            end
+
+            local leftType = util:NormalizeKey(select(1, getLootItemColumns(left.link)))
+            local rightType = util:NormalizeKey(select(1, getLootItemColumns(right.link)))
+            if leftType ~= rightType then
+                return leftType < rightType
+            end
+            return util:NormalizeKey(left.name or "") < util:NormalizeKey(right.name or "")
+        end)
+    elseif sortMode == "slot" then
+        table.sort(items, function(left, right)
+            if self.db.ui.lootUsabilitySort then
+                local leftUsable = isItemUsableForPlayer(left.link)
+                local rightUsable = isItemUsableForPlayer(right.link)
+                if leftUsable ~= rightUsable then
+                    return leftUsable
+                end
+            end
+
+            local leftSlot = util:NormalizeKey(select(2, getLootItemColumns(left.link)))
+            local rightSlot = util:NormalizeKey(select(2, getLootItemColumns(right.link)))
+            if leftSlot ~= rightSlot then
+                return leftSlot < rightSlot
+            end
+            return util:NormalizeKey(left.name or "") < util:NormalizeKey(right.name or "")
+        end)
+    elseif sortMode == "info" then
+        table.sort(items, function(left, right)
+            if self.db.ui.lootUsabilitySort then
+                local leftUsable = isItemUsableForPlayer(left.link)
+                local rightUsable = isItemUsableForPlayer(right.link)
+                if leftUsable ~= rightUsable then
+                    return leftUsable
+                end
+            end
+
+            local leftInfo = util:NormalizeKey(getLootItemInfoText(left))
+            local rightInfo = util:NormalizeKey(getLootItemInfoText(right))
+            if leftInfo ~= rightInfo then
+                return leftInfo < rightInfo
             end
             return util:NormalizeKey(left.name or "") < util:NormalizeKey(right.name or "")
         end)
@@ -896,7 +1004,7 @@ function addon:RefreshLootTab()
         local typeText, slotText = getLootItemColumns(item.link)
         row.itemType:SetText(typeText)
         row.itemSlot:SetText(slotText)
-        row.info:SetText("")
+        row.info:SetText(getLootItemInfoText(item))
 
         local rollCount = 0
         for _, shouldPlayerRoll in pairs(self.session.responses[item.id] or {}) do
