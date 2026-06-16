@@ -211,6 +211,10 @@ function addon:CHAT_MSG_ADDON(prefix, message, distribution, sender)
         return
     end
 
+    if util:NormalizeKey(util:GetPlayerName("player") or "") == util:NormalizeKey(sender or "") then
+        return
+    end
+
     local messageId, index, total, payload = string.match(message or "", "^(.-):(%d+):(%d+):(.*)$")
     if not messageId then
         return

@@ -2,6 +2,51 @@ local addon = WeirdLoot
 local util = addon.util
 
 local MAX_BAG_ID = 4
+local SCAN_TOOLTIP_NAME = "WeirdLootScanTooltip"
+local tradeScanTooltip
+
+local function getTradeScanTooltip()
+    if not tradeScanTooltip then
+        local owner = WorldFrame or UIParent
+        tradeScanTooltip = CreateFrame("GameTooltip", SCAN_TOOLTIP_NAME, owner, "GameTooltipTemplate")
+        tradeScanTooltip:SetOwner(owner, "ANCHOR_NONE")
+
+        for index = 1, 30 do
+            if not _G[SCAN_TOOLTIP_NAME .. "TextLeft" .. index] then
+                local left = tradeScanTooltip:CreateFontString(SCAN_TOOLTIP_NAME .. "TextLeft" .. index, nil, "GameTooltipText")
+                local right = tradeScanTooltip:CreateFontString(SCAN_TOOLTIP_NAME .. "TextRight" .. index, nil, "GameTooltipText")
+                tradeScanTooltip:AddFontStrings(left, right)
+            end
+        end
+    end
+
+    return tradeScanTooltip
+end
+
+local function tooltipHasLine(tooltip, exactText, partialText)
+    local lineCount = tooltip:NumLines() or 0
+    for index = 1, lineCount do
+        local regions = {
+            _G[SCAN_TOOLTIP_NAME .. "TextLeft" .. index],
+            _G[SCAN_TOOLTIP_NAME .. "TextRight" .. index],
+        }
+
+        for _, region in ipairs(regions) do
+            local text = region and region:GetText()
+            if text and text ~= "" then
+                if exactText and text == exactText then
+                    return true
+                end
+
+                if partialText and string.find(string.lower(text), string.lower(partialText), 1, true) then
+                    return true
+                end
+            end
+        end
+    end
+
+    return false
+end
 
 function addon:InitializeSession()
     self.session = self.sessionDb.activeSession or {
@@ -50,6 +95,50 @@ function addon:HasAddedEpicLoot(currentSnapshot)
     return false
 end
 
+function addon:BuildTradeableEpicCounts()
+    local counts = {}
+    local tooltip = getTradeScanTooltip()
+
+    for bag = 0, MAX_BAG_ID do
+        local slots = GetContainerNumSlots(bag) or 0
+        for slot = 1, slots do
+            local link = GetContainerItemLink(bag, slot)
+            local _, count, _, quality = GetContainerItemInfo(bag, slot)
+            if link and count and quality and quality >= 4 then
+                local bindType = select(14, GetItemInfo(link))
+                local isBindOnEquip = bindType == 2
+                local isTemporarilyTradeable = false
+
+                tooltip:ClearLines()
+                tooltip:SetOwner(WorldFrame or UIParent, "ANCHOR_NONE")
+                tooltip:SetBagItem(bag, slot)
+                tooltip:Show()
+                if tooltipHasLine(tooltip, nil, "you may trade this item") then
+                    isTemporarilyTradeable = true
+                end
+                if tooltipHasLine(tooltip, ITEM_BIND_ON_EQUIP, "binds when equipped") then
+                    isBindOnEquip = true
+                end
+
+                tooltip:ClearLines()
+                tooltip:SetOwner(WorldFrame or UIParent, "ANCHOR_NONE")
+                tooltip:SetHyperlink(link)
+                tooltip:Show()
+                if tooltipHasLine(tooltip, ITEM_BIND_ON_EQUIP, "binds when equipped") then
+                    isBindOnEquip = true
+                end
+
+                if isBindOnEquip or isTemporarilyTradeable then
+                    counts[link] = (counts[link] or 0) + count
+                end
+            end
+        end
+    end
+
+    tooltip:Hide()
+    return counts
+end
+
 function addon:StartLootSession()
     if not self:IsAuthorizedLootMaster() then
         self:Print("Only the loot master can start a loot session.")
@@ -96,28 +185,19 @@ function addon:BuildSessionItemList(includeAllEpics)
     local currentSnapshot = self:BuildBagSnapshot()
     session.currentSnapshot = currentSnapshot
 
-    local counts = {}
-    for link, totalCount in pairs(currentSnapshot) do
-        if includeAllEpics then
-            counts[link] = totalCount
-        else
-            local startCount = session.startSnapshot[link] or 0
-            local delta = totalCount - startCount
-            if delta > 0 then
-                counts[link] = delta
-            end
-        end
-    end
-
+    local tradeableCounts = self:BuildTradeableEpicCounts()
     local sortedLinks = {}
-    for link, count in pairs(counts) do
-        local itemName, _, quality, _, _, _, _, _, _, texture = GetItemInfo(link)
-        sortedLinks[#sortedLinks + 1] = {
-            link = link,
-            count = count,
-            name = itemName or link,
-            icon = texture or "Interface\\Icons\\INV_Misc_QuestionMark",
-        }
+    for link, totalCount in pairs(currentSnapshot) do
+        local eligibleCount = tradeableCounts[link] or 0
+        if eligibleCount > 0 then
+            local itemName, _, quality, _, _, _, _, _, _, texture = GetItemInfo(link)
+            sortedLinks[#sortedLinks + 1] = {
+                link = link,
+                count = math.min(totalCount, eligibleCount),
+                name = itemName or link,
+                icon = texture or "Interface\\Icons\\INV_Misc_QuestionMark",
+            }
+        end
     end
 
     table.sort(sortedLinks, function(left, right)
