@@ -456,25 +456,24 @@ function addon:BuildLootTab()
     end)
     panel.syncButton = syncButton
 
-    local sortButton = createButton(panel, "Sort: Name", 110, 22)
-    sortButton:SetPoint("LEFT", syncButton, "RIGHT", 8, 0)
-    sortButton:SetScript("OnClick", function()
-        addon:ToggleLootSortMode()
-    end)
-    panel.sortButton = sortButton
-
     local usabilityButton = createButton(panel, "Usable: Off", 110, 22)
-    usabilityButton:SetPoint("LEFT", sortButton, "RIGHT", 8, 0)
+    usabilityButton:SetPoint("LEFT", syncButton, "RIGHT", 8, 0)
     usabilityButton:SetScript("OnClick", function()
         addon:ToggleLootUsabilitySort()
     end)
     panel.usabilityButton = usabilityButton
 
-    local headerName = createLabel(panel, "Item", "TOPLEFT", header, "BOTTOMLEFT", 30, -8)
-    headerName:SetTextColor(0.8, 0.8, 0.8)
+    local headerName = createButton(panel, "Name", 80, 18)
+    headerName:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 24, -12)
+    headerName:SetScript("OnClick", function()
+        addon:SetLootSortMode("name")
+    end)
+    panel.headerName = headerName
 
-    local headerChoice = createLabel(panel, "Roll", "TOPLEFT", header, "BOTTOMLEFT", 347, -8)
-    headerChoice:SetTextColor(0.8, 0.8, 0.8)
+    local headerChoice = createButton(panel, "Roll", 56, 18)
+    headerChoice:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 336, -12)
+    headerChoice:SetScript("OnClick", function() end)
+    panel.headerChoice = headerChoice
 
     local headerType = createButton(panel, "Type", 70, 18)
     headerType:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 422, -12)
@@ -497,8 +496,10 @@ function addon:BuildLootTab()
     end)
     panel.headerInfo = headerInfo
 
-    local headerRollers = createLabel(panel, "Rollers", "TOPLEFT", header, "BOTTOMLEFT", 836, -8)
-    headerRollers:SetTextColor(0.8, 0.8, 0.8)
+    local headerRollers = createButton(panel, "Rollers", 80, 18)
+    headerRollers:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 828, -12)
+    headerRollers:SetScript("OnClick", function() end)
+    panel.headerRollers = headerRollers
 
     local list = createScrollList(panel, "WeirdLootLootList", 20, function(row)
         row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
@@ -974,10 +975,6 @@ function addon:RefreshLootTab()
     if self.ui.panels and self.ui.panels.loot and self.ui.panels.loot.syncButton then
         local label = self:IsAuthorizedLootMaster() and "Rebroadcast" or "Request Sync"
         self.ui.panels.loot.syncButton:SetText(label)
-    end
-    if self.ui.panels and self.ui.panels.loot and self.ui.panels.loot.sortButton then
-        local sortLabel = (self.db.ui.lootSortMode or "name") == "gear" and "Sort: Armor/Weap" or "Sort: Name"
-        self.ui.panels.loot.sortButton:SetText(sortLabel)
     end
     if self.ui.panels and self.ui.panels.loot and self.ui.panels.loot.usabilityButton then
         local usabilityLabel = self.db.ui.lootUsabilitySort and "Usable: On" or "Usable: Off"
