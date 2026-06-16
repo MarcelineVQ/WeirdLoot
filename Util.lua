@@ -141,7 +141,7 @@ function util:PlayerDisplayStatus(status)
         return "Designated Alt"
     end
 
-    return "Nil"
+    return "Unknown"
 end
 
 function util:StatusRank(status)
@@ -239,4 +239,55 @@ function util:FindBagItemByLink(itemLink)
     end
 
     return nil
+end
+
+function util:GetLootSortInfo(itemLink)
+    local itemName, _, _, _, _, itemType, itemSubType, _, equipLoc = GetItemInfo(itemLink or "")
+    local normalizedType = self:NormalizeKey(itemType or "")
+    local normalizedSubType = self:NormalizeKey(itemSubType or "")
+    local normalizedEquipLoc = self:NormalizeKey(equipLoc or "")
+
+    if normalizedType == "armor" then
+        local armorOrder = {
+            cloth = 1,
+            leather = 2,
+            mail = 3,
+            plate = 4,
+        }
+        local bucket = armorOrder[normalizedSubType]
+        if bucket then
+            return {
+                order = bucket,
+                label = normalizedSubType,
+                subtype = normalizedSubType,
+                itemName = itemName or "",
+            }
+        end
+    end
+
+    if normalizedType == "weapon"
+        or string.find(normalizedEquipLoc, "weapon", 1, true)
+        or normalizedSubType == "bows"
+        or normalizedSubType == "guns"
+        or normalizedSubType == "crossbows"
+        or normalizedSubType == "thrown"
+        or normalizedSubType == "wands"
+        or normalizedSubType == "fishing poles"
+        or normalizedSubType == "shields"
+        or normalizedEquipLoc == "invtype_holdable"
+        or normalizedEquipLoc == "invtype_relic" then
+        return {
+            order = 5,
+            label = "weapon",
+            subtype = normalizedSubType ~= "" and normalizedSubType or normalizedEquipLoc,
+            itemName = itemName or "",
+        }
+    end
+
+    return {
+        order = 6,
+        label = normalizedType ~= "" and normalizedType or "other",
+        subtype = normalizedSubType,
+        itemName = itemName or "",
+    }
 end

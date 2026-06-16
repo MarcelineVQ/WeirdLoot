@@ -5,6 +5,7 @@ function addon:InitializeRoster()
     self.roster = {
         attendees = {},
         attendeesByName = {},
+        rosterDisplay = {},
         isLootMaster = false,
         lootMasterName = nil,
     }
@@ -41,8 +42,55 @@ function addon:RefreshRoster()
 
     self.roster.attendees = attendees
     self.roster.attendeesByName = attendeesByName
+    self.roster.rosterDisplay = self:BuildRosterDisplay(attendeesByName)
 
     self:TriggerCallback("ROSTER_UPDATED")
+end
+
+function addon:BuildRosterDisplay(attendeesByName)
+    local display = {}
+    local seen = {}
+
+    for _, entry in ipairs(self:GetRosterEntries()) do
+        local key = util:NormalizeKey(entry.name)
+        local attendee = attendeesByName[key]
+        display[#display + 1] = {
+            name = entry.name,
+            className = entry.className,
+            specName = entry.specName,
+            status = entry.status,
+            present = attendee ~= nil,
+            descriptor = entry.descriptor,
+            source = "configured",
+        }
+        seen[key] = true
+    end
+
+    for key, attendee in pairs(attendeesByName or {}) do
+        if not seen[key] then
+            display[#display + 1] = {
+                name = attendee.name,
+                className = attendee.className,
+                specName = attendee.specName,
+                status = attendee.status or "nil",
+                present = true,
+                descriptor = attendee.descriptor,
+                source = "unconfigured",
+            }
+        end
+    end
+
+    table.sort(display, function(left, right)
+        if left.present ~= right.present then
+            return left.present
+        end
+        if left.source ~= right.source then
+            return left.source == "configured"
+        end
+        return util:NormalizeKey(left.name) < util:NormalizeKey(right.name)
+    end)
+
+    return display
 end
 
 function addon:GetAttendees()
@@ -51,6 +99,10 @@ end
 
 function addon:GetAttendee(name)
     return self.roster.attendeesByName[util:NormalizeKey(name or "")]
+end
+
+function addon:GetRosterDisplayList()
+    return self.roster.rosterDisplay or {}
 end
 
 function addon:RefreshLootAuthority()

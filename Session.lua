@@ -37,6 +37,19 @@ function addon:BuildBagSnapshot()
     return snapshot
 end
 
+function addon:HasAddedEpicLoot(currentSnapshot)
+    local session = self:GetCurrentSession()
+    local previousSnapshot = session.currentSnapshot or {}
+
+    for link, count in pairs(currentSnapshot or {}) do
+        if count > (previousSnapshot[link] or 0) then
+            return true
+        end
+    end
+
+    return false
+end
+
 function addon:StartLootSession()
     if not self:IsAuthorizedLootMaster() then
         self:Print("Only the loot master can start a loot session.")
@@ -165,13 +178,22 @@ end
 function addon:OnBagUpdate()
     local session = self:GetCurrentSession()
     if not session.active then
-        return
+        return false
     end
+
+    local currentSnapshot = self:BuildBagSnapshot()
+    if not self:HasAddedEpicLoot(currentSnapshot) then
+        session.currentSnapshot = currentSnapshot
+        return false
+    end
+
+    session.currentSnapshot = currentSnapshot
     if session.scanMode == "all" then
         self:RefreshSessionItems(true)
     else
         self:RefreshSessionItems()
     end
+    return true
 end
 
 function addon:SetPlayerResponse(itemId, playerName, shouldRoll)

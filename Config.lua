@@ -95,7 +95,7 @@ function addon:ParseClassSpecToken(token)
 end
 
 function addon:ParseRosterImport(text)
-    local roster = {}
+    local rosterEntries = {}
     for _, line in ipairs(util:SplitLines(text)) do
         local parts = util:Split(line, ",")
         local rawName = string.trim(parts[1] or "")
@@ -103,8 +103,7 @@ function addon:ParseRosterImport(text)
         local status = self:NormalizeStatus(parts[3] or "")
         if rawName ~= "" then
             local parsed = self:ParseClassSpecToken(descriptor)
-            local key = util:NormalizeKey(rawName)
-            roster[key] = {
+            rosterEntries[#rosterEntries + 1] = {
                 name = rawName,
                 className = parsed.className,
                 specName = parsed.specName,
@@ -113,7 +112,62 @@ function addon:ParseRosterImport(text)
             }
         end
     end
+    return rosterEntries
+end
+
+function addon:NormalizeRosterEntries(entries)
+    local normalizedEntries = {}
+    local seen = {}
+
+    for _, entry in ipairs(entries or {}) do
+        local name = string.trim(entry.name or "")
+        if name ~= "" then
+            local key = util:NormalizeKey(name)
+            if not seen[key] then
+                local className = self:NormalizeClassName(entry.className or "")
+                local specName = util:NormalizeKey(entry.specName or "")
+                local status = self:NormalizeStatus(entry.status or "")
+                normalizedEntries[#normalizedEntries + 1] = {
+                    name = name,
+                    className = className,
+                    specName = specName,
+                    status = status,
+                    descriptor = util:NormalizeKey((className or "") .. " " .. (specName or "")),
+                }
+                seen[key] = true
+            end
+        end
+    end
+
+    table.sort(normalizedEntries, function(left, right)
+        return util:NormalizeKey(left.name) < util:NormalizeKey(right.name)
+    end)
+
+    return normalizedEntries
+end
+
+function addon:BuildRosterMap(entries)
+    local roster = {}
+    for _, entry in ipairs(entries or {}) do
+        roster[util:NormalizeKey(entry.name)] = {
+            name = entry.name,
+            className = entry.className,
+            specName = entry.specName,
+            status = entry.status,
+            descriptor = entry.descriptor or util:NormalizeKey((entry.className or "") .. " " .. (entry.specName or "")),
+        }
+    end
     return roster
+end
+
+function addon:SerializeRosterEntries(entries)
+    local lines = {}
+    for _, entry in ipairs(entries or {}) do
+        local status = entry.status == "designatedalt" and "designatedAlt" or (entry.status == "main" and "main" or "unknown")
+        local descriptor = string.trim((entry.className or "") .. " " .. (entry.specName or ""))
+        lines[#lines + 1] = string.format("%s, %s, %s", entry.name or "", descriptor, status)
+    end
+    return table.concat(lines, "\n")
 end
 
 function addon:ParseTieredRuleText(text, parser)
@@ -183,13 +237,31 @@ function addon:ParseNamedToken(token)
 end
 
 function addon:NormalizeAllConfig()
-    self.config.roster = self:ParseRosterImport(self.config.rosterImportText or "")
+    local rosterEntries = self.config.rosterEntries
+    local rosterImportText = self.config.rosterImportText or ""
+    local shouldUseDefaultRoster = rosterImportText == "" or rosterImportText == (self.legacySampleRosterImportText or "")
+
+    if shouldUseDefaultRoster and (type(rosterEntries) ~= "table" or #rosterEntries <= 2) then
+        rosterEntries = util:CloneTable(self.defaultRosterEntries or {})
+    elseif type(rosterEntries) ~= "table" or #rosterEntries == 0 then
+        rosterEntries = self:ParseRosterImport(self.config.rosterImportText or "")
+    end
+    if type(rosterEntries) ~= "table" or #rosterEntries == 0 then
+        rosterEntries = util:CloneTable(self.defaultRosterEntries or {})
+    end
+
+    self.config.rosterEntries = self:NormalizeRosterEntries(rosterEntries)
+    self.config.roster = self:BuildRosterMap(self.config.rosterEntries)
+    self.config.rosterImportText = self:SerializeRosterEntries(self.config.rosterEntries)
     self.config.lootRules = self:ParseTieredRuleText(self.config.lootPriorityText or "", self.ParseClassSpecToken)
     self.config.namedRules = self:ParseTieredRuleText(self.config.namedItemsText or "", self.ParseNamedToken)
 end
 
 function addon:SaveImports(rosterText, lootText, namedText)
-    self.config.rosterImportText = rosterText or self.config.rosterImportText or ""
+    if rosterText ~= nil then
+        self.config.rosterEntries = self:ParseRosterImport(rosterText or "")
+        self.config.rosterImportText = rosterText or ""
+    end
     self.config.lootPriorityText = lootText or self.config.lootPriorityText or ""
     self.config.namedItemsText = namedText or self.config.namedItemsText or ""
     self.config.revision = (self.config.revision or 0) + 1
@@ -212,4 +284,8 @@ end
 
 function addon:GetNamedRule(itemName)
     return self.config.namedRules[util:NormalizeKey(itemName or "")]
+end
+
+function addon:GetRosterEntries()
+    return self.config.rosterEntries or {}
 end

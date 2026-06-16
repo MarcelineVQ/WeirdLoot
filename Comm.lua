@@ -7,6 +7,10 @@ function addon:InitializeComm()
     self.comm = {
         incoming = {},
         sequence = 0,
+        autoSync = {
+            lastSignature = nil,
+            lastAt = 0,
+        },
     }
 end
 
@@ -84,6 +88,49 @@ function addon:BroadcastSession()
     end
 
     self:Print("Session broadcast to raid.")
+end
+
+function addon:BuildSessionSyncSignature()
+    local session = self:GetCurrentSession()
+    local parts = {
+        session.id or "",
+        tostring(#(session.items or {})),
+        tostring(#(session.attendees or {})),
+    }
+
+    for _, item in ipairs(session.items or {}) do
+        parts[#parts + 1] = table.concat({
+            item.id or "",
+            item.link or "",
+            tostring(item.quantity or 1),
+        }, "~")
+    end
+
+    return table.concat(parts, "|")
+end
+
+function addon:AutoBroadcastSession(force)
+    local session = self:GetCurrentSession()
+    if not self:IsAuthorizedLootMaster() or not session.active then
+        return
+    end
+
+    local signature = self:BuildSessionSyncSignature()
+    local now = (type(GetTime) == "function" and GetTime()) or time()
+    local autoSync = self.comm.autoSync or {}
+
+    if not force and autoSync.lastSignature == signature then
+        return
+    end
+
+    if not force and autoSync.lastAt and (now - autoSync.lastAt) < 0.5 then
+        return
+    end
+
+    autoSync.lastSignature = signature
+    autoSync.lastAt = now
+    self.comm.autoSync = autoSync
+    self:BroadcastSession()
 end
 
 function addon:BroadcastResults(results)

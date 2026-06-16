@@ -250,6 +250,13 @@ function addon:BuildLootTab()
     end)
     panel.syncButton = syncButton
 
+    local sortButton = createButton(panel, "Sort: Name", 110, 22)
+    sortButton:SetPoint("LEFT", syncButton, "RIGHT", 8, 0)
+    sortButton:SetScript("OnClick", function()
+        addon:ToggleLootSortMode()
+    end)
+    panel.sortButton = sortButton
+
     local list = createScrollList(panel, "WeirdLootLootList", 20, function(row)
         row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 
@@ -335,7 +342,7 @@ function addon:BuildLootTab()
                     local colorCode = util:GetClassColorCode(roller.className)
                     local line = colorCode .. (roller.name or "") .. "|r"
                     if classSpec ~= "" then
-                        line = line .. " - " .. classSpec
+                        line = line .. " " .. colorCode .. "- " .. classSpec .. "|r"
                     end
                     GameTooltip:AddLine(line, 1, 1, 1)
                 end
@@ -389,21 +396,89 @@ function addon:BuildLootTab()
     self.ui.lootList = list
 end
 
+function addon:ToggleLootSortMode()
+    self.db.ui.lootSortMode = self.db.ui.lootSortMode == "gear" and "name" or "gear"
+    self:RefreshLootTab()
+end
+
+function addon:GetSortedLootItems()
+    local items = {}
+    for _, item in ipairs(self.session.items or {}) do
+        items[#items + 1] = item
+    end
+
+    local sortMode = self.db.ui.lootSortMode or "name"
+    if sortMode == "gear" then
+        table.sort(items, function(left, right)
+            local leftInfo = util:GetLootSortInfo(left.link)
+            local rightInfo = util:GetLootSortInfo(right.link)
+
+            if leftInfo.order ~= rightInfo.order then
+                return leftInfo.order < rightInfo.order
+            end
+            if leftInfo.subtype ~= rightInfo.subtype then
+                return leftInfo.subtype < rightInfo.subtype
+            end
+            return util:NormalizeKey(left.name or "") < util:NormalizeKey(right.name or "")
+        end)
+    else
+        table.sort(items, function(left, right)
+            return util:NormalizeKey(left.name or "") < util:NormalizeKey(right.name or "")
+        end)
+    end
+
+    return items
+end
+
 function addon:BuildRaidersTab()
     local panel = CreateFrame("Frame", nil, self.ui.content)
     panel:SetAllPoints(self.ui.content)
     self.ui.panels.raiders = panel
 
-    local list = createScrollList(panel, "WeirdLootRaidersList", 22, function(row)
-        row.name = createLabel(row, "", "LEFT", row, "LEFT", 8, 0)
-        row.name:SetWidth(200)
+    local summary = createLabel(panel, "", "TOPLEFT", panel, "TOPLEFT", 8, -6)
+    summary:SetWidth(760)
+    summary:SetTextColor(0.9, 0.82, 0.5)
+
+    local rosterFrame = createBackdropFrame("WeirdLootRaidersFrame", panel)
+    rosterFrame:SetPoint("TOPLEFT", summary, "BOTTOMLEFT", 0, -10)
+    rosterFrame:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -4, 0)
+
+    local headerPresence = createLabel(rosterFrame, "Raid", "TOPLEFT", rosterFrame, "TOPLEFT", 8, -8)
+    headerPresence:SetWidth(48)
+    headerPresence:SetTextColor(0.8, 0.8, 0.8)
+
+    local headerName = createLabel(panel, "Name", "LEFT", headerPresence, "RIGHT", 14, 0)
+    headerName:SetWidth(160)
+    headerName:SetTextColor(0.8, 0.8, 0.8)
+
+    local headerClassSpec = createLabel(panel, "Class / Spec", "LEFT", headerName, "RIGHT", 12, 0)
+    headerClassSpec:SetWidth(200)
+    headerClassSpec:SetTextColor(0.8, 0.8, 0.8)
+
+    local headerStatus = createLabel(panel, "Status", "LEFT", headerClassSpec, "RIGHT", 12, 0)
+    headerStatus:SetWidth(110)
+    headerStatus:SetTextColor(0.8, 0.8, 0.8)
+
+    local headerSource = createLabel(panel, "Source", "LEFT", headerStatus, "RIGHT", 12, 0)
+    headerSource:SetWidth(80)
+    headerSource:SetTextColor(0.8, 0.8, 0.8)
+
+    local list = createScrollList(rosterFrame, "WeirdLootRaidersList", 18, function(row)
+        row.present = createLabel(row, "", "LEFT", row, "LEFT", 8, 0)
+        row.present:SetWidth(48)
+        row.name = createLabel(row, "", "LEFT", row.present, "RIGHT", 14, 0)
+        row.name:SetWidth(160)
         row.classSpec = createLabel(row, "", "LEFT", row.name, "RIGHT", 12, 0)
-        row.classSpec:SetWidth(260)
+        row.classSpec:SetWidth(200)
         row.status = createLabel(row, "", "LEFT", row.classSpec, "RIGHT", 12, 0)
-        row.status:SetWidth(160)
+        row.status:SetWidth(110)
+        row.source = createLabel(row, "", "LEFT", row.status, "RIGHT", 12, 0)
+        row.source:SetWidth(80)
     end)
-    list:SetAllPoints(panel)
+    list:SetPoint("TOPLEFT", headerPresence, "BOTTOMLEFT", 0, -8)
+    list:SetPoint("BOTTOMRIGHT", rosterFrame, "BOTTOMRIGHT", -6, 6)
     self.ui.raidersList = list
+    self.ui.raidersSummary = summary
 end
 
 function addon:BuildResultsTab()
@@ -513,40 +588,7 @@ function addon:BuildMasterTab()
     panel.broadcastButton = broadcastButton
     panel.processButton = processButton
 
-    panel.rosterLabel = createLabel(panel, "Roster import", "TOPLEFT", startButton, "BOTTOMLEFT", 0, -18)
-    panel.rosterBox = CreateFrame("EditBox", nil, panel, "InputBoxTemplate")
-    panel.rosterBox:SetMultiLine(true)
-    panel.rosterBox:SetFontObject(ChatFontNormal)
-    panel.rosterBox:SetWidth(300)
-    panel.rosterBox:SetHeight(180)
-    panel.rosterBox:SetPoint("TOPLEFT", panel.rosterLabel, "BOTTOMLEFT", 0, -6)
-    panel.rosterBox:SetAutoFocus(false)
-
-    panel.lootLabel = createLabel(panel, "Loot priority import", "TOPLEFT", panel.rosterBox, "TOPRIGHT", 18, 0)
-    panel.lootBox = CreateFrame("EditBox", nil, panel, "InputBoxTemplate")
-    panel.lootBox:SetMultiLine(true)
-    panel.lootBox:SetFontObject(ChatFontNormal)
-    panel.lootBox:SetWidth(300)
-    panel.lootBox:SetHeight(180)
-    panel.lootBox:SetPoint("TOPLEFT", panel.lootLabel, "BOTTOMLEFT", 0, -6)
-    panel.lootBox:SetAutoFocus(false)
-
-    panel.namedLabel = createLabel(panel, "Named item import", "TOPLEFT", panel.lootBox, "TOPRIGHT", 18, 0)
-    panel.namedBox = CreateFrame("EditBox", nil, panel, "InputBoxTemplate")
-    panel.namedBox:SetMultiLine(true)
-    panel.namedBox:SetFontObject(ChatFontNormal)
-    panel.namedBox:SetWidth(300)
-    panel.namedBox:SetHeight(180)
-    panel.namedBox:SetPoint("TOPLEFT", panel.namedLabel, "BOTTOMLEFT", 0, -6)
-    panel.namedBox:SetAutoFocus(false)
-
-    local saveButton = createButton(panel, "Save Imports", 120, 24)
-    saveButton:SetPoint("TOPLEFT", panel.rosterBox, "BOTTOMLEFT", 0, -14)
-    saveButton:SetScript("OnClick", function()
-        addon:SaveImports(panel.rosterBox:GetText(), panel.lootBox:GetText(), panel.namedBox:GetText())
-    end)
-
-    panel.summary = createLabel(panel, "", "TOPLEFT", saveButton, "BOTTOMLEFT", 0, -16)
+    panel.summary = createLabel(panel, "", "TOPLEFT", startButton, "BOTTOMLEFT", 0, -24)
     panel.summary:SetWidth(900)
     panel.summary:SetJustifyV("TOP")
 
@@ -571,11 +613,15 @@ function addon:RefreshUI()
 end
 
 function addon:RefreshLootTab()
-    local items = self.session.items or {}
+    local items = self:GetSortedLootItems()
     local playerName = util:GetPlayerName("player")
     if self.ui.panels and self.ui.panels.loot and self.ui.panels.loot.syncButton then
         local label = self:IsAuthorizedLootMaster() and "Rebroadcast" or "Request Sync"
         self.ui.panels.loot.syncButton:SetText(label)
+    end
+    if self.ui.panels and self.ui.panels.loot and self.ui.panels.loot.sortButton then
+        local sortLabel = (self.db.ui.lootSortMode or "name") == "gear" and "Sort: Armor/Weap" or "Sort: Name"
+        self.ui.panels.loot.sortButton:SetText(sortLabel)
     end
     self.ui.lootList.update(#items, function(row, index)
         local item = items[index]
@@ -608,17 +654,44 @@ function addon:RefreshLootTab()
 end
 
 function addon:RefreshRaidersTab()
-    local attendees = self.session.attendees and #self.session.attendees > 0 and self.session.attendees or self:GetAttendees()
-    self.ui.raidersList.update(#attendees, function(row, index)
-        local attendee = attendees[index]
-        if not attendee then
+    local rosterEntries = self:GetRosterDisplayList()
+    local configuredCount = #self:GetRosterEntries()
+    local attendeeCount = #self:GetAttendees()
+    local matchedCount = 0
+    local unconfiguredCount = 0
+
+    for _, entry in ipairs(rosterEntries) do
+        if entry.present and entry.source == "configured" then
+            matchedCount = matchedCount + 1
+        elseif entry.present and entry.source == "unconfigured" then
+            unconfiguredCount = unconfiguredCount + 1
+        end
+    end
+
+    if self.ui.raidersSummary then
+        self.ui.raidersSummary:SetText(string.format(
+            "Master roster: %d | In current raid: %d | Matched: %d | Unconfigured in raid: %d",
+            configuredCount,
+            attendeeCount,
+            matchedCount,
+            unconfiguredCount
+        ))
+    end
+
+    self.ui.raidersList.update(#rosterEntries, function(row, index)
+        local entry = rosterEntries[index]
+        if not entry then
             row:Hide()
             return
         end
         row:Show()
-        row.name:SetText(attendee.name or "")
-        row.classSpec:SetText(string.trim((attendee.className or "") .. " " .. (attendee.specName or "")))
-        row.status:SetText(util:PlayerDisplayStatus(attendee.status))
+        row.present:SetText(entry.present and "Yes" or "No")
+        row.present:SetTextColor(entry.present and 0.3 or 0.7, entry.present and 0.9 or 0.3, 0.3)
+        row.name:SetText((util:GetClassColorCode(entry.className) or "|cffffffff") .. (entry.name or "") .. "|r")
+        row.classSpec:SetText((util:GetClassColorCode(entry.className) or "|cffffffff") .. string.trim((entry.className or "") .. " " .. (entry.specName or "")) .. "|r")
+        row.status:SetText(util:PlayerDisplayStatus(entry.status))
+        row.source:SetText(entry.source == "configured" and "Roster" or "Live")
+        row.source:SetTextColor(entry.source == "configured" and 0.85 or 1, entry.source == "configured" and 0.85 or 0.45, entry.source == "configured" and 0.85 or 0.45)
     end)
 end
 
@@ -696,37 +769,13 @@ function addon:RefreshMasterTab()
         panel.broadcastButton:Disable()
         panel.processButton:Disable()
     end
-    panel.rosterBox:EnableMouse(authorized)
-    panel.lootBox:EnableMouse(authorized)
-    panel.namedBox:EnableMouse(authorized)
-    if panel.rosterBox.Disable then
-        if authorized then
-            panel.rosterBox:Enable()
-            panel.lootBox:Enable()
-            panel.namedBox:Enable()
-        else
-            panel.rosterBox:Disable()
-            panel.lootBox:Disable()
-            panel.namedBox:Disable()
-        end
-    end
-
-    if not panel.rosterBox:HasFocus() and panel.rosterBox:GetText() ~= (self.config.rosterImportText or "") then
-        panel.rosterBox:SetText(self.config.rosterImportText or "")
-    end
-    if not panel.lootBox:HasFocus() and panel.lootBox:GetText() ~= (self.config.lootPriorityText or "") then
-        panel.lootBox:SetText(self.config.lootPriorityText or "")
-    end
-    if not panel.namedBox:HasFocus() and panel.namedBox:GetText() ~= (self.config.namedItemsText or "") then
-        panel.namedBox:SetText(self.config.namedItemsText or "")
-    end
 
     local session = self:GetCurrentSession()
     local attendeeCount = #(self:GetAttendees() or {})
     local itemCount = #(session.items or {})
     local resultCount = #(session.results or {})
     panel.summary:SetText(string.format(
-        "Config revision: %d\nRaid attendees: %d\nSession items: %d\nProcessed results: %d",
+        "Controls:\nStart Session establishes the active loot session.\nScan Bags pulls current epic items from the loot master's bags.\nBroadcast syncs items and current roll state to the raid.\nProcess Loot resolves winners and records results.\n\nSession snapshot:\nConfig revision: %d\nRaid attendees: %d\nSession items: %d\nProcessed results: %d",
         self.config.revision or 0,
         attendeeCount,
         itemCount,
