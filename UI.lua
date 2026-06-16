@@ -10,6 +10,93 @@ local TAB_LABELS = {
     master = "Loot Master",
 }
 
+local function isItemUsableForPlayer(itemLink)
+    if not itemLink or itemLink == "" then
+        return false
+    end
+
+    local _, _, _, _, _, itemType, itemSubType, _, equipLoc = GetItemInfo(itemLink)
+    local _, classToken = UnitClass("player")
+    local normalizedType = util:NormalizeKey(itemType or "")
+    local normalizedSubType = util:NormalizeKey(itemSubType or "")
+    local normalizedEquipLoc = util:NormalizeKey(equipLoc or "")
+
+    if not classToken then
+        return false
+    end
+
+    local armorByClass = {
+        DEATHKNIGHT = "plate",
+        DRUID = "leather",
+        HUNTER = "mail",
+        MAGE = "cloth",
+        PALADIN = "plate",
+        PRIEST = "cloth",
+        ROGUE = "leather",
+        SHAMAN = "mail",
+        WARLOCK = "cloth",
+        WARRIOR = "plate",
+    }
+
+    local weaponByClass = {
+        DEATHKNIGHT = { ["one-handed axes"] = true, ["two-handed axes"] = true, ["one-handed maces"] = true, ["two-handed maces"] = true, ["one-handed swords"] = true, ["two-handed swords"] = true, polearms = true, sigils = true },
+        DRUID = { daggers = true, ["fist weapons"] = true, ["one-handed maces"] = true, ["two-handed maces"] = true, polearms = true, staves = true, idols = true },
+        HUNTER = { ["one-handed axes"] = true, ["two-handed axes"] = true, daggers = true, ["fist weapons"] = true, polearms = true, staves = true, ["one-handed swords"] = true, ["two-handed swords"] = true, bows = true, guns = true, crossbows = true },
+        MAGE = { daggers = true, ["one-handed swords"] = true, staves = true, wands = true },
+        PALADIN = { ["one-handed axes"] = true, ["two-handed axes"] = true, ["one-handed maces"] = true, ["two-handed maces"] = true, polearms = true, ["one-handed swords"] = true, ["two-handed swords"] = true, shields = true, librams = true },
+        PRIEST = { daggers = true, ["one-handed maces"] = true, staves = true, wands = true },
+        ROGUE = { daggers = true, ["fist weapons"] = true, ["one-handed maces"] = true, ["one-handed swords"] = true, bows = true, guns = true, crossbows = true, thrown = true },
+        SHAMAN = { ["one-handed axes"] = true, ["two-handed axes"] = true, daggers = true, ["fist weapons"] = true, ["one-handed maces"] = true, ["two-handed maces"] = true, staves = true, shields = true, totems = true },
+        WARLOCK = { daggers = true, ["one-handed swords"] = true, staves = true, wands = true },
+        WARRIOR = { ["one-handed axes"] = true, ["two-handed axes"] = true, daggers = true, ["fist weapons"] = true, ["one-handed maces"] = true, ["two-handed maces"] = true, polearms = true, ["one-handed swords"] = true, ["two-handed swords"] = true, bows = true, guns = true, crossbows = true, thrown = true, shields = true },
+    }
+
+    if normalizedType == "armor" then
+        if normalizedSubType == "cloak"
+            or normalizedSubType == "miscellaneous"
+            or normalizedEquipLoc == "invtype_neck"
+            or normalizedEquipLoc == "invtype_finger"
+            or normalizedEquipLoc == "invtype_trinket"
+            or normalizedEquipLoc == "invtype_holdable"
+            or normalizedEquipLoc == "invtype_shield"
+            or normalizedEquipLoc == "invtype_relic" then
+            if normalizedEquipLoc == "invtype_shield" then
+                return weaponByClass[classToken] and weaponByClass[classToken].shields or false
+            end
+            if normalizedEquipLoc == "invtype_relic" then
+                if normalizedSubType == "idol" or normalizedSubType == "idols" then
+                    return classToken == "DRUID"
+                elseif normalizedSubType == "libram" or normalizedSubType == "librams" then
+                    return classToken == "PALADIN"
+                elseif normalizedSubType == "totem" or normalizedSubType == "totems" then
+                    return classToken == "SHAMAN"
+                elseif normalizedSubType == "sigil" or normalizedSubType == "sigils" then
+                    return classToken == "DEATHKNIGHT"
+                end
+            end
+            return true
+        end
+
+        return armorByClass[classToken] == normalizedSubType
+    end
+
+    if normalizedType == "weapon" then
+        local allowed = weaponByClass[classToken]
+        if not allowed then
+            return false
+        end
+
+        return allowed[normalizedSubType] and true or false
+    end
+
+    if type(IsUsableItem) == "function" then
+        local isUsable = IsUsableItem(itemLink)
+        return isUsable and true or false
+    end
+
+    return false
+end
+
 local function createLabel(parent, text, anchor, relativeTo, relativePoint, offsetX, offsetY)
     local fontString = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     fontString:SetPoint(anchor, relativeTo, relativePoint, offsetX, offsetY)
@@ -257,6 +344,13 @@ function addon:BuildLootTab()
     end)
     panel.sortButton = sortButton
 
+    local usabilityButton = createButton(panel, "Usable: Off", 110, 22)
+    usabilityButton:SetPoint("LEFT", sortButton, "RIGHT", 8, 0)
+    usabilityButton:SetScript("OnClick", function()
+        addon:ToggleLootUsabilitySort()
+    end)
+    panel.usabilityButton = usabilityButton
+
     local list = createScrollList(panel, "WeirdLootLootList", 20, function(row)
         row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 
@@ -401,6 +495,11 @@ function addon:ToggleLootSortMode()
     self:RefreshLootTab()
 end
 
+function addon:ToggleLootUsabilitySort()
+    self.db.ui.lootUsabilitySort = not self.db.ui.lootUsabilitySort
+    self:RefreshLootTab()
+end
+
 function addon:GetSortedLootItems()
     local items = {}
     for _, item in ipairs(self.session.items or {}) do
@@ -410,6 +509,14 @@ function addon:GetSortedLootItems()
     local sortMode = self.db.ui.lootSortMode or "name"
     if sortMode == "gear" then
         table.sort(items, function(left, right)
+            if self.db.ui.lootUsabilitySort then
+                local leftUsable = isItemUsableForPlayer(left.link)
+                local rightUsable = isItemUsableForPlayer(right.link)
+                if leftUsable ~= rightUsable then
+                    return leftUsable
+                end
+            end
+
             local leftInfo = util:GetLootSortInfo(left.link)
             local rightInfo = util:GetLootSortInfo(right.link)
 
@@ -423,6 +530,14 @@ function addon:GetSortedLootItems()
         end)
     else
         table.sort(items, function(left, right)
+            if self.db.ui.lootUsabilitySort then
+                local leftUsable = isItemUsableForPlayer(left.link)
+                local rightUsable = isItemUsableForPlayer(right.link)
+                if leftUsable ~= rightUsable then
+                    return leftUsable
+                end
+            end
+
             return util:NormalizeKey(left.name or "") < util:NormalizeKey(right.name or "")
         end)
     end
@@ -524,7 +639,7 @@ function addon:BuildResultsTab()
     targetButton:SetWidth(110)
     targetButton:SetHeight(22)
     targetButton:SetPoint("BOTTOMLEFT", detailFrame, "BOTTOMLEFT", 8, 8)
-    targetButton:SetText("Target Winner")
+    targetButton:SetText("Target + Whisper")
     targetButton:SetAttribute("type", "macro")
 
     local tradeButton = createButton(detailFrame, "Trade Winner", 110, 22)
@@ -622,6 +737,10 @@ function addon:RefreshLootTab()
     if self.ui.panels and self.ui.panels.loot and self.ui.panels.loot.sortButton then
         local sortLabel = (self.db.ui.lootSortMode or "name") == "gear" and "Sort: Armor/Weap" or "Sort: Name"
         self.ui.panels.loot.sortButton:SetText(sortLabel)
+    end
+    if self.ui.panels and self.ui.panels.loot and self.ui.panels.loot.usabilityButton then
+        local usabilityLabel = self.db.ui.lootUsabilitySort and "Usable: On" or "Usable: Off"
+        self.ui.panels.loot.usabilityButton:SetText(usabilityLabel)
     end
     self.ui.lootList.update(#items, function(row, index)
         local item = items[index]
@@ -725,14 +844,17 @@ function addon:RefreshResultsTab()
     if self.ui.resultTargetButton then
         if canAct then
             self.ui.resultTargetButton:Enable()
-            self.ui.resultTargetButton:SetAttribute("macrotext", "/target " .. string.lower(selected.winner))
+            local itemName = selected.itemLink or selected.itemName or "your item"
+            local whisperName = selected.winner or ""
+            local macroText = string.format("/target %s\n/w %s You won %s. Please run to the loot master for trade.", string.lower(whisperName), whisperName, itemName)
+            self.ui.resultTargetButton:SetAttribute("macrotext", macroText)
             self.ui.resultTradeButton:Enable()
             self.ui.resultLoadItemButton:Enable()
             self.ui.resultTargetButton:Show()
             self.ui.resultTradeButton:Show()
             self.ui.resultLoadItemButton:Show()
             self.ui.resultTradeHelp:Show()
-            self.ui.resultTradeHelp:SetText("Trade flow: click Target Winner, click Trade Winner, load item onto cursor, then click the trade slot.")
+            self.ui.resultTradeHelp:SetText("Trade flow: click Target + Whisper, click Trade Winner, load item onto cursor, then click the trade slot.")
         else
             self.ui.resultTargetButton:Disable()
             self.ui.resultTradeButton:Disable()
