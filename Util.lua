@@ -144,6 +144,17 @@ function util:PlayerDisplayStatus(status)
     return "Unknown"
 end
 
+function util:TitleCaseWords(value)
+    local normalized = string.trim(value or "")
+    if normalized == "" then
+        return ""
+    end
+
+    return string.gsub(normalized, "(%a)([%w']*)", function(first, rest)
+        return string.upper(first) .. string.lower(rest)
+    end)
+end
+
 function util:StatusRank(status)
     local normalized = self:NormalizeKey(status)
     if normalized == "main" then
