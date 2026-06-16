@@ -165,6 +165,39 @@ function util:GetPlayerName(unit)
     return shortName or name
 end
 
+function util:GetUnitTokenByPlayerName(playerName)
+    local expected = self:NormalizeKey(playerName or "")
+    if expected == "" then
+        return nil
+    end
+
+    if self:NormalizeKey(self:GetPlayerName("player") or "") == expected then
+        return "player"
+    end
+
+    local raidCount = GetNumRaidMembers() or 0
+    for index = 1, raidCount do
+        local unit = "raid" .. index
+        if self:NormalizeKey(self:GetPlayerName(unit) or "") == expected then
+            return unit
+        end
+    end
+
+    local partyCount = GetNumPartyMembers() or 0
+    for index = 1, partyCount do
+        local unit = "party" .. index
+        if self:NormalizeKey(self:GetPlayerName(unit) or "") == expected then
+            return unit
+        end
+    end
+
+    if self:NormalizeKey(self:GetPlayerName("target") or "") == expected then
+        return "target"
+    end
+
+    return nil
+end
+
 function util:GetClassColorCode(className)
     local normalized = self:NormalizeKey(className)
     local tokenByName = {
@@ -188,4 +221,22 @@ function util:GetClassColorCode(className)
     end
 
     return string.format("|cff%02x%02x%02x", color.r * 255, color.g * 255, color.b * 255)
+end
+
+function util:FindBagItemByLink(itemLink)
+    if not itemLink or itemLink == "" then
+        return nil
+    end
+
+    for bag = 0, 4 do
+        local slots = GetContainerNumSlots(bag) or 0
+        for slot = 1, slots do
+            local link = GetContainerItemLink(bag, slot)
+            if link == itemLink then
+                return bag, slot
+            end
+        end
+    end
+
+    return nil
 end

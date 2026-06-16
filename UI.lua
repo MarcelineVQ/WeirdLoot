@@ -199,6 +199,42 @@ function addon:ToggleMainFrame()
     end
 end
 
+function addon:TradeSelectedWinner()
+    local result = self.ui and self.ui.selectedResult
+    local winner = result and result.winner
+    if not result or not winner or winner == "" or winner == "No winner" then
+        self:Print("No winner is selected for trade.")
+        return
+    end
+
+    if UnitExists("target") and util:NormalizeKey(util:GetPlayerName("target") or "") == util:NormalizeKey(winner) then
+        InitiateTrade("target")
+    else
+        self:Print("Click Target Winner first, then click Trade Winner.")
+    end
+end
+
+function addon:LoadSelectedItemForTrade()
+    local result = self.ui and self.ui.selectedResult
+    if not result or not result.itemLink or result.itemLink == "" then
+        self:Print("No item is selected to load.")
+        return
+    end
+
+    local bag, slot = util:FindBagItemByLink(result.itemLink)
+    if not bag or not slot then
+        self:Print("Could not find that item in your bags.")
+        return
+    end
+
+    if CursorHasItem() then
+        ClearCursor()
+    end
+
+    PickupContainerItem(bag, slot)
+    self:Print(string.format("Picked up %s from bag %d slot %d. Click the trade slot to place it.", result.itemName or "item", bag, slot))
+end
+
 function addon:BuildLootTab()
     local panel = CreateFrame("Frame", nil, self.ui.content)
     panel:SetAllPoints(self.ui.content)
@@ -403,14 +439,41 @@ function addon:BuildResultsTab()
     editBox:SetMultiLine(true)
     editBox:SetFontObject(ChatFontNormal)
     editBox:SetWidth(380)
-    editBox:SetHeight(1200)
+    editBox:SetHeight(1120)
     editBox:SetAutoFocus(false)
     editBox:EnableMouse(true)
     editBox:SetScript("OnEscapePressed", function() editBox:ClearFocus() end)
     scroll:SetScrollChild(editBox)
 
+    local targetButton = CreateFrame("Button", "WeirdLootResultTargetButton", detailFrame, "SecureActionButtonTemplate,UIPanelButtonTemplate")
+    targetButton:SetWidth(110)
+    targetButton:SetHeight(22)
+    targetButton:SetPoint("BOTTOMLEFT", detailFrame, "BOTTOMLEFT", 8, 8)
+    targetButton:SetText("Target Winner")
+    targetButton:SetAttribute("type", "macro")
+
+    local tradeButton = createButton(detailFrame, "Trade Winner", 110, 22)
+    tradeButton:SetPoint("LEFT", targetButton, "RIGHT", 8, 0)
+    tradeButton:SetScript("OnClick", function()
+        addon:TradeSelectedWinner()
+    end)
+
+    local loadItemButton = createButton(detailFrame, "Load Item", 100, 22)
+    loadItemButton:SetPoint("LEFT", tradeButton, "RIGHT", 8, 0)
+    loadItemButton:SetScript("OnClick", function()
+        addon:LoadSelectedItemForTrade()
+    end)
+
+    local tradeHelp = createLabel(detailFrame, "", "BOTTOMLEFT", targetButton, "TOPLEFT", 0, 10)
+    tradeHelp:SetWidth(420)
+    tradeHelp:SetTextColor(0.85, 0.85, 0.85)
+
     self.ui.resultsList = list
     self.ui.resultDetail = editBox
+    self.ui.resultTargetButton = targetButton
+    self.ui.resultTradeButton = tradeButton
+    self.ui.resultLoadItemButton = loadItemButton
+    self.ui.resultTradeHelp = tradeHelp
 end
 
 function addon:BuildMasterTab()
@@ -584,6 +647,37 @@ function addon:RefreshResultsTab()
     end
 
     self.ui.resultDetail:SetText(selected and selected.detailText or "No results yet.")
+
+    local canAct = self:IsAuthorizedLootMaster() and selected and selected.winner and selected.winner ~= "" and selected.winner ~= "No winner"
+    if self.ui.resultTargetButton then
+        if canAct then
+            self.ui.resultTargetButton:Enable()
+            self.ui.resultTargetButton:SetAttribute("macrotext", "/target " .. string.lower(selected.winner))
+            self.ui.resultTradeButton:Enable()
+            self.ui.resultLoadItemButton:Enable()
+            self.ui.resultTargetButton:Show()
+            self.ui.resultTradeButton:Show()
+            self.ui.resultLoadItemButton:Show()
+            self.ui.resultTradeHelp:Show()
+            self.ui.resultTradeHelp:SetText("Trade flow: click Target Winner, click Trade Winner, load item onto cursor, then click the trade slot.")
+        else
+            self.ui.resultTargetButton:Disable()
+            self.ui.resultTradeButton:Disable()
+            self.ui.resultLoadItemButton:Disable()
+            if self:IsAuthorizedLootMaster() then
+                self.ui.resultTargetButton:Show()
+                self.ui.resultTradeButton:Show()
+                self.ui.resultLoadItemButton:Show()
+                self.ui.resultTradeHelp:Show()
+                self.ui.resultTradeHelp:SetText("Select a result with a winner to use trade actions.")
+            else
+                self.ui.resultTargetButton:Hide()
+                self.ui.resultTradeButton:Hide()
+                self.ui.resultLoadItemButton:Hide()
+                self.ui.resultTradeHelp:Hide()
+            end
+        end
+    end
 end
 
 function addon:RefreshMasterTab()
