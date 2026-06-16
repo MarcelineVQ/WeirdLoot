@@ -109,6 +109,57 @@ local function isItemUsableForPlayer(itemLink)
     return false
 end
 
+local function getLootItemColumns(itemLink)
+    local _, _, _, _, _, itemType, itemSubType, _, equipLoc = GetItemInfo(itemLink or "")
+    local normalizedType = util:NormalizeKey(itemType or "")
+    local normalizedSubType = util:NormalizeKey(itemSubType or "")
+    local normalizedEquipLoc = util:NormalizeKey(equipLoc or "")
+
+    local slotByEquipLoc = {
+        invtype_head = "Head",
+        invtype_neck = "Neck",
+        invtype_shoulder = "Shoulder",
+        invtype_body = "Shirt",
+        invtype_chest = "Chest",
+        invtype_robe = "Chest",
+        invtype_waist = "Waist",
+        invtype_legs = "Legs",
+        invtype_feet = "Feet",
+        invtype_wrist = "Wrist",
+        invtype_hand = "Hands",
+        invtype_finger = "Finger",
+        invtype_trinket = "Trinket",
+        invtype_cloak = "Back",
+        invtype_weapon = "Weapon",
+        invtype_2hweapon = "Two-Hand",
+        invtype_weaponmainhand = "Main Hand",
+        invtype_weaponoffhand = "Off Hand",
+        invtype_holdable = "Off Hand",
+        invtype_shield = "Shield",
+        invtype_ranged = "Ranged",
+        invtype_rangedright = "Ranged",
+        invtype_thrown = "Thrown",
+        invtype_relic = "Relic",
+        invtype_tabard = "Tabard",
+    }
+
+    local slotText = slotByEquipLoc[normalizedEquipLoc] or util:TitleCaseWords(normalizedSubType ~= "" and normalizedSubType or normalizedType)
+    if normalizedEquipLoc == "invtype_relic" then
+        slotText = util:TitleCaseWords(normalizedSubType ~= "" and normalizedSubType or "Relic")
+    end
+
+    local typeText = ""
+    if normalizedType == "armor" then
+        typeText = util:TitleCaseWords(normalizedSubType ~= "" and normalizedSubType or "Armor")
+    elseif normalizedType == "weapon" then
+        typeText = util:TitleCaseWords(normalizedSubType ~= "" and normalizedSubType or "Weapon")
+    else
+        typeText = util:TitleCaseWords(normalizedSubType ~= "" and normalizedSubType or normalizedType)
+    end
+
+    return typeText, slotText
+end
+
 local function createLabel(parent, text, anchor, relativeTo, relativePoint, offsetX, offsetY)
     local fontString = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     fontString:SetPoint(anchor, relativeTo, relativePoint, offsetX, offsetY)
@@ -383,6 +434,20 @@ function addon:BuildLootTab()
     end)
     panel.usabilityButton = usabilityButton
 
+    local headerName = createLabel(panel, "Item", "TOPLEFT", header, "BOTTOMLEFT", 30, -8)
+    headerName:SetTextColor(0.8, 0.8, 0.8)
+
+    local headerChoice = createLabel(panel, "Roll", "TOPLEFT", header, "BOTTOMLEFT", 347, -8)
+    headerChoice:SetTextColor(0.8, 0.8, 0.8)
+    local headerType = createLabel(panel, "Type", "TOPLEFT", header, "BOTTOMLEFT", 429, -8)
+    headerType:SetTextColor(0.8, 0.8, 0.8)
+    local headerSlot = createLabel(panel, "Slot", "TOPLEFT", header, "BOTTOMLEFT", 511, -8)
+    headerSlot:SetTextColor(0.8, 0.8, 0.8)
+    local headerInfo = createLabel(panel, "Info", "TOPLEFT", header, "BOTTOMLEFT", 585, -8)
+    headerInfo:SetTextColor(0.8, 0.8, 0.8)
+    local headerRollers = createLabel(panel, "Rollers", "TOPLEFT", header, "BOTTOMLEFT", 760, -8)
+    headerRollers:SetTextColor(0.8, 0.8, 0.8)
+
     local list = createScrollList(panel, "WeirdLootLootList", 20, function(row)
         row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 
@@ -392,10 +457,10 @@ function addon:BuildLootTab()
         row.icon:SetPoint("LEFT", row, "LEFT", 4, 0)
 
         row.name = createLabel(row, "", "LEFT", row.icon, "RIGHT", 8, 0)
-        row.name:SetWidth(340)
+        row.name:SetWidth(292)
 
         row.choice = createLootChoiceButton(row, GROUP_LOOT_TEXTURES.pass)
-        row.choice:SetPoint("LEFT", row.name, "RIGHT", 16, 0)
+        row.choice:SetPoint("LEFT", row, "LEFT", 344, 0)
         row.choice:SetScript("OnClick", function(button)
             if not row.item then
                 return
@@ -407,14 +472,20 @@ function addon:BuildLootTab()
             addon:BroadcastSelectionState(row.item.id, playerName, shouldRoll)
             addon:SendSelection(row.item.id, shouldRoll)
             setLootChoiceButtonState(button, shouldRoll)
-            row.choiceText:SetText(shouldRoll and "Roll" or "Pass")
         end)
-        row.choiceText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        row.choiceText:SetPoint("LEFT", row.choice, "RIGHT", 2, 0)
-        row.choiceText:SetText("Pass")
 
-        row.state = createLabel(row, "", "LEFT", row.choiceText, "RIGHT", 20, 0)
-        row.state:SetWidth(240)
+        row.itemType = createLabel(row, "", "LEFT", row, "LEFT", 430, 0)
+        row.itemType:SetWidth(72)
+
+        row.itemSlot = createLabel(row, "", "LEFT", row, "LEFT", 512, 0)
+        row.itemSlot:SetWidth(64)
+
+        row.info = createLabel(row, "", "LEFT", row, "LEFT", 586, 0)
+        row.info:SetWidth(150)
+
+        row.state = createLabel(row, "", "LEFT", row, "LEFT", 760, 0)
+        row.state:SetWidth(96)
+        row.state:SetJustifyH("LEFT")
         row.stateHitbox = CreateFrame("Frame", nil, row)
         row.stateHitbox:SetPoint("TOPLEFT", row.state, "TOPLEFT", -4, 4)
         row.stateHitbox:SetPoint("BOTTOMRIGHT", row.state, "BOTTOMRIGHT", 4, -4)
@@ -503,7 +574,7 @@ function addon:BuildLootTab()
             end
         end)
     end)
-    list:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -8)
+    list:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -28)
     list:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -4, 4)
     self.ui.lootList = list
 end
@@ -822,7 +893,10 @@ function addon:RefreshLootTab()
 
         local shouldRoll = self:GetPlayerResponse(item.id, playerName)
         setLootChoiceButtonState(row.choice, shouldRoll)
-        row.choiceText:SetText(shouldRoll and "Roll" or "Pass")
+        local typeText, slotText = getLootItemColumns(item.link)
+        row.itemType:SetText(typeText)
+        row.itemSlot:SetText(slotText)
+        row.info:SetText("")
 
         local rollCount = 0
         for _, shouldPlayerRoll in pairs(self.session.responses[item.id] or {}) do
