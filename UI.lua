@@ -593,6 +593,13 @@ end
 
 function addon:BuildDetailedExportLogText()
     local blocks = {}
+    local groups = {
+        { key = "bis", label = "BiS Rollers:" },
+        { key = "ms", label = "MS Rollers:" },
+        { key = "mu", label = "MU Rollers:" },
+        { key = "os", label = "OS Rollers:" },
+        { key = "tm", label = "TM Rollers:" },
+    }
 
     for _, result in ipairs(self.session.results or {}) do
         local groupedRollers = {
@@ -601,48 +608,49 @@ function addon:BuildDetailedExportLogText()
             mu = {},
             os = {},
             tm = {},
-            pass = {},
         }
         local lines = {}
         local quantityText = (result.quantity or 1) > 1 and string.format(" x%d", result.quantity or 1) or ""
+        local lcNamesText = string.trim(result.lcNamesText or "")
+        local hasLcNames = lcNamesText ~= "" and lcNamesText ~= "none"
         lines[#lines + 1] = "Item: " .. (result.itemName or "") .. quantityText
         lines[#lines + 1] = ""
 
         for _, roller in ipairs(result.allRollerDetails or {}) do
             local choice = roller.responseType or "pass"
-            groupedRollers[choice] = groupedRollers[choice] or {}
-            groupedRollers[choice][#groupedRollers[choice] + 1] = roller
+            if choice ~= "pass" then
+                groupedRollers[choice] = groupedRollers[choice] or {}
+                groupedRollers[choice][#groupedRollers[choice] + 1] = roller
+            end
         end
 
-        local groups = {
-            { key = "bis", label = "BiS Rollers:" },
-            { key = "ms", label = "MS Rollers:" },
-            { key = "mu", label = "MU Rollers:" },
-            { key = "os", label = "OS Rollers:" },
-            { key = "tm", label = "TM Rollers:" },
-            { key = "pass", label = "Pass Rollers:" },
-        }
+        local renderedGroups = 0
+        for _, group in ipairs(groups) do
+            local entries = groupedRollers[group.key] or {}
+            if #entries > 0 then
+                if renderedGroups > 0 then
+                    lines[#lines + 1] = ""
+                end
 
-        for groupIndex, group in ipairs(groups) do
-            lines[#lines + 1] = group.label
-            if #(groupedRollers[group.key] or {}) == 0 then
-                lines[#lines + 1] = "none"
-            else
-                for _, roller in ipairs(groupedRollers[group.key]) do
+                lines[#lines + 1] = group.label
+                for _, roller in ipairs(entries) do
                     local rollText = roller.rollText and (" - (" .. roller.rollText .. ")") or ""
                     lines[#lines + 1] = buildPlainCandidateSummary(roller) .. rollText
                 end
-            end
-
-            if groupIndex < #groups then
-                lines[#lines + 1] = ""
+                renderedGroups = renderedGroups + 1
             end
         end
 
-        lines[#lines + 1] = ""
-        lines[#lines + 1] = "LC Names:"
-        lines[#lines + 1] = ((result.lcNamesText and result.lcNamesText ~= "") and result.lcNamesText or "none")
-        lines[#lines + 1] = ""
+        if renderedGroups > 0 then
+            lines[#lines + 1] = ""
+        end
+
+        if hasLcNames then
+            lines[#lines + 1] = "LC Names:"
+            lines[#lines + 1] = lcNamesText
+            lines[#lines + 1] = ""
+        end
+
         lines[#lines + 1] = "Spec Priority:"
         lines[#lines + 1] = formatSpecPriorityDisplay(result.specPriorityText)
         lines[#lines + 1] = ""
