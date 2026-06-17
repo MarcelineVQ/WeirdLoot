@@ -1,4 +1,4 @@
-# weirdloot
+# WeirdLoot
 
 WeirdLoot is a World of Warcraft 3.3.5a addon for end-of-raid loot processing.
 
