@@ -221,6 +221,7 @@ function addon:BuildResultRecord(item, allRollerNames, allRollerDetails, lcNames
         winners = winners,
         winnersText = winnersText,
         winner = winners[1] or "No winner",
+        locked = true,
     }
 
     if (item.quantity or 1) >= 2 then
@@ -239,9 +240,22 @@ function addon:ProcessLoot()
     end
 
     local session = self:GetCurrentSession()
+    session.lockedItems = session.lockedItems or {}
     local results = {}
+    local hadUnlockedItems = false
+    local existingResultsByItemId = {}
+
+    for _, existingResult in ipairs(session.results or {}) do
+        existingResultsByItemId[existingResult.itemId] = existingResult
+    end
 
     for _, item in ipairs(session.items or {}) do
+        if self:IsItemLocked(item.id) then
+            if existingResultsByItemId[item.id] then
+                results[#results + 1] = existingResultsByItemId[item.id]
+            end
+        else
+            hadUnlockedItems = true
         local rollers = self:BuildRollerList(item.id)
         local allRollerNames = {}
         local allRollerDetails = {}
@@ -383,6 +397,14 @@ function addon:ProcessLoot()
                 winnerDetails
             )
         end
+
+            self:LockItem(item.id)
+        end
+    end
+
+    if not hadUnlockedItems then
+        self:Print("All session loot is already locked. Unlock a result to reroll it.")
+        return
     end
 
     session.results = results
@@ -398,6 +420,7 @@ function addon:ProcessLoot()
     end
 
     self:BroadcastResults(results)
+    self:BroadcastSessionLocks()
     self:TriggerCallback("RESULTS_UPDATED")
     self:Print("Loot processed.")
 end

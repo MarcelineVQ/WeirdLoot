@@ -73,6 +73,7 @@ function addon:BroadcastSession()
             item.name or "",
             item.icon or "",
             tostring(item.quantity or 1),
+            self:IsItemLocked(item.id) and "1" or "0",
         }, "RAID")
     end
 
@@ -92,6 +93,21 @@ function addon:BroadcastSession()
     end
 
     self:Print("Session broadcast to raid.")
+end
+
+function addon:BroadcastSessionLocks()
+    local session = self:GetCurrentSession()
+    if not self:IsAuthorizedLootMaster() or not session.id then
+        return
+    end
+
+    for _, item in ipairs(session.items or {}) do
+        self:SendLargeMessage("ITEM_LOCK", {
+            session.id or "",
+            item.id or "",
+            self:IsItemLocked(item.id) and "1" or "0",
+        }, "RAID")
+    end
 end
 
 function addon:BuildSessionSyncSignature()
@@ -264,6 +280,7 @@ function addon:HandleCommMessage(sender, logical)
         self.session.items = {}
         self.session.responses = {}
         self.session.results = {}
+        self.session.lockedItems = {}
         self.session.attendees = {}
         self.roster.lootMasterName = lootMasterName ~= "" and lootMasterName or self.roster.lootMasterName
         if self.ui then
@@ -289,6 +306,8 @@ function addon:HandleCommMessage(sender, logical)
         }
         self.session.items[#self.session.items + 1] = item
         self.session.responses[item.id] = self.session.responses[item.id] or {}
+        self.session.lockedItems = self.session.lockedItems or {}
+        self.session.lockedItems[item.id] = fields[7] == "1"
         self:TriggerCallback("SESSION_UPDATED")
     elseif command == "SESSION_END" then
         local playerName = util:GetPlayerName("player")
@@ -305,8 +324,9 @@ function addon:HandleCommMessage(sender, logical)
         if not self:IsAuthorizedLootMaster() then
             return
         end
-        self:SetPlayerResponse(fields[2], fields[3], fields[4] == "1")
-        self:BroadcastSelectionState(fields[2], fields[3], fields[4] == "1")
+        if self:SetPlayerResponse(fields[2], fields[3], fields[4] == "1") then
+            self:BroadcastSelectionState(fields[2], fields[3], fields[4] == "1")
+        end
     elseif command == "SELECTION_SYNC" then
         self:SetPlayerResponse(fields[2], fields[3], fields[4] == "1")
     elseif command == "REQUEST_SESSION_SYNC" then
@@ -314,6 +334,10 @@ function addon:HandleCommMessage(sender, logical)
             return
         end
         self:BroadcastSession()
+    elseif command == "ITEM_LOCK" then
+        self.session.lockedItems = self.session.lockedItems or {}
+        self.session.lockedItems[fields[2]] = fields[3] == "1"
+        self:TriggerCallback("SESSION_UPDATED")
     elseif command == "RESULT" then
         local result = {
             itemId = fields[2],
@@ -324,6 +348,7 @@ function addon:HandleCommMessage(sender, logical)
             winnersText = fields[6],
             summary = fields[7],
             detailText = fields[8],
+            locked = true,
         }
         self.session.results = self.session.results or {}
         self.session.results[#self.session.results + 1] = result

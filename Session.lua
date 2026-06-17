@@ -59,8 +59,11 @@ function addon:InitializeSession()
         items = {},
         responses = {},
         results = {},
+        lockedItems = {},
         attendees = {},
     }
+
+    self.session.lockedItems = self.session.lockedItems or {}
 
     self.sessionDb.activeSession = self.session
 end
@@ -108,6 +111,7 @@ function addon:BuildTradeableEpicCounts()
                 local bindType = select(14, GetItemInfo(link))
                 local isBindOnEquip = bindType == 2
                 local isTemporarilyTradeable = false
+                local isSoulbound = false
 
                 tooltip:ClearLines()
                 tooltip:SetOwner(WorldFrame or UIParent, "ANCHOR_NONE")
@@ -115,6 +119,9 @@ function addon:BuildTradeableEpicCounts()
                 tooltip:Show()
                 if tooltipHasLine(tooltip, nil, "you may trade this item") then
                     isTemporarilyTradeable = true
+                end
+                if tooltipHasLine(tooltip, ITEM_SOULBOUND, "soulbound") then
+                    isSoulbound = true
                 end
                 if tooltipHasLine(tooltip, ITEM_BIND_ON_EQUIP, "binds when equipped") then
                     isBindOnEquip = true
@@ -128,7 +135,7 @@ function addon:BuildTradeableEpicCounts()
                     isBindOnEquip = true
                 end
 
-                if isBindOnEquip or isTemporarilyTradeable then
+                if isTemporarilyTradeable or (isBindOnEquip and not isSoulbound) then
                     counts[link] = (counts[link] or 0) + count
                 end
             end
@@ -155,6 +162,7 @@ function addon:StartLootSession()
     self.session.items = {}
     self.session.responses = {}
     self.session.results = {}
+    self.session.lockedItems = {}
     self.session.attendees = util:CloneTable(self:GetAttendees())
 
     self.sessionDb.history = self.sessionDb.history or {}
@@ -169,6 +177,7 @@ function addon:ClearSession()
     self.session.items = {}
     self.session.responses = {}
     self.session.results = {}
+    self.session.lockedItems = {}
     self:TriggerCallback("SESSION_UPDATED")
 end
 
@@ -278,11 +287,15 @@ end
 
 function addon:SetPlayerResponse(itemId, playerName, shouldRoll)
     local session = self:GetCurrentSession()
+    if self:IsItemLocked(itemId) then
+        return false
+    end
     if not session.responses[itemId] then
         session.responses[itemId] = {}
     end
     session.responses[itemId][util:NormalizeKey(playerName)] = shouldRoll and true or false
     self:TriggerCallback("SESSION_UPDATED")
+    return true
 end
 
 function addon:GetPlayerResponse(itemId, playerName)
@@ -298,4 +311,63 @@ function addon:GetItemById(itemId)
         end
     end
     return nil
+end
+
+function addon:IsItemLocked(itemId)
+    local session = self:GetCurrentSession()
+    return session.lockedItems and session.lockedItems[itemId] == true or false
+end
+
+function addon:LockItem(itemId)
+    local session = self:GetCurrentSession()
+    session.lockedItems = session.lockedItems or {}
+    session.lockedItems[itemId] = true
+end
+
+function addon:UnlockItem(itemId)
+    local session = self:GetCurrentSession()
+    session.lockedItems = session.lockedItems or {}
+    session.lockedItems[itemId] = nil
+end
+
+function addon:GetResultByItemId(itemId)
+    for _, result in ipairs(self.session.results or {}) do
+        if result.itemId == itemId then
+            return result
+        end
+    end
+    return nil
+end
+
+function addon:RemoveResultByItemId(itemId)
+    local results = self.session.results or {}
+    for index = #results, 1, -1 do
+        if results[index].itemId == itemId then
+            table.remove(results, index)
+        end
+    end
+end
+
+function addon:UnlockResultItem(itemId)
+    if not self:IsAuthorizedLootMaster() then
+        self:Print("Only the loot master can unlock rolled loot.")
+        return false
+    end
+
+    if not itemId or itemId == "" then
+        self:Print("No rolled loot is selected to unlock.")
+        return false
+    end
+
+    if not self:IsItemLocked(itemId) then
+        self:Print("That loot is already unlocked.")
+        return false
+    end
+
+    self:UnlockItem(itemId)
+    self:RemoveResultByItemId(itemId)
+    self:BroadcastSession()
+    self:TriggerCallback("RESULTS_UPDATED")
+    self:Print("Loot unlocked for reroll.")
+    return true
 end

@@ -246,6 +246,63 @@ local function createBackdropFrame(name, parent)
     return frame
 end
 
+local function createExportWindow(name, width, height, titleText)
+    local frame = createBackdropFrame(name, UIParent)
+    frame:SetWidth(width)
+    frame:SetHeight(height)
+    frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+    frame:SetFrameStrata("DIALOG")
+    frame:EnableMouse(true)
+    frame:SetMovable(true)
+    frame:RegisterForDrag("LeftButton")
+    frame:SetScript("OnDragStart", function(selfFrame)
+        selfFrame:StartMoving()
+    end)
+    frame:SetScript("OnDragStop", function(selfFrame)
+        selfFrame:StopMovingOrSizing()
+    end)
+    frame:Hide()
+
+    local title = createLabel(frame, titleText or "", "TOPLEFT", frame, "TOPLEFT", 16, -14)
+    title:SetFontObject(GameFontHighlightLarge)
+
+    local closeButton = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
+    closeButton:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -4, -4)
+
+    local scroll = CreateFrame("ScrollFrame", name .. "Scroll", frame, "UIPanelScrollFrameTemplate")
+    scroll:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -42)
+    scroll:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -34, 12)
+
+    local editBox = CreateFrame("EditBox", name .. "EditBox", scroll)
+    editBox:SetMultiLine(true)
+    editBox:SetFontObject(ChatFontNormal)
+    editBox:SetWidth(width - 56)
+    editBox:SetHeight(height - 72)
+    editBox:SetAutoFocus(false)
+    editBox:EnableMouse(true)
+    editBox:SetScript("OnEscapePressed", function()
+        editBox:ClearFocus()
+        frame:Hide()
+    end)
+    editBox:SetScript("OnEditFocusGained", function()
+        editBox:HighlightText()
+    end)
+    scroll:SetScrollChild(editBox)
+
+    frame.title = title
+    frame.scroll = scroll
+    frame.editBox = editBox
+    return frame
+end
+
+local function buildPlainCandidateSummary(candidate)
+    return table.concat({
+        candidate.name or "Unknown",
+        util:TitleCaseWords(string.trim((candidate.className or "") .. " " .. (candidate.specName or ""))),
+        util:PlayerDisplayStatus(candidate.status),
+    }, " - ")
+end
+
 local function createScrollList(parent, name, rowCount, initializer)
     local frame = createBackdropFrame(name, parent)
     frame.scroll = CreateFrame("ScrollFrame", name .. "Scroll", frame, "FauxScrollFrameTemplate")
@@ -441,6 +498,126 @@ function addon:LoadSelectedItemForTrade()
     self:Print(string.format("Picked up %s from bag %d slot %d. Click the trade slot to place it.", result.itemName or "item", bag, slot))
 end
 
+function addon:UnlockSelectedResult()
+    local result = self.ui and self.ui.selectedResult
+    if not result or not result.itemId then
+        self:Print("No result is selected to unlock.")
+        return
+    end
+
+    self:UnlockResultItem(result.itemId)
+end
+
+function addon:BuildWinnersExportText()
+    local lines = {}
+
+    for _, result in ipairs(self.session.results or {}) do
+        local itemName = result.itemName or ""
+        if result.winners and #result.winners > 0 then
+            for _, winnerName in ipairs(result.winners) do
+                lines[#lines + 1] = string.format("%s\t%s", itemName, winnerName or "")
+            end
+        else
+            lines[#lines + 1] = string.format("%s\t%s", itemName, "No winner")
+        end
+    end
+
+    if #lines == 0 then
+        return ""
+    end
+
+    return table.concat(lines, "\n")
+end
+
+function addon:BuildDetailedExportLogText()
+    local blocks = {}
+
+    for _, result in ipairs(self.session.results or {}) do
+        local lines = {}
+        local quantityText = (result.quantity or 1) > 1 and string.format(" x%d", result.quantity or 1) or ""
+        lines[#lines + 1] = "Item: " .. (result.itemName or "") .. quantityText
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "All Rollers -"
+        if #(result.allRollerDetails or {}) == 0 then
+            lines[#lines + 1] = "none"
+        else
+            for _, roller in ipairs(result.allRollerDetails or {}) do
+                local rollText = roller.rollText and (" - (" .. roller.rollText .. ")") or ""
+                lines[#lines + 1] = buildPlainCandidateSummary(roller) .. rollText
+            end
+        end
+
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "LC Names:"
+        lines[#lines + 1] = ((result.lcNamesText and result.lcNamesText ~= "") and result.lcNamesText or "none")
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "Spec Priority:"
+        lines[#lines + 1] = ((result.specPriorityText and result.specPriorityText ~= "") and result.specPriorityText or "none")
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "Rolls:"
+        if #(result.rollDetails or {}) == 0 then
+            lines[#lines + 1] = "none"
+        else
+            for _, roll in ipairs(result.rollDetails or {}) do
+                local rollValue = roll.auto and "AUTO" or tostring(roll.roll or "")
+                local namedText = roll.isNamed and " - Named" or ""
+                lines[#lines + 1] = string.format("%s - (%s)%s", buildPlainCandidateSummary(roll), rollValue, namedText)
+            end
+        end
+
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "Winner:"
+        if #(result.winnerDetails or {}) == 0 then
+            lines[#lines + 1] = "No winner"
+        else
+            for _, winner in ipairs(result.winnerDetails or {}) do
+                local rollValue = winner.auto and "AUTO" or tostring(winner.roll or "")
+                lines[#lines + 1] = string.format("%s (%s)", winner.name or "Unknown", rollValue)
+            end
+        end
+
+        blocks[#blocks + 1] = table.concat(lines, "\n")
+    end
+
+    return table.concat(blocks, "\n\n")
+end
+
+function addon:ShowExportWindow(kind, titleText, bodyText)
+    self.ui = self.ui or {}
+    self.ui.exportWindows = self.ui.exportWindows or {}
+
+    local window = self.ui.exportWindows[kind]
+    if not window then
+        window = createExportWindow("WeirdLoot" .. kind .. "ExportWindow", 720, 520, titleText)
+        self.ui.exportWindows[kind] = window
+    end
+
+    window.title:SetText(titleText or "")
+    window.editBox:SetText(bodyText or "")
+    window.editBox:SetFocus()
+    window.editBox:HighlightText()
+    window.scroll:SetVerticalScroll(0)
+    window:Show()
+end
+
+function addon:ExportWinners()
+    if not self:IsAuthorizedLootMaster() then
+        self:Print("Only the loot master can export winners.")
+        return
+    end
+
+    self:ShowExportWindow("Winners", "Export Winners", self:BuildWinnersExportText())
+end
+
+function addon:ExportLog()
+    if not self:IsAuthorizedLootMaster() then
+        self:Print("Only the loot master can export the log.")
+        return
+    end
+
+    self:ShowExportWindow("Log", "Export Log", self:BuildDetailedExportLogText())
+end
+
 function addon:BuildLootTab()
     local panel = CreateFrame("Frame", nil, self.ui.content)
     panel:SetAllPoints(self.ui.content)
@@ -518,10 +695,16 @@ function addon:BuildLootTab()
             if not row.item then
                 return
             end
+            if addon:IsItemLocked(row.item.id) then
+                addon:Print("That loot is locked. Ask the loot master to unlock it before changing rolls.")
+                return
+            end
 
             local playerName = util:GetPlayerName("player")
             local shouldRoll = not addon:GetPlayerResponse(row.item.id, playerName)
-            addon:SetPlayerResponse(row.item.id, playerName, shouldRoll)
+            if not addon:SetPlayerResponse(row.item.id, playerName, shouldRoll) then
+                return
+            end
             addon:BroadcastSelectionState(row.item.id, playerName, shouldRoll)
             addon:SendSelection(row.item.id, shouldRoll)
             setLootChoiceButtonState(button, shouldRoll)
@@ -974,16 +1157,37 @@ function addon:BuildMasterTab()
         addon:BroadcastSession()
     end)
 
-    local processButton = createButton(panel, "Process Loot", 120, 24)
+    local processButton = createButton(panel, "Roll Out the Loot", 120, 24)
     processButton:SetPoint("LEFT", broadcastButton, "RIGHT", 8, 0)
     processButton:SetScript("OnClick", function()
         addon:ProcessLoot()
+    end)
+
+    local unlockButton = createButton(panel, "Unlock Roll", 100, 24)
+    unlockButton:SetPoint("LEFT", processButton, "RIGHT", 8, 0)
+    unlockButton:SetScript("OnClick", function()
+        addon:UnlockSelectedResult()
+    end)
+
+    local exportWinnersButton = createButton(panel, "Export Winners", 110, 24)
+    exportWinnersButton:SetPoint("LEFT", unlockButton, "RIGHT", 8, 0)
+    exportWinnersButton:SetScript("OnClick", function()
+        addon:ExportWinners()
+    end)
+
+    local exportLogButton = createButton(panel, "Export Log", 100, 24)
+    exportLogButton:SetPoint("LEFT", exportWinnersButton, "RIGHT", 8, 0)
+    exportLogButton:SetScript("OnClick", function()
+        addon:ExportLog()
     end)
 
     panel.startButton = startButton
     panel.scanButton = scanButton
     panel.broadcastButton = broadcastButton
     panel.processButton = processButton
+    panel.unlockButton = unlockButton
+    panel.exportWinnersButton = exportWinnersButton
+    panel.exportLogButton = exportLogButton
 
     panel.summary = createLabel(panel, "", "TOPLEFT", startButton, "BOTTOMLEFT", 0, -24)
     panel.summary:SetWidth(900)
@@ -1038,6 +1242,11 @@ function addon:RefreshLootTab()
 
         local shouldRoll = self:GetPlayerResponse(item.id, playerName)
         setLootChoiceButtonState(row.choice, shouldRoll)
+        if self:IsItemLocked(item.id) then
+            row.choice:Disable()
+        else
+            row.choice:Enable()
+        end
         local typeText, slotText = getLootItemColumns(item.link)
         row.itemType:SetText(typeText)
         row.itemSlot:SetText(slotText)
@@ -1125,6 +1334,10 @@ function addon:RefreshResultsTab()
     end)
 
     local selected = self.ui.selectedResult
+    if selected and selected.itemId and not self:GetResultByItemId(selected.itemId) then
+        selected = nil
+        self.ui.selectedResult = nil
+    end
     if not selected and results[1] then
         selected = results[1]
         self.ui.selectedResult = selected
@@ -1173,6 +1386,7 @@ function addon:RefreshResultsTab()
             end
         end
     end
+
 end
 
 function addon:RefreshMasterTab()
@@ -1185,22 +1399,47 @@ function addon:RefreshMasterTab()
         panel.scanButton:Enable()
         panel.broadcastButton:Enable()
         panel.processButton:Enable()
+        panel.exportWinnersButton:Enable()
+        panel.exportLogButton:Enable()
     else
         panel.startButton:Disable()
         panel.scanButton:Disable()
         panel.broadcastButton:Disable()
         panel.processButton:Disable()
+        panel.exportWinnersButton:Disable()
+        panel.exportLogButton:Disable()
+    end
+
+    local selectedResult = self.ui and self.ui.selectedResult
+    if panel.unlockButton then
+        if authorized then
+            panel.unlockButton:Show()
+            if selectedResult and selectedResult.itemId and self:IsItemLocked(selectedResult.itemId) then
+                panel.unlockButton:Enable()
+            else
+                panel.unlockButton:Disable()
+            end
+        else
+            panel.unlockButton:Disable()
+        end
     end
 
     local session = self:GetCurrentSession()
     local attendeeCount = #(self:GetAttendees() or {})
     local itemCount = #(session.items or {})
     local resultCount = #(session.results or {})
+    local lockedCount = 0
+    for _, item in ipairs(session.items or {}) do
+        if self:IsItemLocked(item.id) then
+            lockedCount = lockedCount + 1
+        end
+    end
     panel.summary:SetText(string.format(
-        "Controls:\nStart Session establishes the active loot session.\nScan Bags pulls current epic items from the loot master's bags.\nBroadcast syncs items and current roll state to the raid.\nProcess Loot resolves winners and records results.\n\nSession snapshot:\nConfig revision: %d\nRaid attendees: %d\nSession items: %d\nProcessed results: %d",
+        "Controls:\nStart Session establishes the active loot session.\nScan Bags pulls current epic items from the loot master's bags.\nBroadcast syncs items and current roll state to the raid.\nRoll Out the Loot resolves winners, records results, and locks each item after its first rollout.\nUnlock Roll reopens the currently selected result for rerolling.\n\nSession snapshot:\nConfig revision: %d\nRaid attendees: %d\nSession items: %d\nLocked items: %d\nProcessed results: %d",
         self.config.revision or 0,
         attendeeCount,
         itemCount,
+        lockedCount,
         resultCount
     ))
 end
