@@ -5,6 +5,23 @@ local MAX_BAG_ID = 4
 local SCAN_TOOLTIP_NAME = "WeirdLootScanTooltip"
 local tradeScanTooltip
 
+local function buildSessionState(ownerKey)
+    return {
+        id = nil,
+        active = false,
+        ownerKey = ownerKey,
+        startedAt = nil,
+        startSnapshot = {},
+        currentSnapshot = {},
+        scanMode = "delta",
+        items = {},
+        responses = {},
+        results = {},
+        lockedItems = {},
+        attendees = {},
+    }
+end
+
 local function getTradeScanTooltip()
     if not tradeScanTooltip then
         local owner = WorldFrame or UIParent
@@ -49,23 +66,18 @@ local function tooltipHasLine(tooltip, exactText, partialText)
 end
 
 function addon:InitializeSession()
-    self.session = self.sessionDb.activeSession or {
-        id = nil,
-        active = false,
-        startedAt = nil,
-        startSnapshot = {},
-        currentSnapshot = {},
-        scanMode = "delta",
-        items = {},
-        responses = {},
-        results = {},
-        lockedItems = {},
-        attendees = {},
-    }
+    local ownerKey = self:GetSessionOwnerKey()
+    self.sessionDb.activeSessions = self.sessionDb.activeSessions or {}
 
+    local session = self.sessionDb.activeSessions[ownerKey]
+    if not session then
+        session = buildSessionState(ownerKey)
+        self.sessionDb.activeSessions[ownerKey] = session
+    end
+
+    self.session = session
+    self.session.ownerKey = ownerKey
     self.session.lockedItems = self.session.lockedItems or {}
-
-    self.sessionDb.activeSession = self.session
 end
 
 function addon:BuildBagSnapshot()
@@ -155,6 +167,7 @@ function addon:StartLootSession()
     local sessionId = tostring(time())
     self.session.id = sessionId
     self.session.active = true
+    self.session.ownerKey = self:GetSessionOwnerKey()
     self.session.startedAt = time()
     self.session.startSnapshot = self:BuildBagSnapshot()
     self.session.currentSnapshot = util:CloneTable(self.session.startSnapshot)
@@ -173,6 +186,7 @@ end
 
 function addon:ClearSession()
     self.session.active = false
+    self.session.ownerKey = self:GetSessionOwnerKey()
     self.session.scanMode = "delta"
     self.session.items = {}
     self.session.responses = {}
@@ -348,26 +362,32 @@ function addon:RemoveResultByItemId(itemId)
     end
 end
 
-function addon:UnlockResultItem(itemId)
+function addon:HasLockedItems()
+    local session = self:GetCurrentSession()
+    for _, item in ipairs(session.items or {}) do
+        if self:IsItemLocked(item.id) then
+            return true
+        end
+    end
+
+    return false
+end
+
+function addon:UnlockAllRolls()
     if not self:IsAuthorizedLootMaster() then
         self:Print("Only the loot master can unlock rolled loot.")
         return false
     end
 
-    if not itemId or itemId == "" then
-        self:Print("No rolled loot is selected to unlock.")
+    if not self:HasLockedItems() then
+        self:Print("Loot is already unlocked.")
         return false
     end
 
-    if not self:IsItemLocked(itemId) then
-        self:Print("That loot is already unlocked.")
-        return false
-    end
-
-    self:UnlockItem(itemId)
-    self:RemoveResultByItemId(itemId)
+    self.session.lockedItems = {}
+    self.session.results = {}
     self:BroadcastSession()
     self:TriggerCallback("RESULTS_UPDATED")
-    self:Print("Loot unlocked for reroll.")
+    self:Print("All loot unlocked for reroll.")
     return true
 end

@@ -109,6 +109,15 @@ function addon:RollCandidates(candidates)
     return rolls
 end
 
+local function sortRollsDescending(rolls)
+    table.sort(rolls, function(left, right)
+        if left.roll == right.roll then
+            return string.lower(left.name) < string.lower(right.name)
+        end
+        return left.roll > right.roll
+    end)
+end
+
 local function formatCandidateSummary(candidate)
     local nameText = (util:GetClassColorCode(candidate.className) or "|cffffffff") .. (candidate.name or "Unknown") .. "|r"
     local parts = {
@@ -188,6 +197,51 @@ local function formatPlainCandidateNames(candidates)
     return table.concat(names, ", ")
 end
 
+local function formatSpecPriorityDisplay(specPriorityText)
+    local normalized = string.trim(specPriorityText or "")
+    if normalized == "" then
+        return "none"
+    end
+
+    local tiers = {}
+    for _, tierText in ipairs(util:Split(normalized, ">")) do
+        tierText = string.trim(tierText)
+        if tierText ~= "" then
+            if string.find(tierText, "/", 1, true) then
+                local formattedEntries = {}
+                for _, entryText in ipairs(util:Split(tierText, "/")) do
+                    formattedEntries[#formattedEntries + 1] = util:TitleCaseWords(string.trim(entryText))
+                end
+                tiers[#tiers + 1] = table.concat(formattedEntries, " / ")
+            else
+                tiers[#tiers + 1] = util:TitleCaseWords(tierText)
+            end
+        end
+    end
+
+    if #tiers == 0 then
+        return "none"
+    end
+
+    return table.concat(tiers, "\n---\n")
+end
+
+function addon:RuleHasLootCouncil(rule)
+    if not rule or not rule.tiers then
+        return false
+    end
+
+    for _, tier in ipairs(rule.tiers) do
+        for _, entry in ipairs(tier.entries or {}) do
+            if entry.isLootCouncil then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
 function addon:BuildResultDetail(result)
     local lines = {}
     local quantityText = (result.quantity or 1) > 1 and string.format(" x%d", result.quantity or 1) or ""
@@ -208,9 +262,9 @@ function addon:BuildResultDetail(result)
     lines[#lines + 1] = ((result.lcNamesText and result.lcNamesText ~= "") and result.lcNamesText or "none")
     lines[#lines + 1] = ""
     lines[#lines + 1] = "Spec Priority:"
-    lines[#lines + 1] = ((result.specPriorityText and result.specPriorityText ~= "") and result.specPriorityText or "none")
+    lines[#lines + 1] = formatSpecPriorityDisplay(result.specPriorityText)
     lines[#lines + 1] = ""
-    lines[#lines + 1] = "Rolls:"
+    lines[#lines + 1] = "Prioritized Rolls:"
     if #(result.rollDetails or {}) == 0 then
         lines[#lines + 1] = "none"
     else
@@ -354,8 +408,19 @@ function addon:ProcessLoot()
             }
         end
 
+        local allRolls = self:RollCandidates(rollers)
+        local allRollByName = {}
+        for _, roll in ipairs(allRolls) do
+            allRollByName[util:NormalizeKey(roll.name)] = roll
+        end
+        for _, detail in ipairs(allRollerDetails) do
+            local matchedRoll = allRollByName[util:NormalizeKey(detail.name)]
+            detail.rollText = matchedRoll and (matchedRoll.auto and "AUTO" or tostring(matchedRoll.roll)) or nil
+        end
+
         local namedRule = self:GetNamedRule(item.name)
         local lootRule = self:GetLootRule(item.name)
+        local defaultSpecPriorityText = lootRule and lootRule.raw or (self:RuleHasLootCouncil(namedRule) and "LC" or nil)
 
         local namedTier, prioritized, isLootCouncil = self:FindMatchingNamedTier(namedRule, rollers)
 
@@ -363,6 +428,7 @@ function addon:ProcessLoot()
             local councilCandidates = prioritized
             local prioritizedNames = {}
             local rank = 0
+            local displaySpecPriorityText = defaultSpecPriorityText or "LC"
 
             if lootRule then
                 local lootTier
@@ -388,7 +454,7 @@ function addon:ProcessLoot()
                 allRollerNames,
                 allRollerDetails,
                 formatPlainCandidateNames(councilCandidates),
-                lootRule and lootRule.raw or nil,
+                displaySpecPriorityText,
                 rank,
                 prioritizedNames
             )
@@ -406,20 +472,25 @@ function addon:ProcessLoot()
             end)
 
             local statusSurvivors, rank = self:FilterByStatus(prioritized)
-            local rolls = self:RollCandidates(statusSurvivors)
+            local rolls = {}
             local prioritizedNames = {}
             local rollDetails = {}
-            local rollByName = {}
             local survivorByName = {}
             for _, player in ipairs(statusSurvivors) do
                 prioritizedNames[#prioritizedNames + 1] = player.name
                 survivorByName[util:NormalizeKey(player.name)] = player
+                local matchedRoll = allRollByName[util:NormalizeKey(player.name)]
+                if matchedRoll then
+                    rolls[#rolls + 1] = {
+                        name = matchedRoll.name,
+                        roll = matchedRoll.roll,
+                        auto = matchedRoll.auto,
+                    }
+                end
             end
-            for _, roll in ipairs(rolls) do
-                rollByName[util:NormalizeKey(roll.name)] = roll
-            end
+            sortRollsDescending(rolls)
             for _, roller in ipairs(statusSurvivors) do
-                local matchedRoll = rollByName[util:NormalizeKey(roller.name)]
+                local matchedRoll = allRollByName[util:NormalizeKey(roller.name)]
                 rollDetails[#rollDetails + 1] = {
                     name = roller.name,
                     className = roller.className,
@@ -430,13 +501,9 @@ function addon:ProcessLoot()
                     isNamed = self:IsCandidateNamedForItem(namedRule, roller.name),
                 }
             end
-            for _, detail in ipairs(allRollerDetails) do
-                local matchedRoll = rollByName[util:NormalizeKey(detail.name)]
-                detail.rollText = matchedRoll and (matchedRoll.auto and "AUTO" or tostring(matchedRoll.roll)) or nil
-            end
             local winnerDetails = {}
             for _, winnerName in ipairs(self:SelectWinningRolls(rolls, item.quantity or 1)) do
-                local matchedRoll = rollByName[util:NormalizeKey(winnerName)]
+                local matchedRoll = allRollByName[util:NormalizeKey(winnerName)]
                 local winnerCandidate = survivorByName[util:NormalizeKey(winnerName)] or {}
                 winnerDetails[#winnerDetails + 1] = {
                     name = winnerName,
@@ -451,7 +518,7 @@ function addon:ProcessLoot()
                 allRollerNames,
                 allRollerDetails,
                 namedTier and namedTier.raw or nil,
-                lootRule and lootRule.raw or nil,
+                defaultSpecPriorityText,
                 rank,
                 prioritizedNames,
                 rolls,
@@ -460,20 +527,25 @@ function addon:ProcessLoot()
             )
         else
             local statusSurvivors, rank = self:FilterByStatus(prioritized)
-            local rolls = self:RollCandidates(statusSurvivors)
+            local rolls = {}
             local prioritizedNames = {}
             local rollDetails = {}
-            local rollByName = {}
             local survivorByName = {}
             for _, player in ipairs(statusSurvivors) do
                 prioritizedNames[#prioritizedNames + 1] = player.name
                 survivorByName[util:NormalizeKey(player.name)] = player
+                local matchedRoll = allRollByName[util:NormalizeKey(player.name)]
+                if matchedRoll then
+                    rolls[#rolls + 1] = {
+                        name = matchedRoll.name,
+                        roll = matchedRoll.roll,
+                        auto = matchedRoll.auto,
+                    }
+                end
             end
-            for _, roll in ipairs(rolls) do
-                rollByName[util:NormalizeKey(roll.name)] = roll
-            end
+            sortRollsDescending(rolls)
             for _, roller in ipairs(statusSurvivors) do
-                local matchedRoll = rollByName[util:NormalizeKey(roller.name)]
+                local matchedRoll = allRollByName[util:NormalizeKey(roller.name)]
                 rollDetails[#rollDetails + 1] = {
                     name = roller.name,
                     className = roller.className,
@@ -484,13 +556,9 @@ function addon:ProcessLoot()
                     isNamed = self:IsCandidateNamedForItem(namedRule, roller.name),
                 }
             end
-            for _, detail in ipairs(allRollerDetails) do
-                local matchedRoll = rollByName[util:NormalizeKey(detail.name)]
-                detail.rollText = matchedRoll and (matchedRoll.auto and "AUTO" or tostring(matchedRoll.roll)) or nil
-            end
             local winnerDetails = {}
             for _, winnerName in ipairs(self:SelectWinningRolls(rolls, item.quantity or 1)) do
-                local matchedRoll = rollByName[util:NormalizeKey(winnerName)]
+                local matchedRoll = allRollByName[util:NormalizeKey(winnerName)]
                 local winnerCandidate = survivorByName[util:NormalizeKey(winnerName)] or {}
                 winnerDetails[#winnerDetails + 1] = {
                     name = winnerName,
@@ -505,7 +573,7 @@ function addon:ProcessLoot()
                 allRollerNames,
                 allRollerDetails,
                 namedTier and namedTier.raw or nil,
-                lootRule and lootRule.raw or nil,
+                defaultSpecPriorityText,
                 rank,
                 prioritizedNames,
                 rolls,

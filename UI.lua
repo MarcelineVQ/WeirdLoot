@@ -2,11 +2,11 @@ local addon = WeirdLoot
 local util = addon.util
 
 local ROW_HEIGHT = 22
-local TAB_KEYS = { "loot", "raiders", "results", "master" }
+local TAB_KEYS = { "loot", "results", "raiders", "master" }
 local TAB_LABELS = {
     loot = "Loot",
-    raiders = "Raiders",
-    results = "Results",
+    raiders = "Roster",
+    results = "Loot Results",
     master = "Loot Master",
 }
 local GROUP_LOOT_TEXTURES = {
@@ -303,6 +303,35 @@ local function buildPlainCandidateSummary(candidate)
     }, " - ")
 end
 
+local function formatSpecPriorityDisplay(specPriorityText)
+    local normalized = string.trim(specPriorityText or "")
+    if normalized == "" then
+        return "none"
+    end
+
+    local tiers = {}
+    for _, tierText in ipairs(util:Split(normalized, ">")) do
+        tierText = string.trim(tierText)
+        if tierText ~= "" then
+            if string.find(tierText, "/", 1, true) then
+                local formattedEntries = {}
+                for _, entryText in ipairs(util:Split(tierText, "/")) do
+                    formattedEntries[#formattedEntries + 1] = util:TitleCaseWords(string.trim(entryText))
+                end
+                tiers[#tiers + 1] = table.concat(formattedEntries, " / ")
+            else
+                tiers[#tiers + 1] = util:TitleCaseWords(tierText)
+            end
+        end
+    end
+
+    if #tiers == 0 then
+        return "none"
+    end
+
+    return table.concat(tiers, "\n---\n")
+end
+
 local function createScrollList(parent, name, rowCount, initializer)
     local frame = createBackdropFrame(name, parent)
     frame.scroll = CreateFrame("ScrollFrame", name .. "Scroll", frame, "FauxScrollFrameTemplate")
@@ -498,14 +527,8 @@ function addon:LoadSelectedItemForTrade()
     self:Print(string.format("Picked up %s from bag %d slot %d. Click the trade slot to place it.", result.itemName or "item", bag, slot))
 end
 
-function addon:UnlockSelectedResult()
-    local result = self.ui and self.ui.selectedResult
-    if not result or not result.itemId then
-        self:Print("No result is selected to unlock.")
-        return
-    end
-
-    self:UnlockResultItem(result.itemId)
+function addon:UnlockAllSessionRolls()
+    self:UnlockAllRolls()
 end
 
 function addon:BuildWinnersExportText()
@@ -554,9 +577,9 @@ function addon:BuildDetailedExportLogText()
         lines[#lines + 1] = ((result.lcNamesText and result.lcNamesText ~= "") and result.lcNamesText or "none")
         lines[#lines + 1] = ""
         lines[#lines + 1] = "Spec Priority:"
-        lines[#lines + 1] = ((result.specPriorityText and result.specPriorityText ~= "") and result.specPriorityText or "none")
+        lines[#lines + 1] = formatSpecPriorityDisplay(result.specPriorityText)
         lines[#lines + 1] = ""
-        lines[#lines + 1] = "Rolls:"
+        lines[#lines + 1] = "Prioritized Rolls:"
         if #(result.rollDetails or {}) == 0 then
             lines[#lines + 1] = "none"
         else
@@ -1170,7 +1193,7 @@ function addon:BuildMasterTab()
     local unlockButton = createButton(panel, "Unlock Roll", 100, 24)
     unlockButton:SetPoint("LEFT", processButton, "RIGHT", 8, 0)
     unlockButton:SetScript("OnClick", function()
-        addon:UnlockSelectedResult()
+        addon:UnlockAllSessionRolls()
     end)
 
     local exportWinnersButton = createButton(panel, "Export Winners", 110, 24)
@@ -1414,11 +1437,10 @@ function addon:RefreshMasterTab()
         panel.exportLogButton:Disable()
     end
 
-    local selectedResult = self.ui and self.ui.selectedResult
     if panel.unlockButton then
         if authorized then
             panel.unlockButton:Show()
-            if selectedResult and selectedResult.itemId and self:IsItemLocked(selectedResult.itemId) then
+            if self:HasLockedItems() then
                 panel.unlockButton:Enable()
             else
                 panel.unlockButton:Disable()
@@ -1439,7 +1461,7 @@ function addon:RefreshMasterTab()
         end
     end
     panel.summary:SetText(string.format(
-        "Controls:\nStart Session establishes the active loot session.\nScan Bags pulls current epic items from the loot master's bags.\nBroadcast syncs items and current roll state to the raid.\nRoll Out the Loot resolves winners, records results, and locks each item after its first rollout.\nUnlock Roll reopens the currently selected result for rerolling.\n\nSession snapshot:\nConfig revision: %d\nRaid attendees: %d\nSession items: %d\nLocked items: %d\nProcessed results: %d",
+        "Controls:\nStart Session establishes the active loot session.\nScan Bags pulls current epic items from the loot master's bags.\nBroadcast syncs items and current roll state to the raid.\nRoll Out the Loot resolves winners, records results, and locks each item after its first rollout.\nUnlock Roll clears the rollout lock for the entire session so everything can be rerolled intentionally.\n\nSession snapshot:\nConfig revision: %d\nRaid attendees: %d\nSession items: %d\nLocked items: %d\nProcessed results: %d",
         self.config.revision or 0,
         attendeeCount,
         itemCount,
