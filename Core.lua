@@ -347,7 +347,8 @@ function addon:GetSessionOwnerKey()
     local playerName = UnitName("player") or "unknown"
     local realmName = GetRealmName and GetRealmName() or "realm"
     local function normalizeKey(value)
-        value = string.lower(string.trim(value or ""))
+        value = string.lower(value or "")
+        value = string.match(value, "^%s*(.-)%s*$") or ""
         value = string.gsub(value, "%s+", " ")
         return value
     end

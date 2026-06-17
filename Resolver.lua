@@ -9,8 +9,8 @@ function addon:BuildRollerList(itemId)
     local rollers = {}
     local responses = session.responses[itemId] or {}
 
-    for playerKey, shouldRoll in pairs(responses) do
-        if shouldRoll then
+    for playerKey, choice in pairs(responses) do
+        if self:IsResponseActive(choice) then
             local attendee = self:GetAttendee(playerKey) or self:GetRosterProfile(playerKey)
             if attendee then
                 rollers[#rollers + 1] = {
@@ -19,6 +19,7 @@ function addon:BuildRollerList(itemId)
                     specName = attendee.specName or "",
                     status = attendee.status or "nil",
                     descriptor = util:NormalizeKey((attendee.className or "") .. " " .. (attendee.specName or "")),
+                    responseType = self:GetPlayerResponse(itemId, playerKey),
                 }
             else
                 rollers[#rollers + 1] = {
@@ -27,6 +28,7 @@ function addon:BuildRollerList(itemId)
                     specName = "",
                     status = "nil",
                     descriptor = "",
+                    responseType = self:GetPlayerResponse(itemId, playerKey),
                 }
             end
         end
@@ -127,6 +129,83 @@ local function formatCandidateSummary(candidate)
     }
 
     return table.concat(parts, " - ")
+end
+
+local RESULT_RESPONSE_GROUPS = {
+    { key = "bis", label = "BiS Rollers:" },
+    { key = "ms", label = "MS Rollers:" },
+    { key = "mu", label = "MU Rollers:" },
+    { key = "os", label = "OS Rollers:" },
+    { key = "tm", label = "TM Rollers:" },
+}
+
+local RESPONSE_PRIORITY_RANKS = {
+    bis = 6,
+    ms = 5,
+    mu = 4,
+    os = 3,
+    tm = 2,
+    pass = 1,
+}
+
+local function appendGroupedRollers(lines, candidates)
+    local grouped = {}
+    for _, group in ipairs(RESULT_RESPONSE_GROUPS) do
+        grouped[group.key] = {}
+    end
+
+    for _, candidate in ipairs(candidates or {}) do
+        local choice = candidate.responseType or "pass"
+        if choice ~= "pass" then
+            grouped[choice] = grouped[choice] or {}
+            grouped[choice][#grouped[choice] + 1] = candidate
+        end
+    end
+
+    local renderedGroups = 0
+    for _, group in ipairs(RESULT_RESPONSE_GROUPS) do
+        local entries = grouped[group.key] or {}
+        if #entries > 0 then
+            if renderedGroups > 0 then
+                lines[#lines + 1] = ""
+            end
+
+            lines[#lines + 1] = group.label
+            for _, candidate in ipairs(entries) do
+                local rollText = candidate.rollText and (" - (" .. candidate.rollText .. ")") or ""
+                lines[#lines + 1] = formatCandidateSummary(candidate) .. rollText
+            end
+            renderedGroups = renderedGroups + 1
+        end
+    end
+
+    if renderedGroups > 0 then
+        lines[#lines + 1] = ""
+    end
+end
+
+function addon:FilterByResponsePriority(candidates)
+    local highestRank = 0
+    local survivors = {}
+    local highestKey = "pass"
+
+    for _, candidate in ipairs(candidates or {}) do
+        local responseKey = candidate.responseType or "pass"
+        local responseRank = RESPONSE_PRIORITY_RANKS[responseKey] or 0
+        if responseRank > highestRank then
+            highestRank = responseRank
+            highestKey = responseKey
+        end
+    end
+
+    for _, candidate in ipairs(candidates or {}) do
+        local responseKey = candidate.responseType or "pass"
+        if (RESPONSE_PRIORITY_RANKS[responseKey] or 0) == highestRank then
+            survivors[#survivors + 1] = candidate
+        end
+    end
+
+    return survivors, highestKey, highestRank
 end
 
 function addon:IsCandidateNamedForItem(namedRule, candidateName)
@@ -245,22 +324,18 @@ end
 function addon:BuildResultDetail(result)
     local lines = {}
     local quantityText = (result.quantity or 1) > 1 and string.format(" x%d", result.quantity or 1) or ""
+    local lcNamesText = string.trim(result.lcNamesText or "")
+    local hasLcNames = lcNamesText ~= "" and lcNamesText ~= "none"
     lines[#lines + 1] = "Item: " .. (result.itemName or "") .. quantityText
     lines[#lines + 1] = ""
-    lines[#lines + 1] = "All Rollers -"
-    if #(result.allRollerDetails or {}) == 0 then
-        lines[#lines + 1] = "none"
-    else
-        for _, roller in ipairs(result.allRollerDetails or {}) do
-            local rollText = roller.rollText and (" - (" .. roller.rollText .. ")") or ""
-            lines[#lines + 1] = formatCandidateSummary(roller) .. rollText
-        end
+    appendGroupedRollers(lines, result.allRollerDetails or {})
+
+    if hasLcNames then
+        lines[#lines + 1] = "LC Names:"
+        lines[#lines + 1] = lcNamesText
+        lines[#lines + 1] = ""
     end
 
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "LC Names:"
-    lines[#lines + 1] = ((result.lcNamesText and result.lcNamesText ~= "") and result.lcNamesText or "none")
-    lines[#lines + 1] = ""
     lines[#lines + 1] = "Spec Priority:"
     lines[#lines + 1] = formatSpecPriorityDisplay(result.specPriorityText)
     lines[#lines + 1] = ""
@@ -314,6 +389,7 @@ function addon:CollectPriorityWinnerCandidates(rule, candidates, matcher, quanti
 
     local function appendSortedCandidates(tierCandidates)
         local statusSurvivors = self:FilterByStatus(tierCandidates)
+
         table.sort(statusSurvivors, function(left, right)
             local leftRoll = allRollByName[util:NormalizeKey(left.name)] and allRollByName[util:NormalizeKey(left.name)].roll or 0
             local rightRoll = allRollByName[util:NormalizeKey(right.name)] and allRollByName[util:NormalizeKey(right.name)].roll or 0
@@ -475,6 +551,7 @@ function addon:ProcessLoot()
                 className = roller.className,
                 specName = roller.specName,
                 status = roller.status,
+                responseType = roller.responseType,
             }
         end
 
@@ -491,8 +568,9 @@ function addon:ProcessLoot()
         local namedRule = self:GetNamedRule(item.name)
         local lootRule = self:GetLootRule(item.name)
         local defaultSpecPriorityText = lootRule and lootRule.raw or (self:RuleHasLootCouncil(namedRule) and "LC" or nil)
+        local responsePriorityCandidates = self:FilterByResponsePriority(rollers)
 
-        local namedTier, prioritized, isLootCouncil = self:FindMatchingNamedTier(namedRule, rollers)
+        local namedTier, prioritized, isLootCouncil = self:FindMatchingNamedTier(namedRule, responsePriorityCandidates)
 
         if isLootCouncil then
             local councilCandidates = prioritized
@@ -572,7 +650,7 @@ function addon:ProcessLoot()
                 }
             end
             local winnerDetails = {}
-            local winnerCandidates = self:CollectPriorityWinnerCandidates(lootRule, rollers, function(entry, candidate)
+            local winnerCandidates = self:CollectPriorityWinnerCandidates(lootRule, responsePriorityCandidates, function(entry, candidate)
                 local keyA = util:NormalizeKey((candidate.className or "") .. " " .. (candidate.specName or ""))
                 local keyB = util:NormalizeKey((candidate.specName or "") .. " " .. (candidate.className or ""))
                 for _, key in ipairs(entry.matchKeys or {}) do
@@ -639,7 +717,7 @@ function addon:ProcessLoot()
             local winnerDetails = {}
             local winnerCandidates
             if namedTier and namedRule then
-                winnerCandidates = self:CollectPriorityWinnerCandidates(namedRule, rollers, function(entry, candidate)
+                winnerCandidates = self:CollectPriorityWinnerCandidates(namedRule, responsePriorityCandidates, function(entry, candidate)
                     return entry.playerKey == util:NormalizeKey(candidate.name)
                 end, item.quantity or 1, allRollByName)
             else

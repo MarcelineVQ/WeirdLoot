@@ -40,6 +40,34 @@ local function getTradeScanTooltip()
     return tradeScanTooltip
 end
 
+local function normalizeResponseChoice(choice)
+    if choice == true then
+        return "ms"
+    end
+    if choice == false or choice == nil then
+        return "pass"
+    end
+
+    choice = util:NormalizeKey(choice)
+    if choice == "bis" then
+        return "bis"
+    end
+    if choice == "ms" or choice == "main spec" or choice == "mainspec" or choice == "roll" then
+        return "ms"
+    end
+    if choice == "mu" or choice == "minor upgrade" or choice == "minorupgrade" then
+        return "mu"
+    end
+    if choice == "os" or choice == "off spec" or choice == "offspec" then
+        return "os"
+    end
+    if choice == "tm" or choice == "transmog" then
+        return "tm"
+    end
+
+    return "pass"
+end
+
 local function tooltipHasLine(tooltip, exactText, partialText)
     local lineCount = tooltip:NumLines() or 0
     for index = 1, lineCount do
@@ -299,7 +327,7 @@ function addon:OnBagUpdate()
     return true
 end
 
-function addon:SetPlayerResponse(itemId, playerName, shouldRoll)
+function addon:SetPlayerResponse(itemId, playerName, choice)
     local session = self:GetCurrentSession()
     if self:IsItemLocked(itemId) then
         return false
@@ -307,7 +335,7 @@ function addon:SetPlayerResponse(itemId, playerName, shouldRoll)
     if not session.responses[itemId] then
         session.responses[itemId] = {}
     end
-    session.responses[itemId][util:NormalizeKey(playerName)] = shouldRoll and true or false
+    session.responses[itemId][util:NormalizeKey(playerName)] = normalizeResponseChoice(choice)
     self:TriggerCallback("SESSION_UPDATED")
     return true
 end
@@ -315,7 +343,12 @@ end
 function addon:GetPlayerResponse(itemId, playerName)
     local session = self:GetCurrentSession()
     local responses = session.responses[itemId] or {}
-    return responses[util:NormalizeKey(playerName)] == true
+    return normalizeResponseChoice(responses[util:NormalizeKey(playerName)])
+end
+
+function addon:IsResponseActive(choice)
+    choice = normalizeResponseChoice(choice)
+    return choice ~= "pass"
 end
 
 function addon:GetItemById(itemId)

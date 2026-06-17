@@ -10,16 +10,16 @@ local TAB_LABELS = {
     master = "Loot Master",
 }
 local GROUP_LOOT_TEXTURES = {
-    roll = {
-        up = "Interface\\Buttons\\UI-GroupLoot-Dice-Up",
-        down = "Interface\\Buttons\\UI-GroupLoot-Dice-Down",
-        highlight = "Interface\\Buttons\\UI-GroupLoot-Dice-Highlight",
-    },
-    pass = {
-        up = "Interface\\Buttons\\UI-GroupLoot-Pass-Up",
-        down = "Interface\\Buttons\\UI-GroupLoot-Pass-Down",
-        highlight = "Interface\\Buttons\\UI-GroupLoot-Pass-Highlight",
-    },
+    glow = "Interface\\Buttons\\UI-ActionButton-Border",
+}
+
+local RESPONSE_BUTTONS = {
+    { key = "bis", label = "BiS", width = 30 },
+    { key = "ms", label = "MS", width = 26 },
+    { key = "mu", label = "MU", width = 26 },
+    { key = "os", label = "OS", width = 26 },
+    { key = "tm", label = "TM", width = 26 },
+    { key = "pass", label = "Pass", width = 34 },
 }
 
 local function isItemUsableForPlayer(itemLink)
@@ -212,24 +212,61 @@ local function createButton(parent, text, width, height)
     return button
 end
 
-local function createLootChoiceButton(parent, textures)
-    local button = CreateFrame("CheckButton", nil, parent)
-    button:SetWidth(24)
-    button:SetHeight(24)
-    button:SetNormalTexture(textures.up)
-    button:SetPushedTexture(textures.down)
-    button:SetHighlightTexture(textures.highlight, "ADD")
-    button:SetCheckedTexture(textures.down)
+local function createLootChoiceButton(parent, label, width)
+    local button = CreateFrame("Button", nil, parent)
+    button:SetWidth(width or 28)
+    button:SetHeight(18)
+    button:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8x8",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = false,
+        edgeSize = 10,
+        insets = { left = 2, right = 2, top = 2, bottom = 2 },
+    })
+    button:SetBackdropColor(0.2, 0.06, 0.06, 0.95)
+    button:SetBackdropBorderColor(0.55, 0.38, 0.12, 0.9)
+    button.text = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    button.text:SetPoint("CENTER", button, "CENTER", 0, 0)
+    button.text:SetText(label or "")
+    button.glow = button:CreateTexture(nil, "OVERLAY")
+    button.glow:SetTexture(GROUP_LOOT_TEXTURES.glow)
+    button.glow:SetBlendMode("ADD")
+    button.glow:SetAlpha(0.9)
+    button.glow:SetPoint("CENTER", button, "CENTER", 0, 0)
+    button.glow:SetWidth((width or 28) + 22)
+    button.glow:SetHeight(34)
+    button.glow:Hide()
+    button:SetScript("OnDisable", function(selfButton)
+        selfButton:SetAlpha(0.45)
+    end)
+    button:SetScript("OnEnable", function(selfButton)
+        selfButton:SetAlpha(1)
+    end)
     return button
 end
 
-local function setLootChoiceButtonState(button, shouldRoll)
-    local textures = shouldRoll and GROUP_LOOT_TEXTURES.roll or GROUP_LOOT_TEXTURES.pass
-    button:SetNormalTexture(textures.up)
-    button:SetPushedTexture(textures.down)
-    button:SetHighlightTexture(textures.highlight, "ADD")
-    button:SetCheckedTexture(textures.down)
-    button:SetChecked(shouldRoll and true or false)
+local function setLootChoiceButtonState(button, selected)
+    if not button then
+        return
+    end
+
+    if selected then
+        button.glow:Show()
+        button:SetBackdropColor(0.42, 0.12, 0.12, 0.95)
+        button:SetBackdropBorderColor(1, 0.82, 0.18, 1)
+        button.text:SetTextColor(1, 0.95, 0.7)
+    else
+        button.glow:Hide()
+        button:SetBackdropColor(0.2, 0.06, 0.06, 0.95)
+        button:SetBackdropBorderColor(0.55, 0.38, 0.12, 0.9)
+        button.text:SetTextColor(1, 0.82, 0)
+    end
+end
+
+local function updateLootChoiceButtons(row, selectedChoice)
+    for _, option in ipairs(RESPONSE_BUTTONS) do
+        setLootChoiceButtonState(row.choiceButtons and row.choiceButtons[option.key], selectedChoice == option.key)
+    end
 end
 
 local function createBackdropFrame(name, parent)
@@ -558,17 +595,47 @@ function addon:BuildDetailedExportLogText()
     local blocks = {}
 
     for _, result in ipairs(self.session.results or {}) do
+        local groupedRollers = {
+            bis = {},
+            ms = {},
+            mu = {},
+            os = {},
+            tm = {},
+            pass = {},
+        }
         local lines = {}
         local quantityText = (result.quantity or 1) > 1 and string.format(" x%d", result.quantity or 1) or ""
         lines[#lines + 1] = "Item: " .. (result.itemName or "") .. quantityText
         lines[#lines + 1] = ""
-        lines[#lines + 1] = "All Rollers -"
-        if #(result.allRollerDetails or {}) == 0 then
-            lines[#lines + 1] = "none"
-        else
-            for _, roller in ipairs(result.allRollerDetails or {}) do
-                local rollText = roller.rollText and (" - (" .. roller.rollText .. ")") or ""
-                lines[#lines + 1] = buildPlainCandidateSummary(roller) .. rollText
+
+        for _, roller in ipairs(result.allRollerDetails or {}) do
+            local choice = roller.responseType or "pass"
+            groupedRollers[choice] = groupedRollers[choice] or {}
+            groupedRollers[choice][#groupedRollers[choice] + 1] = roller
+        end
+
+        local groups = {
+            { key = "bis", label = "BiS Rollers:" },
+            { key = "ms", label = "MS Rollers:" },
+            { key = "mu", label = "MU Rollers:" },
+            { key = "os", label = "OS Rollers:" },
+            { key = "tm", label = "TM Rollers:" },
+            { key = "pass", label = "Pass Rollers:" },
+        }
+
+        for groupIndex, group in ipairs(groups) do
+            lines[#lines + 1] = group.label
+            if #(groupedRollers[group.key] or {}) == 0 then
+                lines[#lines + 1] = "none"
+            else
+                for _, roller in ipairs(groupedRollers[group.key]) do
+                    local rollText = roller.rollText and (" - (" .. roller.rollText .. ")") or ""
+                    lines[#lines + 1] = buildPlainCandidateSummary(roller) .. rollText
+                end
+            end
+
+            if groupIndex < #groups then
+                lines[#lines + 1] = ""
             end
         end
 
@@ -674,34 +741,34 @@ function addon:BuildLootTab()
     end)
     panel.headerName = headerName
 
-    local headerChoice = createButton(panel, "Roll", 56, 18)
-    headerChoice:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 336, -12)
+    local headerChoice = createButton(panel, "Roll Type", 112, 18)
+    headerChoice:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 282, -12)
     headerChoice:SetScript("OnClick", function() end)
     panel.headerChoice = headerChoice
 
     local headerType = createButton(panel, "Type", 70, 18)
-    headerType:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 422, -12)
+    headerType:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 472, -12)
     headerType:SetScript("OnClick", function()
         addon:SetLootSortMode("type")
     end)
     panel.headerType = headerType
 
     local headerSlot = createButton(panel, "Slot", 62, 18)
-    headerSlot:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 500, -12)
+    headerSlot:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 550, -12)
     headerSlot:SetScript("OnClick", function()
         addon:SetLootSortMode("slot")
     end)
     panel.headerSlot = headerSlot
 
     local headerInfo = createButton(panel, "Info", 78, 18)
-    headerInfo:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 570, -12)
+    headerInfo:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 620, -12)
     headerInfo:SetScript("OnClick", function()
         addon:SetLootSortMode("info")
     end)
     panel.headerInfo = headerInfo
 
     local headerRollers = createButton(panel, "Rollers", 80, 18)
-    headerRollers:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 828, -12)
+    headerRollers:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 846, -12)
     headerRollers:SetScript("OnClick", function() end)
     panel.headerRollers = headerRollers
 
@@ -714,39 +781,48 @@ function addon:BuildLootTab()
         row.icon:SetPoint("LEFT", row, "LEFT", 4, 0)
 
         row.name = createLabel(row, "", "LEFT", row.icon, "RIGHT", 8, 0)
-        row.name:SetWidth(292)
+        row.name:SetWidth(228)
 
-        row.choice = createLootChoiceButton(row, GROUP_LOOT_TEXTURES.pass)
-        row.choice:SetPoint("LEFT", row, "LEFT", 344, 0)
-        row.choice:SetScript("OnClick", function(button)
-            if not row.item then
-                return
+        row.choiceButtons = {}
+        local previousButton
+        for _, option in ipairs(RESPONSE_BUTTONS) do
+            local responseButton = createLootChoiceButton(row, option.label, option.width)
+            if not previousButton then
+                responseButton:SetPoint("LEFT", row, "LEFT", 256, 0)
+            else
+                responseButton:SetPoint("LEFT", previousButton, "RIGHT", 2, 0)
             end
-            if addon:IsItemLocked(row.item.id) then
-                addon:Print("That loot is locked. Ask the loot master to unlock it before changing rolls.")
-                return
-            end
+            responseButton:SetScript("OnClick", function()
+                if not row.item then
+                    return
+                end
+                if addon:IsItemLocked(row.item.id) then
+                    addon:Print("That loot is locked. Ask the loot master to unlock it before changing rolls.")
+                    return
+                end
 
-            local playerName = util:GetPlayerName("player")
-            local shouldRoll = not addon:GetPlayerResponse(row.item.id, playerName)
-            if not addon:SetPlayerResponse(row.item.id, playerName, shouldRoll) then
-                return
-            end
-            addon:BroadcastSelectionState(row.item.id, playerName, shouldRoll)
-            addon:SendSelection(row.item.id, shouldRoll)
-            setLootChoiceButtonState(button, shouldRoll)
-        end)
+                local playerName = util:GetPlayerName("player")
+                if not addon:SetPlayerResponse(row.item.id, playerName, option.key) then
+                    return
+                end
+                addon:BroadcastSelectionState(row.item.id, playerName, option.key)
+                addon:SendSelection(row.item.id, option.key)
+                updateLootChoiceButtons(row, option.key)
+            end)
+            row.choiceButtons[option.key] = responseButton
+            previousButton = responseButton
+        end
 
-        row.itemType = createLabel(row, "", "LEFT", row, "LEFT", 422, 0)
+        row.itemType = createLabel(row, "", "LEFT", row, "LEFT", 472, 0)
         row.itemType:SetWidth(72)
 
-        row.itemSlot = createLabel(row, "", "LEFT", row, "LEFT", 500, 0)
+        row.itemSlot = createLabel(row, "", "LEFT", row, "LEFT", 550, 0)
         row.itemSlot:SetWidth(64)
 
-        row.info = createLabel(row, "", "LEFT", row, "LEFT", 570, 0)
-        row.info:SetWidth(222)
+        row.info = createLabel(row, "", "LEFT", row, "LEFT", 620, 0)
+        row.info:SetWidth(216)
 
-        row.state = createLabel(row, "", "LEFT", row, "LEFT", 836, 0)
+        row.state = createLabel(row, "", "LEFT", row, "LEFT", 846, 0)
         row.state:SetWidth(72)
         row.state:SetJustifyH("LEFT")
         row.stateHitbox = CreateFrame("Frame", nil, row)
@@ -759,13 +835,14 @@ function addon:BuildLootTab()
             end
 
             local rollers = {}
-            for playerKey, shouldRoll in pairs(addon.session.responses[row.item.id] or {}) do
-                if shouldRoll then
+            for playerKey, choice in pairs(addon.session.responses[row.item.id] or {}) do
+                if addon:IsResponseActive(choice) then
                     local attendee = addon:GetAttendee(playerKey) or addon:GetRosterProfile(playerKey)
                     rollers[#rollers + 1] = {
                         name = attendee and attendee.name or playerKey,
                         className = attendee and attendee.className or "",
                         specName = attendee and attendee.specName or "",
+                        responseType = addon:GetPlayerResponse(row.item.id, playerKey),
                     }
                 end
             end
@@ -787,8 +864,11 @@ function addon:BuildLootTab()
                     local classSpec = string.trim((roller.className or "") .. " " .. (roller.specName or ""))
                     local colorCode = util:GetClassColorCode(roller.className)
                     local line = colorCode .. (roller.name or "") .. "|r"
+                    local responseLabel = string.upper(roller.responseType or "pass")
                     if classSpec ~= "" then
-                        line = line .. " " .. colorCode .. "- " .. classSpec .. "|r"
+                        line = line .. " " .. colorCode .. "- " .. classSpec .. " - " .. responseLabel .. "|r"
+                    else
+                        line = line .. " " .. colorCode .. "- " .. responseLabel .. "|r"
                     end
                     GameTooltip:AddLine(line, 1, 1, 1)
                 end
@@ -1267,12 +1347,16 @@ function addon:RefreshLootTab()
         end
         row.name:SetText(itemText)
 
-        local shouldRoll = self:GetPlayerResponse(item.id, playerName)
-        setLootChoiceButtonState(row.choice, shouldRoll)
+        local responseChoice = self:GetPlayerResponse(item.id, playerName)
+        updateLootChoiceButtons(row, responseChoice)
         if self:IsItemLocked(item.id) then
-            row.choice:Disable()
+            for _, option in ipairs(RESPONSE_BUTTONS) do
+                row.choiceButtons[option.key]:Disable()
+            end
         else
-            row.choice:Enable()
+            for _, option in ipairs(RESPONSE_BUTTONS) do
+                row.choiceButtons[option.key]:Enable()
+            end
         end
         local typeText, slotText = getLootItemColumns(item.link)
         row.itemType:SetText(typeText)
@@ -1280,8 +1364,8 @@ function addon:RefreshLootTab()
         row.info:SetText(getLootItemInfoText(item))
 
         local rollCount = 0
-        for _, shouldPlayerRoll in pairs(self.session.responses[item.id] or {}) do
-            if shouldPlayerRoll then
+        for _, choice in pairs(self.session.responses[item.id] or {}) do
+            if self:IsResponseActive(choice) then
                 rollCount = rollCount + 1
             end
         end

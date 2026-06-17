@@ -83,8 +83,8 @@ function addon:BroadcastSession()
     }, "RAID")
 
     for itemId, responses in pairs(session.responses or {}) do
-        for playerKey, shouldRoll in pairs(responses) do
-            self:BroadcastSelectionState(itemId, playerKey, shouldRoll)
+        for playerKey, choice in pairs(responses) do
+            self:BroadcastSelectionState(itemId, playerKey, choice)
         end
     end
 
@@ -170,7 +170,7 @@ function addon:BroadcastResults(results)
     self:SendLargeMessage("RESULTS_DONE", { session.id or "" }, "RAID")
 end
 
-function addon:BroadcastSelectionState(itemId, playerName, shouldRoll)
+function addon:BroadcastSelectionState(itemId, playerName, choice)
     local session = self:GetCurrentSession()
     if not self:IsAuthorizedLootMaster() or not session.id then
         return
@@ -180,11 +180,11 @@ function addon:BroadcastSelectionState(itemId, playerName, shouldRoll)
         session.id or "",
         itemId or "",
         playerName or "",
-        shouldRoll and "1" or "0",
+        choice or "pass",
     }, "RAID")
 end
 
-function addon:SendSelection(itemId, shouldRoll)
+function addon:SendSelection(itemId, choice)
     local session = self:GetCurrentSession()
     if not session.id then
         return
@@ -204,7 +204,7 @@ function addon:SendSelection(itemId, shouldRoll)
         session.id,
         itemId,
         playerName or "",
-        shouldRoll and "1" or "0",
+        choice or "pass",
     }, "WHISPER", lootMasterName)
 end
 
@@ -316,7 +316,7 @@ function addon:HandleCommMessage(sender, logical)
                 self.session.responses[item.id] = {}
             end
             if self.session.responses[item.id][util:NormalizeKey(playerName or "")] == nil then
-                self.session.responses[item.id][util:NormalizeKey(playerName or "")] = false
+                self.session.responses[item.id][util:NormalizeKey(playerName or "")] = "pass"
             end
         end
         self:TriggerCallback("SESSION_UPDATED")
@@ -324,11 +324,11 @@ function addon:HandleCommMessage(sender, logical)
         if not self:IsAuthorizedLootMaster() then
             return
         end
-        if self:SetPlayerResponse(fields[2], fields[3], fields[4] == "1") then
-            self:BroadcastSelectionState(fields[2], fields[3], fields[4] == "1")
+        if self:SetPlayerResponse(fields[2], fields[3], fields[4]) then
+            self:BroadcastSelectionState(fields[2], fields[3], fields[4])
         end
     elseif command == "SELECTION_SYNC" then
-        self:SetPlayerResponse(fields[2], fields[3], fields[4] == "1")
+        self:SetPlayerResponse(fields[2], fields[3], fields[4])
     elseif command == "REQUEST_SESSION_SYNC" then
         if not self:IsAuthorizedLootMaster() then
             return
