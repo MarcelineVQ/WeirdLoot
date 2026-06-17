@@ -137,6 +137,57 @@ function addon:IsCandidateNamedForItem(namedRule, candidateName)
     return false
 end
 
+function addon:FindMatchingNamedTier(rule, candidates)
+    if not rule or not rule.tiers then
+        return nil, candidates, false
+    end
+
+    for _, tier in ipairs(rule.tiers) do
+        local survivors = {}
+        local matchedKeys = {}
+        local hasLootCouncil = false
+
+        for _, entry in ipairs(tier.entries or {}) do
+            if entry.isLootCouncil then
+                hasLootCouncil = true
+            elseif not entry.isRest then
+                for _, candidate in ipairs(candidates or {}) do
+                    local candidateKey = util:NormalizeKey(candidate.name)
+                    if not matchedKeys[candidateKey] and entry.playerKey == candidateKey then
+                        survivors[#survivors + 1] = candidate
+                        matchedKeys[candidateKey] = true
+                    end
+                end
+            end
+        end
+
+        if #survivors > 0 then
+            return tier, survivors, false
+        end
+
+        if hasLootCouncil then
+            return tier, candidates, true
+        end
+    end
+
+    return nil, candidates, false
+end
+
+local function formatPlainCandidateNames(candidates)
+    local names = {}
+    for _, candidate in ipairs(candidates or {}) do
+        if candidate.name and candidate.name ~= "" then
+            names[#names + 1] = candidate.name
+        end
+    end
+
+    if #names == 0 then
+        return "none"
+    end
+
+    return table.concat(names, ", ")
+end
+
 function addon:BuildResultDetail(result)
     local lines = {}
     local quantityText = (result.quantity or 1) > 1 and string.format(" x%d", result.quantity or 1) or ""
@@ -172,7 +223,9 @@ function addon:BuildResultDetail(result)
 
     lines[#lines + 1] = ""
     lines[#lines + 1] = "Winner:"
-    if #(result.winnerDetails or {}) == 0 then
+    if result.isLootCouncil then
+        lines[#lines + 1] = "Loot Council"
+    elseif #(result.winnerDetails or {}) == 0 then
         lines[#lines + 1] = "No winner"
     else
         for _, winner in ipairs(result.winnerDetails or {}) do
@@ -233,6 +286,38 @@ function addon:BuildResultRecord(item, allRollerNames, allRollerDetails, lcNames
     return result
 end
 
+function addon:BuildLootCouncilResultRecord(item, allRollerNames, allRollerDetails, lcNamesText, specPriorityText, statusRank, prioritizedNames)
+    local result = {
+        itemId = item.id,
+        itemName = item.name,
+        itemLink = item.link,
+        itemIcon = item.icon,
+        quantity = item.quantity or 1,
+        allRollers = allRollerNames,
+        allRollerDetails = allRollerDetails or {},
+        lcNamesText = lcNamesText,
+        specPriorityText = specPriorityText,
+        statusTierText = statusRank == 3 and "Main" or (statusRank == 2 and "Designated Alt" or "Nil"),
+        prioritizedNames = prioritizedNames or {},
+        finalRolls = {},
+        rollDetails = {},
+        winnerDetails = {},
+        winners = {},
+        winnersText = "Loot Council",
+        winner = "No winner",
+        locked = true,
+        isLootCouncil = true,
+    }
+
+    if (item.quantity or 1) >= 2 then
+        result.summary = string.format("%s x%d -> Loot Council", item.name or "Item", item.quantity or 1)
+    else
+        result.summary = string.format("%s -> Loot Council", item.name or "Item")
+    end
+    result.detailText = self:BuildResultDetail(result)
+    return result
+end
+
 function addon:ProcessLoot()
     if not self:IsAuthorizedLootMaster() then
         self:Print("Only the loot master can process loot.")
@@ -272,11 +357,42 @@ function addon:ProcessLoot()
         local namedRule = self:GetNamedRule(item.name)
         local lootRule = self:GetLootRule(item.name)
 
-        local namedTier, prioritized = self:FindMatchingTier(namedRule, rollers, function(entry, candidate)
-            return entry.playerKey == util:NormalizeKey(candidate.name)
-        end)
+        local namedTier, prioritized, isLootCouncil = self:FindMatchingNamedTier(namedRule, rollers)
 
-        if not namedTier and lootRule then
+        if isLootCouncil then
+            local councilCandidates = prioritized
+            local prioritizedNames = {}
+            local rank = 0
+
+            if lootRule then
+                local lootTier
+                lootTier, councilCandidates = self:FindMatchingTier(lootRule, councilCandidates, function(entry, candidate)
+                    local keyA = util:NormalizeKey((candidate.className or "") .. " " .. (candidate.specName or ""))
+                    local keyB = util:NormalizeKey((candidate.specName or "") .. " " .. (candidate.className or ""))
+                    for _, key in ipairs(entry.matchKeys or {}) do
+                        if key ~= "" and (key == keyA or key == keyB) then
+                            return true
+                        end
+                    end
+                    return false
+                end)
+            end
+
+            councilCandidates, rank = self:FilterByStatus(councilCandidates)
+            for _, player in ipairs(councilCandidates) do
+                prioritizedNames[#prioritizedNames + 1] = player.name
+            end
+
+            results[#results + 1] = self:BuildLootCouncilResultRecord(
+                item,
+                allRollerNames,
+                allRollerDetails,
+                formatPlainCandidateNames(councilCandidates),
+                lootRule and lootRule.raw or nil,
+                rank,
+                prioritizedNames
+            )
+        elseif not namedTier and lootRule then
             local lootTier
             lootTier, prioritized = self:FindMatchingTier(lootRule, prioritized, function(entry, candidate)
                 local keyA = util:NormalizeKey((candidate.className or "") .. " " .. (candidate.specName or ""))
@@ -334,7 +450,7 @@ function addon:ProcessLoot()
                 item,
                 allRollerNames,
                 allRollerDetails,
-                namedRule and namedRule.raw or nil,
+                namedTier and namedTier.raw or nil,
                 lootRule and lootRule.raw or nil,
                 rank,
                 prioritizedNames,
@@ -388,7 +504,7 @@ function addon:ProcessLoot()
                 item,
                 allRollerNames,
                 allRollerDetails,
-                namedRule and namedRule.raw or nil,
+                namedTier and namedTier.raw or nil,
                 lootRule and lootRule.raw or nil,
                 rank,
                 prioritizedNames,

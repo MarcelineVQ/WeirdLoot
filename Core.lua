@@ -138,9 +138,31 @@ local defaultLootPriorityText = table.concat({
     "strong-handed ring, warlock demonology > warlock affliction > rest",
 }, "\n")
 
-local defaultNamedItemsText = table.concat({
+local legacyDefaultNamedItemsText = table.concat({
     "gemmed wand of the nerubians, volcker > volckur > rest",
     "strong-handed ring, volckur > volcker > rest",
+}, "\n")
+
+local defaultNamedItemsText = table.concat({
+    "Ruthlessness, Zenkahi > Sweezy / Mitsuki > LC",
+    "Dying Curse, Lexissa > Zannahdee / Friendhelper / Scarletrage > LC",
+    "Grim Toll, Styrza > Nitt / Notdewbie",
+    "Strong-Handed Ring, Tumtum / Nitt / Notdewbie / Rigul",
+    "The Turning Tide, Volckerr > Zannahdee > Dezmar > LC",
+    "Angry Dread, Zenkahi > Runereaver > LC",
+    "Heroic Key to the Focusing Iris, Zenkahi / Helvi > LC",
+    "Drape of the Deadly Foe, Nitt / Tumtum > Rigul > LC",
+    "Signet of Manifested Pain, Aest > Illithris > LC",
+    "Betrayer of Humanity, Dehumanizing / Iseut > Styrza / Zaneran > LC",
+    "Torch of Holy Fire, Stickboard > Helvi > LC",
+    "Voice of Reason, Shapiffany > Illithris > LC",
+    "Fury of the Five Flights, Mitsuki / Nothara > Nitt / Valamas / Notdewbie > LC",
+    "Illustration of the Dragon Soul, Uzragol / Dezmar > Bisket / Fellera / Volckerr",
+    "Pennant Cloak, Cfg > Aest / Zannahdee > Friendhelper > LC",
+    "Unsullied Cuffs, Lexissa / Aest > Cfg / Scozetti / Volckerr > LC",
+    "Obsidian Greathelm, Sweezy / Valamas > LC",
+    "Leash of Heedless Magic, Lexissa / Scarletrage / Kleedus > Dezmar > LC",
+    "Frosted Adroit Handguards, Mitsuki > Iseut > LC",
 }, "\n")
 
 local function onEvent(self, event, ...)
@@ -207,6 +229,13 @@ function addon:PLAYER_LOGIN()
         activeSession = nil,
         history = {},
     })
+
+    if WeirdLootDB and WeirdLootDB.config then
+        local namedItemsText = WeirdLootDB.config.namedItemsText or ""
+        if namedItemsText == "" or namedItemsText == legacyDefaultNamedItemsText then
+            WeirdLootDB.config.namedItemsText = defaultNamedItemsText
+        end
+    end
 
     self.db = WeirdLootDB
     self.sessionDb = WeirdLootSessionDB

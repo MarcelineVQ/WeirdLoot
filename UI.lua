@@ -517,6 +517,8 @@ function addon:BuildWinnersExportText()
             for _, winnerName in ipairs(result.winners) do
                 lines[#lines + 1] = string.format("%s\t%s", itemName, winnerName or "")
             end
+        elseif result.isLootCouncil then
+            lines[#lines + 1] = string.format("%s\t%s", itemName, "Loot Council")
         else
             lines[#lines + 1] = string.format("%s\t%s", itemName, "No winner")
         end
@@ -567,7 +569,9 @@ function addon:BuildDetailedExportLogText()
 
         lines[#lines + 1] = ""
         lines[#lines + 1] = "Winner:"
-        if #(result.winnerDetails or {}) == 0 then
+        if result.isLootCouncil then
+            lines[#lines + 1] = "Loot Council"
+        elseif #(result.winnerDetails or {}) == 0 then
             lines[#lines + 1] = "No winner"
         else
             for _, winner in ipairs(result.winnerDetails or {}) do

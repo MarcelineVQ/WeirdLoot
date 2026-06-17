@@ -162,7 +162,7 @@ function addon:BroadcastResults(results)
             result.itemName or "",
             result.itemLink or "",
             tostring(result.quantity or 1),
-            result.winner or "",
+            result.winnersText or result.winner or "",
             result.summary or "",
             result.detailText or "",
         }, "RAID")

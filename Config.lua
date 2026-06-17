@@ -685,6 +685,12 @@ function addon:ParseNamedToken(token)
     if token == "" then
         return nil
     end
+    if token == "lc" or token == "loot council" then
+        return {
+            isLootCouncil = true,
+            raw = "LC",
+        }
+    end
     if token == "rest" then
         return {
             isRest = true,
