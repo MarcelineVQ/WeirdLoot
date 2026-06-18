@@ -509,6 +509,13 @@ function addon:BuildBottomTabs()
         self.ui.tabs[key] = tab
         previous = tab
     end
+
+    local versionLabel = self.ui.frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    versionLabel:SetPoint("BOTTOMRIGHT", self.ui.frame, "BOTTOMRIGHT", -16, 18)
+    versionLabel:SetWidth(120)
+    versionLabel:SetJustifyH("RIGHT")
+    versionLabel:SetText("v" .. tostring(addon.version or "1.0"))
+    self.ui.versionLabel = versionLabel
 end
 
 function addon:SelectTab(tabKey)
