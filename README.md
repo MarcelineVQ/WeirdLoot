@@ -43,6 +43,15 @@ WeirdLoot is a World of Warcraft 3.3.5a addon for Wrath-era raid loot handling. 
 - Players are shown with class, spec, status, and whether they came from the saved roster or only from the live raid.
 - The addon tracks loot authority robustly across raid, party, master-loot, and leadership-fallback cases.
 
+### Importing roster and named items
+
+- The Loot Master tab includes `Import Roster` and `Import Named Items` buttons.
+- Each button opens an editable paste window where the loot master can paste a full weekly list and save it directly into WeirdLoot.
+- `Import Roster` expects one raider per line in the format `name, class spec, status`.
+- `Import Named Items` expects one item per line in the format `item name, player > player / player > LC`.
+- Saving an import updates the loot master's saved configuration immediately, including the normalized roster and named-item rule maps used by the resolver.
+- For actual loot decisions, the loot master's imported config is the authoritative source of truth.
+
 ### Loot results and exports
 
 - The Loot Results tab stores processed items, winners, and detailed reasoning.
