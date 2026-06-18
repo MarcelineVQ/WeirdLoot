@@ -386,11 +386,12 @@ local function formatSpecPriorityDisplay(specPriorityText)
             if string.find(tierText, "/", 1, true) then
                 local formattedEntries = {}
                 for _, entryText in ipairs(util:Split(tierText, "/")) do
-                    formattedEntries[#formattedEntries + 1] = util:TitleCaseWords(string.trim(entryText))
+                    entryText = string.trim(entryText)
+                    formattedEntries[#formattedEntries + 1] = util:NormalizeKey(entryText) == "lc" and "LC" or util:TitleCaseWords(entryText)
                 end
                 tiers[#tiers + 1] = table.concat(formattedEntries, " / ")
             else
-                tiers[#tiers + 1] = util:TitleCaseWords(tierText)
+                tiers[#tiers + 1] = util:NormalizeKey(tierText) == "lc" and "LC" or util:TitleCaseWords(tierText)
             end
         end
     end
@@ -687,7 +688,7 @@ function addon:BuildDetailedExportLogText()
         else
             for _, roll in ipairs(result.rollDetails or {}) do
                 local rollValue = roll.auto and "AUTO" or tostring(roll.roll or "")
-                local namedText = roll.isNamed and " - Named" or ""
+                local namedText = roll.isNamed and " - LC" or ""
                 lines[#lines + 1] = string.format("%s - (%s)%s", buildPlainCandidateSummary(roll), rollValue, namedText)
             end
         end
