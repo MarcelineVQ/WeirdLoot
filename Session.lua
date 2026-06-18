@@ -19,12 +19,34 @@ local function buildSessionState(ownerKey)
         results = {},
         lockedItems = {},
         pendingLinks = {},
-        lootWindowHints = {},
-        lootWindowItems = {},
-        pendingHintedRolls = {},
-        recentAddedLinks = {},
         attendees = {},
     }
+end
+
+-- Quality from the item link's colour code. ALWAYS prefer this: the link colour is consistent,
+-- whereas GetContainerItemInfo's quality field is unreliable on 3.3.5a -- it spuriously returns
+-- -1 even for known, fully-cached items (observed on tier tokens AND Hearthstone, which is always
+-- cached), so it is NOT just a cache-miss sentinel, the API simply returns garbage at times.
+-- The API value is only used as a last resort when there's no link to read a colour from.
+local qualityByHex
+local function resolveQuality(link, apiQuality)
+    if link then
+        if not qualityByHex then
+            qualityByHex = {}
+            if ITEM_QUALITY_COLORS then
+                -- poor(0) through legendary(5) only; artifact/heirloom aren't raid loot.
+                for quality, info in pairs(ITEM_QUALITY_COLORS) do
+                    if quality >= 0 and quality <= 5 and info and info.hex then
+                        qualityByHex[string.lower(info.hex)] = quality
+                    end
+                end
+            end
+        end
+        local hex = string.match(link, "^(|c%x%x%x%x%x%x%x%x)")
+        local q = hex and qualityByHex[string.lower(hex)]
+        if q then return q end
+    end
+    return apiQuality
 end
 
 local function getTradeScanTooltip()
@@ -100,6 +122,7 @@ end
 
 local function getBagItemCountAndQuality(bag, slot, link)
     local _, count, _, quality = GetContainerItemInfo(bag, slot)
+    quality = resolveQuality(link, quality)
     if not quality and link and link ~= "" then
         quality = select(3, GetItemInfo(link))
     end
@@ -133,29 +156,6 @@ function addon:InitializeSession()
     self.session.ownerKey = ownerKey
     self.session.lockedItems = self.session.lockedItems or {}
     self.session.pendingLinks = self.session.pendingLinks or {}
-    self.session.lootWindowHints = self.session.lootWindowHints or {}
-    self.session.lootWindowItems = self.session.lootWindowItems or {}
-    self.session.pendingHintedRolls = self.session.pendingHintedRolls or {}
-    self.session.recentAddedLinks = self.session.recentAddedLinks or {}
-end
-
-function addon:HintLootWindowItem(link, count, name, icon)
-    if not self.session or not self.session.active then
-        return
-    end
-    if not link or link == "" then
-        return
-    end
-
-    self.session.lootWindowHints = self.session.lootWindowHints or {}
-    self.session.lootWindowHints[link] = (self.session.lootWindowHints[link] or 0) + (count or 1)
-    self.session.lootWindowItems = self.session.lootWindowItems or {}
-    self.session.lootWindowItems[link] = {
-        name = name or link,
-        icon = icon or "Interface\\Icons\\INV_Misc_QuestionMark",
-    }
-    self.session.pendingHintedRolls = self.session.pendingHintedRolls or {}
-    self.session.pendingHintedRolls[link] = true
 end
 
 function addon:BuildBagSnapshot()
@@ -292,10 +292,6 @@ function addon:StartLootSession()
     self.session.results = {}
     self.session.lockedItems = {}
     self.session.pendingLinks = {}
-    self.session.lootWindowHints = {}
-    self.session.lootWindowItems = {}
-    self.session.pendingHintedRolls = {}
-    self.session.recentAddedLinks = {}
     self.session.attendees = util:CloneTable(self:GetAttendees())
 
     self.sessionDb.history = self.sessionDb.history or {}
@@ -321,10 +317,6 @@ function addon:ClearSession()
     self.session.results = {}
     self.session.lockedItems = {}
     self.session.pendingLinks = {}
-    self.session.lootWindowHints = {}
-    self.session.lootWindowItems = {}
-    self.session.pendingHintedRolls = {}
-    self.session.recentAddedLinks = {}
     self:TriggerCallback("SESSION_UPDATED")
 end
 
@@ -349,34 +341,16 @@ function addon:BuildSessionItemList(includeAllEpics)
     end
 
     local tradeableCounts = self:BuildTradeableEpicCounts()
-    local hintedCounts = session.lootWindowHints or {}
-    local hintedItems = session.lootWindowItems or {}
-    local recentAddedLinks = session.recentAddedLinks or {}
-    local allLinks = {}
     local sortedLinks = {}
-    for link in pairs(currentSnapshot) do
-        allLinks[link] = true
-    end
-    for link in pairs(hintedCounts) do
-        allLinks[link] = true
-    end
-
-    for link in pairs(allLinks) do
-        local totalCount = math.max(currentSnapshot[link] or 0, hintedCounts[link] or 0)
-        local eligibleCount
-        if includeAllEpics then
-            eligibleCount = totalCount
-        else
-            eligibleCount = math.max(tradeableCounts[link] or 0, hintedCounts[link] or 0, recentAddedLinks[link] and totalCount or 0)
-        end
+    for link, totalCount in pairs(currentSnapshot) do
+        local eligibleCount = includeAllEpics and totalCount or (tradeableCounts[link] or 0)
         if eligibleCount > 0 then
             local itemName, _, quality, _, _, _, _, _, _, texture = GetItemInfo(link)
-            local hintedItem = hintedItems[link] or {}
             sortedLinks[#sortedLinks + 1] = {
                 link = link,
                 count = math.min(totalCount, eligibleCount),
-                name = itemName or hintedItem.name or link,
-                icon = texture or hintedItem.icon or "Interface\\Icons\\INV_Misc_QuestionMark",
+                name = itemName or link,
+                icon = texture or "Interface\\Icons\\INV_Misc_QuestionMark",
             }
         end
     end
@@ -467,11 +441,6 @@ function addon:OnBagUpdate()
         end
     end
 
-    session.recentAddedLinks = {}
-    for link in pairs(added) do
-        session.recentAddedLinks[link] = true
-    end
-
     session.currentSnapshot = currentSnapshot
     if not anyAdded then
         return false
@@ -484,7 +453,6 @@ function addon:OnBagUpdate()
     end
 
     -- newly-arrived loot auto-starts a live roll (loot-master only, gated inside)
-    self:AutoRollHintedItems()
     self:AutoRollAddedItems(added)
     return true
 end
