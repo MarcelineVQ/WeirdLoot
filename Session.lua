@@ -120,6 +120,28 @@ local function tooltipHasLine(tooltip, exactText, partialText)
     return false
 end
 
+local function getBagItemCountAndQuality(bag, slot, link)
+    local _, count, _, quality = GetContainerItemInfo(bag, slot)
+    quality = resolveQuality(link, quality)
+    if not quality and link and link ~= "" then
+        quality = select(3, GetItemInfo(link))
+    end
+    return count or 0, quality
+end
+
+local function getItemNameFromLink(link)
+    if not link or link == "" then
+        return nil
+    end
+
+    local itemName = GetItemInfo(link)
+    if itemName and itemName ~= "" then
+        return itemName
+    end
+
+    return string.match(link, "%[(.+)%]")
+end
+
 function addon:InitializeSession()
     local ownerKey = self:GetSessionOwnerKey()
     self.sessionDb.activeSessions = self.sessionDb.activeSessions or {}
@@ -144,15 +166,35 @@ function addon:BuildBagSnapshot()
         local slots = GetContainerNumSlots(bag) or 0
         for slot = 1, slots do
             local link = GetContainerItemLink(bag, slot)
-            local _, count, _, quality = GetContainerItemInfo(bag, slot)
-            quality = resolveQuality(link, quality)
-            if link and count and quality and quality >= minQuality then
+            local count, quality = getBagItemCountAndQuality(bag, slot, link)
+            if link and count > 0 and quality and quality >= minQuality then
                 snapshot[link] = (snapshot[link] or 0) + count
             end
         end
     end
 
     return snapshot
+end
+
+function addon:BuildManualScanCounts()
+    local counts = {}
+    local minQuality = (self.db and self.db.testMode) and 0 or 4
+
+    for bag = 0, MAX_BAG_ID do
+        local slots = GetContainerNumSlots(bag) or 0
+        for slot = 1, slots do
+            local link = GetContainerItemLink(bag, slot)
+            local count, quality = getBagItemCountAndQuality(bag, slot, link)
+            local itemName = getItemNameFromLink(link)
+            local isKnownLoot = itemName and self:GetItemInfoEntry(itemName)
+
+            if link and count > 0 and ((quality and quality >= minQuality) or isKnownLoot) then
+                counts[link] = (counts[link] or 0) + count
+            end
+        end
+    end
+
+    return counts
 end
 
 function addon:HasAddedEpicLoot(currentSnapshot)
@@ -178,9 +220,8 @@ function addon:BuildTradeableEpicCounts()
         local slots = GetContainerNumSlots(bag) or 0
         for slot = 1, slots do
             local link = GetContainerItemLink(bag, slot)
-            local _, count, _, quality = GetContainerItemInfo(bag, slot)
-            quality = resolveQuality(link, quality)
-            if testMode and link and count and quality and quality >= minQuality then
+            local count, quality = getBagItemCountAndQuality(bag, slot, link)
+            if testMode and link and count > 0 and quality and quality >= minQuality then
                 -- city testing: any bag item is eligible EXCEPT soulbound ones (those
                 -- can't be traded). A trade-window item is soulbound but tradeable, so
                 -- still allow it.
@@ -193,7 +234,7 @@ function addon:BuildTradeableEpicCounts()
                 if (not soulbound) or tradeWindow then
                     counts[link] = (counts[link] or 0) + count
                 end
-            elseif link and count and quality and quality >= minQuality then
+            elseif link and count > 0 and quality and quality >= minQuality then
                 local bindType = select(14, GetItemInfo(link))
                 local isBindOnEquip = bindType == 2
                 local isTemporarilyTradeable = false
@@ -289,7 +330,7 @@ function addon:BuildSessionItemList(includeAllEpics)
         return {}
     end
 
-    local currentSnapshot = self:BuildBagSnapshot()
+    local currentSnapshot = includeAllEpics and self:BuildManualScanCounts() or self:BuildBagSnapshot()
     -- Do NOT clobber the delta baseline here. At login the bags may not be fully loaded,
     -- so storing this partial scan as session.currentSnapshot makes the next BAG_UPDATE
     -- diff the real bag against an empty baseline and auto-roll already-present loot. The
@@ -302,7 +343,7 @@ function addon:BuildSessionItemList(includeAllEpics)
     local tradeableCounts = self:BuildTradeableEpicCounts()
     local sortedLinks = {}
     for link, totalCount in pairs(currentSnapshot) do
-        local eligibleCount = tradeableCounts[link] or 0
+        local eligibleCount = includeAllEpics and totalCount or (tradeableCounts[link] or 0)
         if eligibleCount > 0 then
             local itemName, _, quality, _, _, _, _, _, _, texture = GetItemInfo(link)
             sortedLinks[#sortedLinks + 1] = {
