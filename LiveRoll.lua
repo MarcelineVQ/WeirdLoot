@@ -143,6 +143,57 @@ local function formatLootRuleDisplay(rule)
     return table.concat(tiers, " > ")
 end
 
+local function formatNamedRuleEntry(entry)
+    if not entry then
+        return ""
+    end
+    if entry.isLootCouncil then
+        return "LC"
+    end
+    if entry.isRest then
+        return "Rest"
+    end
+
+    local playerName = entry.raw or ""
+    local profile = addon.GetRosterProfile and addon:GetRosterProfile(playerName) or nil
+    local classColor = util:GetClassColorCode(profile and profile.className) or "|cffffffff"
+    return classColor .. util:TitleCaseWords(playerName) .. "|r"
+end
+
+local function formatNamedRuleDisplay(rule)
+    if not rule or not rule.tiers then
+        return nil
+    end
+
+    local tiers = {}
+    local hasLootCouncil = false
+    for _, tier in ipairs(rule.tiers) do
+        local entries = {}
+        for _, entry in ipairs(tier.entries or {}) do
+            if entry.isLootCouncil then
+                hasLootCouncil = true
+            end
+            local formatted = formatNamedRuleEntry(entry)
+            if formatted ~= "" and not entry.isLootCouncil then
+                entries[#entries + 1] = formatted
+            end
+        end
+        if #entries > 0 then
+            tiers[#tiers + 1] = table.concat(entries, " / ")
+        end
+    end
+
+    if hasLootCouncil then
+        tiers[#tiers + 1] = "LC"
+    end
+
+    if #tiers == 0 then
+        return nil
+    end
+
+    return table.concat(tiers, " > ")
+end
+
 local function highlightInterestButton(f, tier)
     for key, btn in pairs(interestButtons(f)) do
         if btn then
@@ -339,7 +390,7 @@ function addon:ShowInterestPopup(roll)
     f.icon:SetTexture(roll.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
     f.itemLink = roll.link
     f.name:SetText(roll.link ~= "" and roll.link or roll.name or "Item")
-    f.sub:SetText("|cff88ccffPrio:|r " .. ((roll.prio and roll.prio ~= "") and roll.prio or "BiS > MS > MU > OS > TM"))
+    f.sub:SetText("|cffffffffPrio:|r " .. ((roll.prio and roll.prio ~= "") and roll.prio or "BiS > MS > MU > OS > TM"))
     f.okBtn:Hide()
 
     f.bisBtn:Show(); f.msBtn:Show(); f.muBtn:Show(); f.osBtn:Show(); f.tmBtn:Show(); f.passBtn:Show()
@@ -450,7 +501,7 @@ function addon:ShowPendingPopup(item, slot)
     f.icon:SetTexture(item.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
     f.itemLink = link
     f.name:SetText(link)
-    f.sub:SetText("|cff88ccffPrio:|r " .. (self:GetLiveItemPrio(item) or "BiS > MS > MU > OS > TM"))
+    f.sub:SetText("|cffffffffPrio:|r " .. (self:GetLiveItemPrio(item) or "BiS > MS > MU > OS > TM"))
     f.count:Hide()
 
     f.bisBtn:Hide(); f.msBtn:Hide(); f.muBtn:Hide(); f.osBtn:Hide(); f.tmBtn:Hide(); f.passBtn:Hide(); f.okBtn:Hide()
@@ -573,9 +624,12 @@ function addon:GetLiveItemPrio(item)
     local itemName = item and item.name
     local namedRule = itemName and self:GetNamedRule(itemName)
     if namedRule and namedRule.raw and namedRule.raw ~= "" then
-        local prioText = namedRule.raw
-        if self:RuleHasLootCouncil(namedRule) and not string.match(prioText, ">%s*[Ll][Cc]%s*$") then
-            prioText = prioText .. " > LC"
+        local prioText = formatNamedRuleDisplay(namedRule)
+        if not prioText or prioText == "" then
+            prioText = namedRule.raw
+            if self:RuleHasLootCouncil(namedRule) and not string.match(prioText, ">%s*[Ll][Cc]%s*$") then
+                prioText = prioText .. " > LC"
+            end
         end
         return prioText
     end
