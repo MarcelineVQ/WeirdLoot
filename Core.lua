@@ -380,6 +380,7 @@ function addon:PLAYER_LOGIN()
         ui = {
             selectedTab = "loot",
             lootSortMode = "name",
+            rosterSortMode = "name",
             lootUsabilitySort = false,
             liveRollPopups = {
                 point = "TOP",
