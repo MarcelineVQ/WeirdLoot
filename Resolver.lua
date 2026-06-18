@@ -518,29 +518,11 @@ function addon:BuildLootCouncilResultRecord(item, allRollerNames, allRollerDetai
     return result
 end
 
-function addon:ProcessLoot()
-    if not self:IsAuthorizedLootMaster() then
-        self:Print("Only the loot master can process loot.")
-        return
-    end
-
-    local session = self:GetCurrentSession()
-    session.lockedItems = session.lockedItems or {}
-    local results = {}
-    local hadUnlockedItems = false
-    local existingResultsByItemId = {}
-
-    for _, existingResult in ipairs(session.results or {}) do
-        existingResultsByItemId[existingResult.itemId] = existingResult
-    end
-
-    for _, item in ipairs(session.items or {}) do
-        if self:IsItemLocked(item.id) then
-            if existingResultsByItemId[item.id] then
-                results[#results + 1] = existingResultsByItemId[item.id]
-            end
-        else
-            hadUnlockedItems = true
+-- Resolve a single session item through the shared bracket -> named -> spec -> status
+-- engine (used by both batch ProcessLoot and the live-roll flow). Returns the standard
+-- result record. Does NOT lock or append -- the caller does that.
+function addon:ResolveSessionItem(item)
+    local record
         local rollers = self:BuildRollerList(item.id)
         local allRollerNames = {}
         local allRollerDetails = {}
@@ -597,7 +579,7 @@ function addon:ProcessLoot()
                 prioritizedNames[#prioritizedNames + 1] = player.name
             end
 
-            results[#results + 1] = self:BuildLootCouncilResultRecord(
+            record = self:BuildLootCouncilResultRecord(
                 item,
                 allRollerNames,
                 allRollerDetails,
@@ -671,7 +653,7 @@ function addon:ProcessLoot()
                 }
             end
 
-            results[#results + 1] = self:BuildResultRecord(
+            record = self:BuildResultRecord(
                 item,
                 allRollerNames,
                 allRollerDetails,
@@ -740,7 +722,7 @@ function addon:ProcessLoot()
                 }
             end
 
-            results[#results + 1] = self:BuildResultRecord(
+            record = self:BuildResultRecord(
                 item,
                 allRollerNames,
                 allRollerDetails,
@@ -753,6 +735,34 @@ function addon:ProcessLoot()
                 winnerDetails
             )
         end
+    return record
+end
+
+function addon:ProcessLoot()
+    if not self:IsAuthorizedLootMaster() then
+        self:Print("Only the loot master can process loot.")
+        return
+    end
+
+    local session = self:GetCurrentSession()
+    session.lockedItems = session.lockedItems or {}
+    local results = {}
+    local hadUnlockedItems = false
+    local existingResultsByItemId = {}
+
+    for _, existingResult in ipairs(session.results or {}) do
+        existingResultsByItemId[existingResult.itemId] = existingResult
+    end
+
+    for _, item in ipairs(session.items or {}) do
+        if self:IsItemLocked(item.id) then
+            if existingResultsByItemId[item.id] then
+                results[#results + 1] = existingResultsByItemId[item.id]
+            end
+        else
+            hadUnlockedItems = true
+            local record = self:ResolveSessionItem(item)
+            results[#results + 1] = record
 
             self:LockItem(item.id)
         end
@@ -772,9 +782,16 @@ function addon:ProcessLoot()
     }
 
     if #results > 0 then
-        SendChatMessage("Loot has been rolled on, check the Results tab.", "RAID_WARNING")
+        local text = "Loot has been rolled on, check the Results tab."
+        local ctl = _G.ChatThrottleLib
+        if ctl then
+            ctl:SendChatMessage("ALERT", self.prefix, text, "RAID_WARNING")
+        else
+            SendChatMessage(text, "RAID_WARNING")
+        end
     end
 
+    self:OwePayout(results)        -- queue winners into the auto-trade payout ledger
     self:BroadcastResults(results)
     self:BroadcastSessionLocks()
     self:TriggerCallback("RESULTS_UPDATED")
