@@ -426,7 +426,7 @@ function addon:PLAYER_LOGIN()
 
     self.db = WeirdLootDB
     self.sessionDb = WeirdLootSessionDB
-    self.bagPrimed = false       -- prime the bag delta baseline on the first BAG_UPDATE this login
+    self.bagSettleAt = GetTime() + 5   -- ignore bag deltas (staged loading) until bags settle this login
 
     if self.sessionDb.activeSession ~= nil then
         local legacySession = self.sessionDb.activeSession

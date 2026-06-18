@@ -345,14 +345,13 @@ function addon:OnBagUpdate()
 
     local currentSnapshot = self:BuildBagSnapshot()
 
-    -- First bag scan after login/reload: establish the delta baseline as the actual
-    -- current bag WITHOUT auto-rolling. The restored snapshot can disagree with the real
-    -- bag (or the bags weren't loaded when it was built), which would otherwise make
-    -- already-present loot look "newly added" and re-roll it. Priming once fixes that
-    -- while still letting genuine future drops (incl. duplicate stacks) roll normally.
-    if not self.bagPrimed then
+    -- Post-login settle window: bags load in STAGES after a login/reload, so a single
+    -- prime can baseline a partially-loaded bag and then mistake a later-loading bag's
+    -- items for fresh loot (auto-posting them). While inside the settle window we keep
+    -- re-baselining to the latest scan and never auto-roll. Genuine drops (you're not
+    -- looting in the first seconds after a loading screen) still roll once it closes.
+    if not self.bagSettleAt or (GetTime() < self.bagSettleAt) then
         session.currentSnapshot = currentSnapshot
-        self.bagPrimed = true
         return false
     end
 

@@ -471,15 +471,28 @@ end
 -- item link. The ML decides when to actually broadcast each roll (Start Roll). Loot-
 -- master only, opt-out via WeirdLootDB.autoRoll. Called from OnBagUpdate with the set
 -- of links whose bag count just went up.
+-- is a pending popup currently on screen for this item link?
+function addon:HasOpenPendingForLink(link)
+    for _, f in ipairs(self.live.active) do
+        if f.mode == "pending" and f.pendingLink == link then return true end
+    end
+    return false
+end
+
 function addon:AutoRollAddedItems(addedLinks)
     if not self.db.autoRoll then return end
     if not self:IsAuthorizedLootMaster() then return end
-    local pending = self.session.pendingLinks or {}
     for _, item in ipairs(self.session.items or {}) do
-        if addedLinks[item.link]
-            and not pending[item.link]
-            and not self:HasOpenRollForLink(item.link) then
-            self:ShowPendingPopup(item)
+        if addedLinks[item.link] then
+            -- A genuinely new copy just arrived in the bags. If a previous copy was rolled
+            -- out the item is locked; clear that so the duplicate can be rolled (the lock
+            -- only ever meant "the drop already handled was rolled out").
+            if item.id then self:UnlockItem(item.id) end
+            -- Dedup on the actual on-screen popup, NOT the persisted pendingLinks flag
+            -- (which can be stale and would wrongly suppress a real new drop).
+            if not self:HasOpenPendingForLink(item.link) and not self:HasOpenRollForLink(item.link) then
+                self:ShowPendingPopup(item)
+            end
         end
     end
 end
@@ -536,6 +549,7 @@ function addon:StartLiveRoll(item)
 
     if item.id and self:IsItemLocked(item.id) then
         self:Print((item.name or item.link) .. " was already rolled out. Use Unlock Roll to reroll it.")
+        if self.session.pendingLinks then self.session.pendingLinks[item.link] = nil end  -- don't leave it stuck pending
         return
     end
 
