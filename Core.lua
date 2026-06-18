@@ -5,7 +5,7 @@ addon = WeirdLoot
 
 addon.name = addonName or "WeirdLoot"
 addon.prefix = "WeirdLoot"
-addon.version = "0.1.0"
+addon.version = "1.0"
 addon.callbacks = {}
 addon.events = CreateFrame("Frame")
 
@@ -380,6 +380,7 @@ function addon:PLAYER_LOGIN()
         ui = {
             selectedTab = "loot",
             lootSortMode = "name",
+            rosterSortMode = "name",
             lootUsabilitySort = false,
             liveRollPopups = {
                 point = "TOP",

@@ -509,6 +509,13 @@ function addon:BuildBottomTabs()
         self.ui.tabs[key] = tab
         previous = tab
     end
+
+    local versionLabel = self.ui.frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    versionLabel:SetPoint("BOTTOMRIGHT", self.ui.frame, "BOTTOMRIGHT", -16, 18)
+    versionLabel:SetWidth(120)
+    versionLabel:SetJustifyH("RIGHT")
+    versionLabel:SetText("v" .. tostring(addon.version or "1.0"))
+    self.ui.versionLabel = versionLabel
 end
 
 function addon:SelectTab(tabKey)
@@ -1053,6 +1060,43 @@ function addon:GetSortedLootItems()
     return items
 end
 
+function addon:SetRosterSortMode(sortMode)
+    self.db.ui.rosterSortMode = sortMode or "name"
+    self:RefreshRaidersTab()
+end
+
+function addon:GetSortedRosterEntries()
+    local entries = util:CloneTable(self:GetRosterDisplayList() or {})
+    local sortMode = self.db.ui.rosterSortMode or "name"
+
+    table.sort(entries, function(left, right)
+        if sortMode == "raid" then
+            if left.present ~= right.present then
+                return left.present
+            end
+            return util:NormalizeKey(left.name or "") < util:NormalizeKey(right.name or "")
+        elseif sortMode == "classspec" then
+            local leftClassSpec = util:NormalizeKey(string.trim((left.className or "") .. " " .. (left.specName or "")))
+            local rightClassSpec = util:NormalizeKey(string.trim((right.className or "") .. " " .. (right.specName or "")))
+            if leftClassSpec ~= rightClassSpec then
+                return leftClassSpec < rightClassSpec
+            end
+            return util:NormalizeKey(left.name or "") < util:NormalizeKey(right.name or "")
+        elseif sortMode == "status" then
+            local leftRank = util:StatusRank(left.status)
+            local rightRank = util:StatusRank(right.status)
+            if leftRank ~= rightRank then
+                return leftRank > rightRank
+            end
+            return util:NormalizeKey(left.name or "") < util:NormalizeKey(right.name or "")
+        end
+
+        return util:NormalizeKey(left.name or "") < util:NormalizeKey(right.name or "")
+    end)
+
+    return entries
+end
+
 function addon:BuildRaidersTab()
     local panel = CreateFrame("Frame", nil, self.ui.content)
     panel:SetAllPoints(self.ui.content)
@@ -1066,25 +1110,34 @@ function addon:BuildRaidersTab()
     rosterFrame:SetPoint("TOPLEFT", summary, "BOTTOMLEFT", 0, -10)
     rosterFrame:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -4, 0)
 
-    local headerPresence = createLabel(rosterFrame, "Raid", "TOPLEFT", rosterFrame, "TOPLEFT", 8, -8)
-    headerPresence:SetWidth(48)
-    headerPresence:SetTextColor(0.8, 0.8, 0.8)
+    local headerPresence = createButton(rosterFrame, "Raid", 54, 18)
+    headerPresence:SetPoint("TOPLEFT", rosterFrame, "TOPLEFT", 6, -6)
+    headerPresence:SetScript("OnClick", function()
+        addon:SetRosterSortMode("raid")
+    end)
 
-    local headerName = createLabel(panel, "Name", "LEFT", headerPresence, "RIGHT", 14, 0)
-    headerName:SetWidth(132)
-    headerName:SetTextColor(0.8, 0.8, 0.8)
+    local headerName = createButton(rosterFrame, "Name", 132, 18)
+    headerName:SetPoint("LEFT", headerPresence, "RIGHT", 8, 0)
+    headerName:SetScript("OnClick", function()
+        addon:SetRosterSortMode("name")
+    end)
 
-    local headerClassSpec = createLabel(panel, "Class / Spec", "LEFT", headerName, "RIGHT", 4, 0)
-    headerClassSpec:SetWidth(200)
-    headerClassSpec:SetTextColor(0.8, 0.8, 0.8)
+    local headerClassSpec = createButton(rosterFrame, "Class / Spec", 200, 18)
+    headerClassSpec:SetPoint("LEFT", headerName, "RIGHT", 4, 0)
+    headerClassSpec:SetScript("OnClick", function()
+        addon:SetRosterSortMode("classspec")
+    end)
 
-    local headerStatus = createLabel(panel, "Status", "LEFT", headerClassSpec, "RIGHT", 12, 0)
-    headerStatus:SetWidth(110)
-    headerStatus:SetTextColor(0.8, 0.8, 0.8)
+    local headerStatus = createButton(rosterFrame, "Status", 110, 18)
+    headerStatus:SetPoint("LEFT", headerClassSpec, "RIGHT", 12, 0)
+    headerStatus:SetScript("OnClick", function()
+        addon:SetRosterSortMode("status")
+    end)
 
-    local headerSource = createLabel(panel, "Source", "LEFT", headerStatus, "RIGHT", 12, 0)
-    headerSource:SetWidth(80)
-    headerSource:SetTextColor(0.8, 0.8, 0.8)
+    local headerSource = createButton(rosterFrame, "Source", 80, 18)
+    headerSource:SetPoint("LEFT", headerStatus, "RIGHT", 12, 0)
+    headerSource:SetScript("OnClick", function()
+    end)
 
     local list = createScrollList(rosterFrame, "WeirdLootRaidersList", 18, function(row)
         row.present = createLabel(row, "", "LEFT", row, "LEFT", 8, 0)
@@ -1420,7 +1473,7 @@ function addon:RefreshLootTab()
 end
 
 function addon:RefreshRaidersTab()
-    local rosterEntries = self:GetRosterDisplayList()
+    local rosterEntries = self:GetSortedRosterEntries()
     local configuredCount = #self:GetRosterEntries()
     local attendeeCount = #self:GetAttendees()
     local matchedCount = 0
