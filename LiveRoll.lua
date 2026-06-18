@@ -7,10 +7,10 @@ local util = addon.util
 -- (Start Roll / Skip); nothing goes to the raid yet. When the ML presses Start Roll
 -- (or right-clicks a loot row) -> DROP broadcast -> every raider gets an interest popup
 -- with the priority brackets (BiS / MS / MU / OS / TM / Pass) -> RSP back to the ML ->
--- ML ends the roll -> winner = highest roll in the top non-empty priority section
--- (see BuildPrioSections: named loot first, then BiS/MS/MU with spec priority, then
--- OS/TM flat) -> WIN broadcast -> registrants get a result popup. The win also goes
--- through the shared result/lock path and the winner is queued for payout.
+-- ML ends the roll -> the picks are already in session.responses, so it resolves through
+-- the SAME engine as the batch flow (ResolveSessionItem: bracket -> named -> spec ->
+-- status -> roll) -> WIN broadcast -> registrants get a result popup. The win goes through
+-- the shared result/lock path and the winner is queued for payout.
 --
 -- The ML never receives its own addon messages (CHAT_MSG_ADDON ignores self), so the
 -- ML drives its own popups locally and members react to DROP/WIN over comms.
@@ -36,8 +36,6 @@ end
 -- roll-choice brackets, highest priority first: BiS > MS > MU > OS > TM (Pass
 -- declines). Use the button's natural pressed visual to show the pick: the chosen button
 -- locks in its down state; picking a different one pops the previous back up.
-local TIER_ORDER = { "bis", "ms", "mu", "os", "tm" }
-local TIER_LABEL = { bis = "BiS", ms = "MS", mu = "MU", os = "OS", tm = "TM" }
 local function interestButtons(f)
     return { bis = f.bisBtn, ms = f.msBtn, mu = f.muBtn, os = f.osBtn, tm = f.tmBtn, pass = f.passBtn }
 end
@@ -554,6 +552,7 @@ function addon:StartLiveRoll(item)
     end
 
     if self.session.pendingLinks then self.session.pendingLinks[item.link] = nil end  -- decided: now rolling
+    if item.id then self.session.responses[item.id] = {} end   -- fresh responses for this roll
 
     local rollId = nextRollId(self)
     local prio = self:GetLiveItemPrio(item)
@@ -576,33 +575,36 @@ function addon:ResolveLiveRoll(rollId)
     if not self:IsAuthorizedLootMaster() then return end
     roll.resolved = true
 
-    -- everyone who registered rolls; the winner is the highest roll in the highest
-    -- non-empty priority section (so prio can beat a higher roll in a lower section)
-    local registrants = {}
-    for _, r in pairs(roll.registrants) do registrants[#registrants + 1] = r end
-    local sections = self:BuildPrioSections(roll, registrants)
+    -- Registrants' brackets are already in session.responses (RegisterInterest). Resolve
+    -- through the SAME engine the batch flow uses: bracket -> named -> spec -> status -> roll.
+    local sit = self:LiveRollSessionItem(roll)
+    local item = { id = sit.id, name = sit.name or roll.name, link = sit.link or roll.link, icon = sit.icon or roll.icon, quantity = 1 }
+    local record = self:ResolveSessionItem(item)
 
-    local winner, winnerRoll = nil, -1
-    local decided = false
-    for _, section in ipairs(sections) do
-        for _, m in ipairs(section.members) do m.roll = math.random(1, 100) end
-        if not decided and #section.members > 0 then
-            decided = true
-            for _, m in ipairs(section.members) do
-                if m.roll > winnerRoll then winnerRoll = m.roll; winner = m.name end
-            end
-        end
+    local winner = (record.winner and record.winner ~= "No winner") and record.winner or nil
+    local winnerRoll
+    for _, w in ipairs(record.winnerDetails or {}) do
+        if w.name == record.winner then winnerRoll = w.roll end
     end
 
+    -- adapt the record's roller breakdown into the popup's section format (grouped by bracket)
+    local sections = self:SectionsFromResult(record)
+
     self:SendLargeMessage("WIN", {
-        rollId, roll.link, winner or "", "roll", tostring(winnerRoll), self:EncodeSections(sections),
+        rollId, roll.link, winner or "", "roll", tostring(winnerRoll or 0), self:EncodeSections(sections),
     }, "RAID")
 
-    -- Always record the win in the results log (the ML's win is tracked too). Only the
-    -- payout (owe + whisper) is skipped when the ML won, since they already hold the item.
-    local selfWin = winner and util:NormalizeKey(winner) == util:NormalizeKey(util:GetPlayerName("player") or "")
-    self:RecordLiveResult(roll, winner, winnerRoll, sections)
+    -- finish: record + lock + broadcast, identical to the batch path
+    self:RemoveResultByItemId(item.id)
+    self.session.results = self.session.results or {}
+    self.session.results[#self.session.results + 1] = record
+    self:LockItem(item.id)
+    self:BroadcastResults({ record })
+    self:BroadcastSessionLocks()
+    self:TriggerCallback("RESULTS_UPDATED")
 
+    -- payout (skip when the ML won their own roll -- already in hand)
+    local selfWin = winner and util:NormalizeKey(winner) == util:NormalizeKey(util:GetPlayerName("player") or "")
     if winner and self.payout and not selfWin then
         local itemId = tonumber(string.match(roll.link or "", "|Hitem:(%d+)"))
         if itemId then self.payout:Owe(winner, itemId, 1, roll.link) end
@@ -615,10 +617,30 @@ function addon:ResolveLiveRoll(rollId)
     if not winner then
         self:Print(roll.name .. " -> no rollers.")
     elseif selfWin then
-        self:Print(string.format("%s -> %s (%d). You already hold it; not queued for payout.", roll.name, winner, winnerRoll))
+        self:Print(string.format("%s -> %s (%s). You already hold it; not queued for payout.", roll.name, winner, tostring(winnerRoll)))
     else
-        self:Print(string.format("%s -> %s (%d). Queued for payout.", roll.name, winner, winnerRoll))
+        self:Print(string.format("%s -> %s (%s). Queued for payout.", roll.name, winner, tostring(winnerRoll)))
     end
+end
+
+-- Group a result record's rollers by bracket into the popup's section format
+-- ({label, members={{name, roll}}}), highest bracket first, for the result popup breakdown.
+local SECTION_ORDER = { "bis", "ms", "mu", "os", "tm" }
+local SECTION_LABELS = { bis = "BiS", ms = "MS", mu = "MU", os = "OS", tm = "TM" }
+function addon:SectionsFromResult(record)
+    local buckets = {}
+    for _, d in ipairs(record.allRollerDetails or {}) do
+        local b = d.responseType or "pass"
+        if b ~= "pass" then
+            buckets[b] = buckets[b] or {}
+            buckets[b][#buckets[b] + 1] = { name = d.name, roll = tonumber(d.rollText) }
+        end
+    end
+    local sections = {}
+    for _, key in ipairs(SECTION_ORDER) do
+        if buckets[key] then sections[#sections + 1] = { label = SECTION_LABELS[key], members = buckets[key] } end
+    end
+    return sections
 end
 
 -- Find the live roll's backing session item (so the result/lock use the real item id),
@@ -632,168 +654,6 @@ function addon:LiveRollSessionItem(roll)
     return { id = roll.itemId or roll.link, name = roll.name, link = roll.link, icon = roll.icon }
 end
 
--- Finish a live roll through the SAME path as the batch ProcessLoot: build the standard
--- result record (BuildResultRecord), lock the item, append/replace it in session.results,
--- and broadcast results + locks. This makes live wins first-class in the Results tab,
--- Export Winners/Log, and the Unlock-Roll lifecycle.
-function addon:RecordLiveResult(roll, winner, winnerRoll, sections)
-    local sit = self:LiveRollSessionItem(roll)
-    local item = { id = sit.id, name = sit.name or roll.name, link = sit.link or roll.link, icon = sit.icon or roll.icon, quantity = 1 }
-
-    local allRollerNames, allRollerDetails, rolls, rollDetails, prioritizedNames = {}, {}, {}, {}, {}
-    local winnerKey = winner and util:NormalizeKey(winner) or nil
-    local winnerClass
-    for _, s in ipairs(sections or {}) do
-        for _, m in ipairs(s.members) do
-            allRollerNames[#allRollerNames + 1] = m.name
-            prioritizedNames[#prioritizedNames + 1] = m.name
-            local detail = {
-                name = m.name, className = m.className, specName = m.specName,
-                status = m.status, roll = m.roll, auto = false, isNamed = false, section = s.label,
-            }
-            allRollerDetails[#allRollerDetails + 1] = detail
-            rollDetails[#rollDetails + 1] = detail
-            if m.roll then rolls[#rolls + 1] = { name = m.name, roll = m.roll, auto = false } end
-            if winnerKey and util:NormalizeKey(m.name) == winnerKey then winnerClass = m.className end
-        end
-    end
-    table.sort(rolls, function(a, b) return (a.roll or 0) > (b.roll or 0) end)
-
-    local winnerDetails = {}
-    if winner then
-        winnerDetails[1] = { name = winner, className = winnerClass, roll = winnerRoll, auto = false }
-    end
-
-    local record = self:BuildResultRecord(
-        item, allRollerNames, allRollerDetails,
-        nil,                -- lcNamesText (live rolls don't run the LC text path yet)
-        roll.prio,          -- specPriorityText: show the item's prio string
-        nil,                -- statusRank
-        prioritizedNames, rolls, rollDetails, winnerDetails)
-
-    self:RemoveResultByItemId(item.id)          -- a reroll of the same item replaces its result
-    self.session.results = self.session.results or {}
-    self.session.results[#self.session.results + 1] = record
-
-    self:LockItem(item.id)
-    self:BroadcastResults({ record })
-    self:BroadcastSessionLocks()
-    self:TriggerCallback("RESULTS_UPDATED")
-end
-
--- ---------------------------------------------------------------------------
--- priority sections
--- ---------------------------------------------------------------------------
--- Group registrants into ordered priority sections. The winner is the top
--- non-empty section's highest roller, so a lower-section roller can lose with a
--- higher roll -- the result tooltip shows exactly that. Response tiers rank
--- MS > OS > TM (Pass excludes you). Sections come from the item's loot rule
--- (class/spec tiers applied to MS rollers, then OS, then TM); items with no rule
--- fall back to MS > OS > TM.
-local function profileFor(self, name)
-    local key = util:NormalizeKey(name)
-    local p = self:GetAttendee(key) or self:GetRosterProfile(key)
-    return {
-        name = (p and p.name) or name,
-        className = (p and p.className) or "",
-        specName = (p and p.specName) or "",
-        status = (p and p.status) or "nil",
-    }
-end
-
-function addon:BuildPrioSections(item, registrants)
-    -- Ordered priority sections. Winner = highest roll in the first non-empty section.
-    --   1. Named loot: a named player wins in ALL cases, so their tiers come first.
-    --   2. BiS > MS > MU buckets: the item's spec/class loot rule is applied WITHIN each.
-    --   3. OS > TM buckets: flat (no spec priority).
-    -- Pass declines (no bucket). Each roller appears in exactly one section.
-    local lootRule  = item and item.name and self:GetLootRule(item.name)
-    local namedRule = item and item.name and self:GetNamedRule(item.name)
-
-    local buckets = { bis = {}, ms = {}, mu = {}, os = {}, tm = {} }
-    for _, r in ipairs(registrants) do
-        if buckets[r.tier] then
-            local list = buckets[r.tier]
-            list[#list + 1] = profileFor(self, r.name)
-        end
-    end
-
-    local function specMatch(entry, cand)
-        local a = util:NormalizeKey((cand.className or "") .. " " .. (cand.specName or ""))
-        local b = util:NormalizeKey((cand.specName or "") .. " " .. (cand.className or ""))
-        for _, key in ipairs(entry.matchKeys or {}) do
-            if key ~= "" and (key == a or key == b) then return true end
-        end
-        return false
-    end
-
-    local sections = {}
-    local claimed = {}      -- normalized name -> true; a roller is shown in one section only
-    local function addSection(label, members)
-        local fresh = {}
-        for _, m in ipairs(members) do
-            local k = util:NormalizeKey(m.name)
-            if not claimed[k] then fresh[#fresh + 1] = m; claimed[k] = true end
-        end
-        if #fresh > 0 then sections[#sections + 1] = { label = label, members = fresh } end
-    end
-
-    -- 1. Named loot: pull named players (any bucket) into top sections by named tier.
-    if namedRule and namedRule.tiers then
-        for _, tier in ipairs(namedRule.tiers) do
-            local members = {}
-            for _, e in ipairs(tier.entries or {}) do
-                if e.playerKey and not e.isRest and not e.isLootCouncil then
-                    for _, bk in ipairs(TIER_ORDER) do
-                        for _, cand in ipairs(buckets[bk]) do
-                            if util:NormalizeKey(cand.name) == e.playerKey then members[#members + 1] = cand end
-                        end
-                    end
-                end
-            end
-            addSection("Named: " .. (tier.raw or "list"), members)
-        end
-    end
-
-    -- 2. BiS / MS / MU: apply the loot rule's spec/class tiers within the bucket.
-    for _, bk in ipairs({ "bis", "ms", "mu" }) do
-        local cands = buckets[bk]
-        if lootRule and lootRule.tiers and #lootRule.tiers > 0 and #cands > 0 then
-            local remaining = {}
-            for _, c in ipairs(cands) do remaining[c] = true end
-            for _, tier in ipairs(lootRule.tiers) do
-                local members, hasRest = {}, false
-                for _, e in ipairs(tier.entries) do if e.isRest then hasRest = true end end
-                for _, cand in ipairs(cands) do
-                    if remaining[cand] then
-                        for _, e in ipairs(tier.entries) do
-                            if not e.isRest and specMatch(e, cand) then
-                                members[#members + 1] = cand; remaining[cand] = nil; break
-                            end
-                        end
-                    end
-                end
-                if hasRest then
-                    for _, cand in ipairs(cands) do
-                        if remaining[cand] then members[#members + 1] = cand; remaining[cand] = nil end
-                    end
-                end
-                if #members > 0 then addSection(TIER_LABEL[bk] .. " - " .. (tier.raw or "tier"), members) end
-            end
-            local leftover = {}
-            for _, cand in ipairs(cands) do if remaining[cand] then leftover[#leftover + 1] = cand end end
-            addSection(TIER_LABEL[bk], leftover)
-        else
-            addSection(TIER_LABEL[bk], cands)
-        end
-    end
-
-    -- 3. OS / TM: flat, no spec priority.
-    addSection(TIER_LABEL.os, buckets.os)
-    addSection(TIER_LABEL.tm, buckets.tm)
-
-    return sections
-end
 
 -- pack sections for WIN: "label~name=roll,name=roll" joined by ";"
 function addon:EncodeSections(sections)
@@ -837,6 +697,9 @@ function addon:RegisterInterest(rollId, name, tier)
     local roll = self.live.rolls[rollId]
     if not roll or roll.resolved then return end
     roll.registrants[util:NormalizeKey(name)] = { name = name, tier = tier }
+    -- Mirror the pick into the shared response model so the Loot tab reflects it and the
+    -- same resolver (BuildRollerList -> ResolveSessionItem) sees these rollers.
+    if roll.itemId then self:SetPlayerResponse(roll.itemId, name, tier) end
     self:RefreshInterestPopup(roll)
 end
 
