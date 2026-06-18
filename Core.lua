@@ -500,7 +500,7 @@ end
 -- hasn't received the loot method / raid roster yet, so a single check can miss ML status,
 -- and PARTY_LOOT_METHOD_CHANGED won't re-fire if nothing actually changed. 3.3.5 has no
 -- C_Timer, so we drive a few re-checks off an OnUpdate frame over the first few seconds.
-local AUTH_RETRY_TIMES = { 0.5, 1.5, 3.0, 5.0 }
+local AUTH_RETRY_TIMES = { 0.5, 1.0, 1.5, 3.0, 6.0, 9.0, 12.0, 15.0 }   -- re-check: fast early, then every 3s, over the first ~15s
 local authRetry = CreateFrame("Frame")
 authRetry:Hide()
 authRetry:SetScript("OnUpdate", function(frame, dt)
