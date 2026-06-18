@@ -452,11 +452,35 @@ end
 function addon:RefreshInterestPopup(roll)
     local f = roll and roll.popup
     if not f or f.mode ~= "interest" or not roll.owner then return end
+
+    if roll.itemId then
+        local total = 0
+        for _, choice in pairs(self.session.responses[roll.itemId] or {}) do
+            if self:IsResponseActive(choice) then
+                total = total + 1
+            end
+        end
+        f.count:SetText(total > 0 and (total .. " rolling") or "")
+        return
+    end
+
     local total = 0
     for _, r in pairs(roll.registrants) do
         if r.tier and r.tier ~= "pass" then total = total + 1 end
     end
     f.count:SetText(total > 0 and (total .. " rolling") or "")
+end
+
+function addon:RefreshLiveRollCountForItem(itemId)
+    if not itemId or not self.live or not self.live.rolls then
+        return
+    end
+
+    for _, roll in pairs(self.live.rolls) do
+        if roll and not roll.resolved and roll.itemId == itemId then
+            self:RefreshInterestPopup(roll)
+        end
+    end
 end
 
 function addon:CloseInterestPopup(roll)
@@ -733,7 +757,6 @@ function addon:StartLiveRoll(item)
     end
 
     if self.session.pendingLinks then self.session.pendingLinks[item.link] = nil end  -- decided: now rolling
-    if item.id then self.session.responses[item.id] = {} end   -- fresh responses for this roll
 
     local rollId = nextRollId(self)
     local prio = self:GetLiveItemPrio(item)
@@ -742,6 +765,18 @@ function addon:StartLiveRoll(item)
         icon = item.icon, prio = prio, owner = true, registrants = {}, resolved = false,
         duration = ROLL_DURATION,
     }
+
+    if item.id then
+        for playerKey, choice in pairs(self.session.responses[item.id] or {}) do
+            if self:IsResponseActive(choice) then
+                roll.registrants[playerKey] = {
+                    name = playerKey,
+                    tier = choice,
+                }
+            end
+        end
+    end
+
     self.live.rolls[rollId] = roll
 
     self:SendLargeMessage("DROP",
@@ -880,7 +915,13 @@ function addon:RegisterInterest(rollId, name, tier)
     roll.registrants[util:NormalizeKey(name)] = { name = name, tier = tier }
     -- Mirror the pick into the shared response model so the Loot tab reflects it and the
     -- same resolver (BuildRollerList -> ResolveSessionItem) sees these rollers.
-    if roll.itemId then self:SetPlayerResponse(roll.itemId, name, tier) end
+    if roll.itemId then
+        self:SetPlayerResponse(roll.itemId, name, tier)
+        if self:IsAuthorizedLootMaster() then
+            self:BroadcastSelectionState(roll.itemId, name, tier)
+        end
+        self:TriggerCallback("SESSION_UPDATED")
+    end
     self:RefreshInterestPopup(roll)
 end
 
