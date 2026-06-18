@@ -1299,7 +1299,7 @@ function addon:BuildMasterTab()
     end)
 
     local exportWinnersButton = createButton(panel, "Export Winners", 110, 24)
-    exportWinnersButton:SetPoint("LEFT", unlockButton, "RIGHT", 8, 0)
+    exportWinnersButton:SetPoint("TOPLEFT", startButton, "BOTTOMLEFT", 0, -8)
     exportWinnersButton:SetScript("OnClick", function()
         addon:ExportWinners()
     end)
@@ -1311,7 +1311,7 @@ function addon:BuildMasterTab()
     end)
 
     local payoutButton = createButton(panel, "Start Payout", 120, 24)
-    payoutButton:SetPoint("LEFT", exportLogButton, "RIGHT", 8, 0)
+    payoutButton:SetPoint("LEFT", unlockButton, "RIGHT", 8, 0)
     payoutButton:SetScript("OnClick", function()
         addon:TogglePayout()
     end)
@@ -1330,7 +1330,7 @@ function addon:BuildMasterTab()
         .. "and their owed items auto-fill into the trade window (you click Trade to send). Trades from non-winners "
         .. "are declined while loot is still owed. Pause keeps the owed list but stops auto-fill.")
 
-    panel.summary = createLabel(panel, "", "TOPLEFT", startButton, "BOTTOMLEFT", 0, -24)
+    panel.summary = createLabel(panel, "", "TOPLEFT", exportWinnersButton, "BOTTOMLEFT", 0, -24)
     panel.summary:SetWidth(900)
     panel.summary:SetJustifyV("TOP")
 
