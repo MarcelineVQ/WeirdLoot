@@ -892,9 +892,7 @@ function addon:BuildLootTab()
                 return
             end
 
-            GameTooltip:SetOwner(selfRow, "ANCHOR_NONE")
-            GameTooltip:ClearAllPoints()
-            GameTooltip:SetPoint("TOPRIGHT", selfRow, "TOPLEFT", -8, 0)
+            GameTooltip:SetOwner(selfRow, "ANCHOR_LEFT")
             GameTooltip:SetHyperlink(selfRow.item.link)
             GameTooltip:Show()
         end)
@@ -1130,9 +1128,7 @@ function addon:BuildResultsTab()
                 return
             end
 
-            GameTooltip:SetOwner(selfRow, "ANCHOR_NONE")
-            GameTooltip:ClearAllPoints()
-            GameTooltip:SetPoint("TOPRIGHT", selfRow, "TOPLEFT", -8, 0)
+            GameTooltip:SetOwner(selfRow, "ANCHOR_LEFT")
             GameTooltip:SetHyperlink(result.itemLink)
             GameTooltip:Show()
         end)
