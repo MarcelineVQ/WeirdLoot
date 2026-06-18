@@ -892,9 +892,7 @@ function addon:BuildLootTab()
                 return
             end
 
-            GameTooltip:SetOwner(selfRow, "ANCHOR_NONE")
-            GameTooltip:ClearAllPoints()
-            GameTooltip:SetPoint("TOPRIGHT", selfRow, "TOPLEFT", -8, 0)
+            GameTooltip:SetOwner(selfRow, "ANCHOR_LEFT")
             GameTooltip:SetHyperlink(selfRow.item.link)
             GameTooltip:Show()
         end)
@@ -924,14 +922,18 @@ function addon:BuildLootTab()
                 return
             end
 
-            if DressUpItemLink then
-                DressUpItemLink(selfRow.item.link)
-            else
-                GameTooltip:SetOwner(selfRow, "ANCHOR_NONE")
-                GameTooltip:ClearAllPoints()
-                GameTooltip:SetPoint("TOPRIGHT", selfRow, "TOPLEFT", -8, 0)
-                GameTooltip:SetHyperlink(selfRow.item.link)
-                GameTooltip:Show()
+            -- Plain click does nothing; ctrl+click previews in the dressing room, matching
+            -- the standard modified-click behavior of item links everywhere else.
+            if IsModifiedClick("DRESSUP") then
+                if DressUpItemLink then
+                    DressUpItemLink(selfRow.item.link)
+                else
+                    GameTooltip:SetOwner(selfRow, "ANCHOR_NONE")
+                    GameTooltip:ClearAllPoints()
+                    GameTooltip:SetPoint("TOPRIGHT", selfRow, "TOPLEFT", -8, 0)
+                    GameTooltip:SetHyperlink(selfRow.item.link)
+                    GameTooltip:Show()
+                end
             end
         end)
     end)
@@ -1126,9 +1128,7 @@ function addon:BuildResultsTab()
                 return
             end
 
-            GameTooltip:SetOwner(selfRow, "ANCHOR_NONE")
-            GameTooltip:ClearAllPoints()
-            GameTooltip:SetPoint("TOPRIGHT", selfRow, "TOPLEFT", -8, 0)
+            GameTooltip:SetOwner(selfRow, "ANCHOR_LEFT")
             GameTooltip:SetHyperlink(result.itemLink)
             GameTooltip:Show()
         end)
@@ -1152,14 +1152,17 @@ function addon:BuildResultsTab()
                 return
             end
 
-            if DressUpItemLink then
-                DressUpItemLink(row.result.itemLink)
-            else
-                GameTooltip:SetOwner(row, "ANCHOR_NONE")
-                GameTooltip:ClearAllPoints()
-                GameTooltip:SetPoint("TOPRIGHT", row, "TOPLEFT", -8, 0)
-                GameTooltip:SetHyperlink(row.result.itemLink)
-                GameTooltip:Show()
+            -- Plain click only selects the row; ctrl+click previews in the dressing room.
+            if IsModifiedClick("DRESSUP") then
+                if DressUpItemLink then
+                    DressUpItemLink(row.result.itemLink)
+                else
+                    GameTooltip:SetOwner(row, "ANCHOR_NONE")
+                    GameTooltip:ClearAllPoints()
+                    GameTooltip:SetPoint("TOPRIGHT", row, "TOPLEFT", -8, 0)
+                    GameTooltip:SetHyperlink(row.result.itemLink)
+                    GameTooltip:Show()
+                end
             end
         end)
     end)
@@ -1205,7 +1208,8 @@ function addon:BuildResultsTab()
             return
         end
 
-        if DressUpItemLink then
+        -- ctrl+click previews in the dressing room; plain click does nothing.
+        if IsModifiedClick("DRESSUP") and DressUpItemLink then
             DressUpItemLink(result.itemLink)
         end
     end)
