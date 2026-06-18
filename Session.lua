@@ -227,6 +227,10 @@ function addon:StartLootSession()
 
     self.sessionDb.history = self.sessionDb.history or {}
 
+    -- A fresh session starts with a fresh payout ledger: drop any owes carried over from
+    -- a prior session so they aren't re-whispered/re-delivered here.
+    if self.payout then self.payout:ClearOwed() end
+
     -- Payout mode is on for the duration of the session: as live-roll winners get
     -- owed, a winner opening a trade with the ML auto-fills.
     self:ResumePayoutMode()
