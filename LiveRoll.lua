@@ -87,6 +87,15 @@ local function resetInterestButtons(f)
     end
 end
 
+local function positionInterestButtons(f, isOwner)
+    f.bisBtn:ClearAllPoints()
+    if isOwner then
+        f.bisBtn:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 8, 32)
+    else
+        f.bisBtn:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 8, 10)
+    end
+end
+
 local function formatLootRuleEntry(entry)
     if not entry then
         return ""
@@ -392,6 +401,7 @@ function addon:ShowInterestPopup(roll)
     f.tmBtn:SetScript("OnClick", function() self:ChooseInterest(roll, "tm") end)
     f.passBtn:SetScript("OnClick", function() self:ChooseInterest(roll, "pass") end)
     resetInterestButtons(f)
+    positionInterestButtons(f, roll.owner)
 
     if roll.owner then
         -- the ML keeps the popup to drive the roll: Cancel aborts, Roll! resolves
