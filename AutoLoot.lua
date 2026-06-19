@@ -1,7 +1,7 @@
 local addon = WeirdLoot
 local util = addon.util
 
--- Auto-loot routing (PLAN.md "Collect"). While a loot session is active and we are
+-- Auto-loot routing. While a loot session is active and we are
 -- the master looter, each item in an opened loot window is assigned by type:
 --   * Bind-on-Pickup (any quality)  -> the loot master (held for rolling)
 --   * epic Bind-on-Equip            -> the loot master

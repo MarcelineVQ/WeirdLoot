@@ -744,14 +744,26 @@ end)
 -- ADVERSARIAL / FAILURE-MODE cases (where things break, by design or as a known gap)
 -- ===========================================================================
 
-test("KNOWN RACE: bag scan before trade-complete records the copy as removed, not delivered", function()
+test("trade in progress: an owed copy leaving bags is protected; delivery is recorded", function()
     local w = makeWorld("Masterlooter", true)
     startSession(w)
     local lotId = resolveOwedTo(w, 40005, "Alice")
-    -- the item leaves the ML's bags and BAG_UPDATE reconciles BEFORE the trade-complete callback
+    -- a payout trade window is open (the ML is handing the item to Alice)
+    w.addon.payout.tradeOpen = true
+    -- BAG_UPDATE reconciles BEFORE the trade-complete callback (the old race order)
     setBag(w, 40005, 0); bagUpdate(w)
-    eq(w.addon.lootCore:Get(lotId).awards[1].state, "removed", "owed copy retired as removed (the documented race)")
-    check(not w.addon.lootCore:MarkDeliveredFor("Alice", 40005), "delivery can no longer be recorded")
+    eq(w.addon.lootCore:Get(lotId).awards[1].state, "owed", "owed copy NOT written off while a trade is open")
+    check(w.addon.lootCore:MarkDeliveredFor("Alice", 40005), "trade-complete still records the delivery")
+    eq(w.addon.lootCore:Get(lotId).awards[1].state, "delivered", "copy recorded delivered, not removed")
+end)
+
+test("no trade open: an owed copy genuinely leaving bags is recorded removed", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    local lotId = resolveOwedTo(w, 40005, "Alice")
+    -- no trade window: the item really left (destroyed / mailed), so removal is correct
+    setBag(w, 40005, 0); bagUpdate(w)
+    eq(w.addon.lootCore:Get(lotId).awards[1].state, "removed", "with no trade open, the copy is removed")
 end)
 
 test("guard: a response on a resolved lot is rejected", function()

@@ -514,7 +514,10 @@ function addon:OnBagUpdate()
     end
     session.prevEligible = eligible
 
-    self.lootCore:Reconcile(eligible, fresh) -- ledgerChanged -> projections + auto-surface (LiveRoll)
+    -- While a trade window is open, a dropping count is the payout trade handing an owed item
+    -- over: protect owed awards so the trade-complete callback records delivery, not removal.
+    local protectOwed = self.payout and self.payout.IsTradeOpen and self.payout:IsTradeOpen()
+    self.lootCore:Reconcile(eligible, fresh, protectOwed) -- ledgerChanged -> projections + auto-surface (LiveRoll)
     return true
 end
 

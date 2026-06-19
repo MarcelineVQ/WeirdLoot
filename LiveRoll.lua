@@ -1,7 +1,7 @@
 local addon = WeirdLoot
 local util = addon.util
 
--- Live rolling system (PLAN.md "live drops/rolls"), coexisting with the batch flow.
+-- Live rolling system, coexisting with the batch flow.
 --
 -- Flow: a newly-collected item surfaces a *pending* popup to the loot master only
 -- (Start Roll / Skip); nothing goes to the raid yet. When the ML presses Start Roll

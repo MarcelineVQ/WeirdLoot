@@ -1,5 +1,5 @@
 -- LootCore: the single owner of loot identity, group-roll responses, top-N resolution, and
--- per-copy disposition. See LOOTCORE_DESIGN.md for rationale. This module is intentionally
+-- per-copy disposition. This module is intentionally
 -- pure: no frames, no SendCommMessage, no GetContainerItemInfo. Consumers feed it counts and
 -- read its projections by stable id. That boundary is the whole point.
 --
@@ -206,14 +206,16 @@ end
 -- reconciliation: bag reality -> ledger  [ML only]
 --   eligible    : itemId -> count (or itemId -> { count = N })
 --   freshLinks  : set of itemIds that just increased this bag delta (itemId -> true)
+--   protectOwed : a trade is open, so do NOT retire OWED awards (the bag decrease is the
+--                 trade in progress; the trade-complete callback records it delivered)
 -- ---------------------------------------------------------------------------
-function LootCore:Reconcile(eligible, freshLinks)
+function LootCore:Reconcile(eligible, freshLinks, protectOwed)
     eligible = eligible or {}
     freshLinks = freshLinks or {}
     local changed = false
 
     for itemId, entry in pairs(eligible) do
-        if self:reconcileItem(itemId, readEligible(entry), freshLinks[itemId] and true or false) then
+        if self:reconcileItem(itemId, readEligible(entry), freshLinks[itemId] and true or false, protectOwed) then
             changed = true
         end
     end
@@ -225,7 +227,7 @@ function LootCore:Reconcile(eligible, freshLinks)
         if lot and lotLive(lot) and not seen[lot.itemId] then
             seen[lot.itemId] = true
             if eligible[lot.itemId] == nil then
-                if self:reconcileItem(lot.itemId, 0, false) then changed = true end
+                if self:reconcileItem(lot.itemId, 0, false, protectOwed) then changed = true end
             end
         end
     end
@@ -233,7 +235,7 @@ function LootCore:Reconcile(eligible, freshLinks)
     if changed then self:emit("ledgerChanged") end
 end
 
-function LootCore:reconcileItem(itemId, want, fresh)
+function LootCore:reconcileItem(itemId, want, fresh, protectOwed)
     local live = self:liveCountForItem(itemId)
     if want == live then return false end
 
@@ -251,15 +253,17 @@ function LootCore:reconcileItem(itemId, want, fresh)
     end
 
     -- want < live: copies left the bags. Retire least-committed first, never a rolling lot.
-    self:retireFromItem(itemId, live - want)
-    return true
+    -- Returns whether anything was actually retired (protectOwed can leave owed copies in place).
+    return self:retireFromItem(itemId, live - want, protectOwed) > 0
 end
 
 -- Retire `n` live copies for an itemId, least-committed first:
 --   open-lot copies (idle/new/skipped/pending) > resolved no-winner awards > owed awards.
--- A rolling lot is mid-decision and is never touched.
-function LootCore:retireFromItem(itemId, n)
+-- A rolling lot is mid-decision and is never touched. With protectOwed, OWED awards are also
+-- left alone (a trade is open). Returns the number of copies actually retired.
+function LootCore:retireFromItem(itemId, n, protectOwed)
     local remaining = n
+    local retired = 0
     self:log("retire", { itemId = itemId, n = n })
 
     -- 1. shrink the open lot's pre-roll count
@@ -268,6 +272,7 @@ function LootCore:retireFromItem(itemId, n)
         local take = math.min(remaining, open.count)
         open.count = open.count - take
         remaining = remaining - take
+        retired = retired + take
         if open.count <= 0 then open.removed = true end
         self:log("shrink", { id = open.id, itemId = itemId, take = take, count = open.count, removed = open.removed and true or false })
     end
@@ -279,7 +284,11 @@ function LootCore:retireFromItem(itemId, n)
         for _, lot in ipairs(lots) do
             if lot.awards then
                 for _, a in ipairs(lot.awards) do
-                    if awardIsLive(a) then live[#live + 1] = { a = a, id = lot.id } end
+                    -- protectOwed: while a trade is open, an owed copy leaving bags is the trade
+                    -- itself; leave it owed so the trade-complete callback can mark it delivered.
+                    if awardIsLive(a) and not (protectOwed and a.state == AWARD.OWED) then
+                        live[#live + 1] = { a = a, id = lot.id }
+                    end
                 end
             end
         end
@@ -293,9 +302,12 @@ function LootCore:retireFromItem(itemId, n)
             if not entry then break end
             local prev = entry.a.state
             entry.a.state = AWARD.REMOVED -- left bags, disposition unknown
+            retired = retired + 1
             self:log("remove", { id = entry.id, itemId = itemId, winner = entry.a.winner, from = prev })
         end
     end
+
+    return retired
 end
 
 -- ---------------------------------------------------------------------------

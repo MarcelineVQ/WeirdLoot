@@ -350,14 +350,18 @@ function TradeDeliver:New(config)
 
     e.frame = CreateFrame("Frame")
     e.frame:RegisterEvent("TRADE_SHOW")
+    e.frame:RegisterEvent("TRADE_CLOSED")
     e.frame:RegisterEvent("BAG_UPDATE")
     e.frame:RegisterEvent("UI_INFO_MESSAGE")
-    -- We deliberately do NOT watch TRADE_CLOSED: on a successful trade it fires
-    -- around the same time as ERR_TRADE_COMPLETE and would race-wipe the pending
-    -- snapshot. `pending` is cleared fresh on each TRADE_SHOW instead.
+    -- TRADE_CLOSED is watched ONLY to flip the tradeOpen flag. It must NOT touch `pending`,
+    -- which a successful trade still needs in _onTradeComplete (TRADE_CLOSED fires around the
+    -- same time as ERR_TRADE_COMPLETE); `pending` is cleared fresh on each TRADE_SHOW instead.
     e.frame:SetScript("OnEvent", function(_, event, arg1)
         if event == "TRADE_SHOW" then
+            e.tradeOpen = true
             e:_onTradeShow()
+        elseif event == "TRADE_CLOSED" then
+            e.tradeOpen = false
         elseif event == "BAG_UPDATE" then
             e:_onBagUpdate(arg1)
         elseif event == "UI_INFO_MESSAGE" and arg1 == ERR_TRADE_COMPLETE then
@@ -629,6 +633,13 @@ function Engine:_deliverOpenTrade(partner, key, entry)
             end
         end)
     end
+end
+
+-- True while a trade window is open (TRADE_SHOW..TRADE_CLOSED). The loot reconcile reads this
+-- to avoid writing off an owed copy as "removed" when the bag decrease is actually the trade in
+-- progress; the trade-complete callback records it as delivered instead.
+function Engine:IsTradeOpen()
+    return self.tradeOpen == true
 end
 
 function Engine:_onTradeShow()
