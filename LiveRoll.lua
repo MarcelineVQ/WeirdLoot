@@ -194,11 +194,7 @@ end
 
 local function positionInterestButtons(f, isOwner)
     f.bisBtn:ClearAllPoints()
-    if isOwner then
-        f.bisBtn:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 8, 32)
-    else
-        f.bisBtn:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 8, 10)
-    end
+    f.bisBtn:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 8, 10)
 end
 
 local function isPlayerAllowedForRoll(self, roll, playerName)
@@ -377,7 +373,7 @@ local function makePopup()
 
     f.name = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     f.name:SetPoint("TOPLEFT", f.icon, "TOPRIGHT", 6, -1)
-    f.name:SetWidth(POPUP_W - 56)
+    f.name:SetWidth(POPUP_W - 166)
     f.name:SetJustifyH("LEFT")
 
     f.sub = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -386,7 +382,7 @@ local function makePopup()
     f.sub:SetJustifyH("LEFT")
 
     f.count = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    f.count:SetPoint("TOPRIGHT", f, "TOPRIGHT", -10, -8)
+    f.count:SetPoint("TOPRIGHT", f, "TOPRIGHT", -10, -30)
 
     -- choice brackets (top button row): BiS > MS > MU > OS > TM > Pass
     f.bisBtn = makeButton(f, "BiS", 34)
@@ -402,11 +398,11 @@ local function makePopup()
     f.passBtn = makeButton(f, "Pass", 42)
     f.passBtn:SetPoint("LEFT", f.tmBtn, "RIGHT", 3, 0)
 
-    -- control row (loot master): End Roll / Cancel on the left, OK (result mode) on the right
-    f.rollBtn = makeButton(f, "End Roll", 56)
-    f.rollBtn:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 8, 10)
+    -- loot-master action buttons live in the header row; OK (result mode) stays bottom-right.
     f.cancelBtn = makeButton(f, "Cancel", 50)
-    f.cancelBtn:SetPoint("LEFT", f.rollBtn, "RIGHT", 6, 0)
+    f.cancelBtn:SetPoint("TOPRIGHT", f, "TOPRIGHT", -8, -8)
+    f.rollBtn = makeButton(f, "End", 46)
+    f.rollBtn:SetPoint("RIGHT", f.cancelBtn, "LEFT", -6, 0)
     f.okBtn = makeButton(f, "OK", 60)
     f.okBtn:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -8, 10)
 
@@ -548,8 +544,8 @@ function addon:ShowInterestPopup(roll)
     if roll.owner then
         -- the ML keeps the popup to drive the roll: Cancel aborts, Roll! resolves
         f.rollBtn:Show()
-        f.rollBtn:SetWidth(56)
-        f.rollBtn:SetText("End Roll")
+        f.rollBtn:SetWidth(46)
+        f.rollBtn:SetText("End")
         f.rollBtn:SetScript("OnClick", function() self:ResolveLiveRoll(roll.id) end)
         f.cancelBtn:Show()
         f.cancelBtn:SetWidth(50)
@@ -698,8 +694,8 @@ function addon:ShowPendingPopup(item, slot)
     end)
 
     f.rollBtn:Show()
-    f.rollBtn:SetWidth(90)
-    f.rollBtn:SetText("Start Roll")
+    f.rollBtn:SetWidth(46)
+    f.rollBtn:SetText("Start")
     f.rollBtn:SetScript("OnClick", function()
         closePopup(self, f)
         self:StartLiveRoll(item)        -- clears pendingLinks for this item
