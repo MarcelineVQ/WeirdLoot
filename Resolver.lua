@@ -91,13 +91,14 @@ function addon:FilterByStatus(candidates)
     return survivors, highestRank
 end
 
-function addon:RollCandidates(candidates)
+function addon:RollCandidates(candidates, rollAssignments)
     local rolls = {}
     for _, candidate in ipairs(candidates) do
+        local assigned = rollAssignments and rollAssignments[util:NormalizeKey(candidate.name)]
         rolls[#rolls + 1] = {
-            name = candidate.name,
-            roll = math.random(1, 100),
-            auto = false,
+            name = (assigned and assigned.name) or candidate.name,
+            roll = (assigned and assigned.roll) or math.random(1, 100),
+            auto = assigned and assigned.auto or false,
         }
     end
 
@@ -538,7 +539,7 @@ function addon:ResolveSessionItem(item)
             }
         end
 
-        local allRolls = self:RollCandidates(rollers)
+        local allRolls = self:RollCandidates(rollers, item.liveRollAssignments)
         local allRollByName = {}
         for _, roll in ipairs(allRolls) do
             allRollByName[util:NormalizeKey(roll.name)] = roll

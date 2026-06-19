@@ -354,6 +354,8 @@ function addon:HandleCommMessage(sender, logical)
         self:OnDropMessage(fields)
     elseif command == "RSP" then
         self:OnRspMessage(sender, fields)
+    elseif command == "LIVE_SYNC" then
+        self:OnLiveSyncMessage(fields)
     elseif command == "WIN" then
         self:OnWinMessage(fields)
     elseif command == "CANCEL" then
