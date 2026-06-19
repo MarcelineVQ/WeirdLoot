@@ -41,19 +41,6 @@ local WIRE = {}        -- queue of { prefix, msg, dist, target, sender }
 local CLOCK = 1000     -- controllable GetTime()/time()
 
 -- ---------------------------------------------------------------------------
--- universal frame mock: any method is a chainable no-op returning the frame, so the
--- addon's frame construction (Initialize* / popups / UI) loads without a real client.
--- We never fire OnUpdate/OnClick, so return values from getters are never math'd on.
--- ---------------------------------------------------------------------------
-local frameMT
-frameMT = {
-    __index = function(_, k)
-        return function(self) return self end
-    end,
-}
-local function newFrame() return setmetatable({}, frameMT) end
-
--- ---------------------------------------------------------------------------
 -- a fake fixed item database: itemId -> name. Links embed the itemId (3.3.5 format).
 -- ---------------------------------------------------------------------------
 local ITEMS = {
@@ -68,6 +55,29 @@ local function linkFor(itemId) return "|cffa335ee|Hitem:" .. itemId .. ":0:0:0:0
 local function makeWorld(playerName, isML)
     local env = setmetatable({}, { __index = _G })
     env._G = env
+    env.__onUpdates = {}    -- captured OnUpdate handlers, driven by pump()
+    env.__closeTrade = 0    -- count of CloseTrade() calls (autoCancel assertions)
+
+    -- frame mock: methods are chainable no-ops EXCEPT SetScript/GetScript (real, so we can
+    -- drive OnUpdate timers + OnEvent) and NumLines (numeric, so tooltip scans don't blow up).
+    local function newFrame()
+        local f = { __scripts = {} }
+        return setmetatable(f, { __index = function(self, k)
+            if k == "SetScript" then
+                return function(_, st, fn) self.__scripts[st] = fn; if st == "OnUpdate" then env.__onUpdates[self] = fn end end
+            elseif k == "GetScript" then
+                return function(_, st) return self.__scripts[st] end
+            elseif k == "NumLines" then
+                return function() return 0 end
+            end
+            -- WoW frame methods are CamelCase; the addon's data fields are lowercase. Return a
+            -- chainable no-op for methods, but nil for an UNSET data field (e.g. frame.elapsed),
+            -- so `(frame.elapsed or 0) + dt` doesn't try arithmetic on a function.
+            if type(k) == "string" and k:match("^%u") then return function(s) return s end end
+            return nil
+        end })
+    end
+    env.__newFrame = newFrame
 
     -- deterministic-ish rng (seeded per world); resolution asserts are invariant-based anyway
     local seed = 0
@@ -90,7 +100,7 @@ local function makeWorld(playerName, isML)
     env.random = rng
     env.randomseed = function() end
     env.math = setmetatable({ random = rng }, { __index = math })
-    env.UnitName = function(unit) if unit == "player" then return playerName end return playerName end
+    env.UnitName = function(unit) if unit == "NPC" then return env.__tradePartner end return playerName end
     env.GetUnitName = function() return playerName end
     env.UnitGUID = function() return "Player-0-000000" .. tostring(#playerName) end
     env.GetRealmName = function() return "TestRealm" end
@@ -109,7 +119,7 @@ local function makeWorld(playerName, isML)
     env.ERR_TRADE_COMPLETE = "Trade complete."
     env.UI_INFO_MESSAGE = "UI_INFO_MESSAGE"
     env.MAX_TRADABLE_ITEMS = 6
-    env.CloseTrade = function() end
+    env.CloseTrade = function() env.__closeTrade = env.__closeTrade + 1 end
     env.AcceptTrade = function() end
     env.GetTradePlayerItemLink = function() end
     env.GetItemInfo = function(idOrLink)
@@ -119,15 +129,46 @@ local function makeWorld(playerName, isML)
         -- name, link, quality, ilvl, reqLevel, class, subclass, stack, equipLoc, texture, sell
         return name, linkFor(id), 4, 200, 80, "Armor", "Cloth", 1, "INVTYPE_SHOULDER", "Interface\\Icons\\inv_test", 0
     end
-    env.GetContainerNumSlots = function() return 0 end
-    env.GetContainerItemLink = function() return nil end
-    env.GetContainerItemInfo = function() return nil end
+    -- ---- bag + trade-window model (drives the real TradeDeliver engine) ----
+    env.__bags = {}                                  -- [bag] = { size=N, [slot]={id,count,link} }
+    for b = 0, 4 do env.__bags[b] = { size = 16 } end
+    env.__cursor = nil                               -- item held on the cursor
+    env.__tradePartner = nil                         -- UnitName("NPC")
+    env.__tradeSlots = 0                             -- placed trade slots this window
+    env.BIND_TRADE_TIME_REMAINING = "You may trade this item with %s for %s."
+
+    env.GetContainerNumSlots = function(bag) local B = env.__bags[bag]; return B and B.size or 0 end
+    env.GetContainerItemID = function(bag, slot) local it = env.__bags[bag] and env.__bags[bag][slot]; return it and it.id or nil end
+    env.GetContainerItemInfo = function(bag, slot)
+        local it = env.__bags[bag] and env.__bags[bag][slot]
+        if not it then return nil end
+        return "Interface\\Icons\\inv_test", it.count, nil, 4   -- texture, count, locked, quality
+    end
+    env.GetContainerItemLink = function(bag, slot) local it = env.__bags[bag] and env.__bags[bag][slot]; return it and (it.link or linkFor(it.id)) or nil end
+    env.GetContainerNumFreeSlots = function(bag)
+        local B = env.__bags[bag]; if not B then return 0, 0 end
+        local used = 0; for s = 1, B.size do if B[s] then used = used + 1 end end
+        return B.size - used, 0
+    end
+    env.ClearCursor = function() env.__cursor = nil end
+    env.SplitContainerItem = function(bag, slot, qty)
+        local it = env.__bags[bag] and env.__bags[bag][slot]
+        if not it then return end
+        env.__cursor = { id = it.id, count = qty, link = it.link }
+        it.count = it.count - qty
+        if it.count <= 0 then env.__bags[bag][slot] = nil end
+    end
+    env.PickupContainerItem = function(bag, slot)
+        if env.__cursor then env.__bags[bag][slot] = env.__cursor; env.__cursor = nil
+        else env.__cursor = env.__bags[bag] and env.__bags[bag][slot]; if env.__bags[bag] then env.__bags[bag][slot] = nil end end
+    end
+    env.TradeFrame_GetAvailableSlot = function() if env.__tradeSlots >= 6 then return nil end; env.__tradeSlots = env.__tradeSlots + 1; return env.__tradeSlots end
+    env.ClickTradeButton = function() env.__cursor = nil end   -- item moves into the trade window
     env.SlashCmdList = {}
     env.StaticPopupDialogs = {}
     env.StaticPopup_Show = function() return newFrame() end
     env.StaticPopup_Hide = function() end
     env.PlaySound = function() end
-    env.GetContainerItemID = function() return nil end
     env.IsInInstance = function() return false, "none" end
     env.GetInstanceInfo = function() return "none", "none" end
     env.InCombatLockdown = function() return false end
@@ -158,9 +199,13 @@ local function makeWorld(playerName, isML)
         chunk("WeirdLoot", private)
     end
 
+    if os.getenv("WLDEBUG") then
+        env.DEFAULT_CHAT_FRAME = setmetatable({ AddMessage = function(_, m) io.stderr:write(tostring(m) .. "\n") end }, { __index = function() return function() end end })
+    end
     local addon = env.WeirdLoot
     addon.InitializeUI = function() end       -- UI not loaded in the harness
     addon:PLAYER_LOGIN()
+    if os.getenv("WLDEBUG") then env.WeirdLootDB.payoutDebug = true end
 
     -- ---- force the loot-authority + scan into a deterministic test state ----
     addon.roster = addon.roster or {}
@@ -222,6 +267,39 @@ local function flushWireTo(target, fromSender)
     end
 end
 local function clearWire() WIRE = {} end
+
+-- physical bag (drives TradeDeliver), distinct from the eligible-count model (drives reconcile)
+local function putBag(w, bag, slot, id, count) w.env.__bags[bag][slot] = { id = id, count = count, link = linkFor(id) } end
+local function fillBagsExcept(w)             -- occupy every empty slot so no split target exists
+    for b = 0, 4 do local B = w.env.__bags[b]; for s = 1, B.size do if not B[s] then B[s] = { id = 99999, count = 1, link = linkFor(99999) } end end end
+end
+local function fireEvent(w, event, arg1)
+    local fr = w.addon.payout and w.addon.payout.frame
+    local fn = fr and fr.__scripts and fr.__scripts.OnEvent
+    if fn then fn(fr, event, arg1) end
+end
+local function pump(w, dt) for f, fn in pairs(w.env.__onUpdates) do fn(f, dt or 1.0) end end
+local function setPartner(w, name) w.env.__tradePartner = name; w.env.__tradeSlots = 0 end
+
+-- full trade sequence the engine reacts to: partner opens trade -> (bag updates for any splits)
+-- -> settle timer fires the fill -> the trade completes.
+local function runTrade(w, partner)
+    setPartner(w, partner)
+    fireEvent(w, "TRADE_SHOW")
+    for b = 0, 4 do fireEvent(w, "BAG_UPDATE", b) end   -- satisfy any split's wait
+    pump(w, 1.0)                                         -- SETTLE/FALLBACK -> finalize + place
+    fireEvent(w, "UI_INFO_MESSAGE", w.env.ERR_TRADE_COMPLETE)
+end
+
+-- resolve a single-copy lot to a non-ML winner and return its lot id (commonly-needed setup)
+local function resolveOwedTo(w, itemId, winner)
+    setBag(w, itemId, 1); bagUpdate(w)
+    local lot = openLot(w, itemId)
+    w.addon:StartLiveRoll(lot.id)
+    w.addon:RegisterInterest(lot.id, winner, "ms")
+    w.addon:ResolveLiveRoll(lot.id)
+    return lot.id
+end
 
 -- ===========================================================================
 -- BATTERY
@@ -447,6 +525,163 @@ test("raider pick whispers the ML and is applied", function()
     flushWireTo(ml)                     -- ML receives the SELECTION
     local L = ml.addon.lootCore:Get(lot.id)
     check(L.responses["raidertwo"] ~= nil, "ML recorded the raider's pick on the lot")
+end)
+
+-- ===========================================================================
+-- TRADE ENGINE (drives the real TradeDeliver fill/complete machinery)
+-- ===========================================================================
+
+test("trade engine: owed player trades -> item delivered, disposition recorded", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    local lotId = resolveOwedTo(w, 40005, "Alice")
+    eq(owedCount(w), 1, "Alice owed 1")
+    putBag(w, 0, 1, 40005, 1)                  -- the won item sits in the ML's bags
+    w.addon.payout:StartPayout()
+    runTrade(w, "Alice")
+    eq(owedCount(w), 0, "owe cleared after the trade completes")
+    eq(w.addon.lootCore:Get(lotId).awards[1].state, "delivered", "award delivered through the engine")
+    eq(w.addon.lootCore:Get(lotId).awards[1].recipient, "Alice", "recipient recorded")
+end)
+
+test("trade engine: short stock delivers what it can, rest stays owed", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    w.addon.payout:Owe("Alice", 40005, 2, linkFor(40005))   -- owed 2
+    putBag(w, 0, 1, 40005, 1)                                -- only 1 in bags
+    w.addon.payout:StartPayout()
+    runTrade(w, "Alice")
+    eq(owedCount(w), 1, "1 of 2 delivered; 1 still owed")
+end)
+
+test("trade engine: more than 6 owed items cap at one trade's 6 slots", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    for i = 1, 7 do
+        w.addon.payout:Owe("Alice", 41000 + i, 1, linkFor(41000 + i))
+        putBag(w, 0, i, 41000 + i, 1)
+    end
+    eq(owedCount(w), 7, "7 owed up front")
+    w.addon.payout:StartPayout()
+    runTrade(w, "Alice")
+    eq(owedCount(w), 1, "6 delivered this trade, 1 remains (slot cap)")
+end)
+
+test("trade engine: full bags block a required split; item stays owed", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    w.addon.payout:Owe("Alice", 40005, 1, linkFor(40005))   -- owed 1
+    putBag(w, 0, 1, 40005, 3)                                -- only a stack of 3 (a split is needed)
+    fillBagsExcept(w)                                         -- no free slot to split into
+    w.addon.payout:StartPayout()
+    runTrade(w, "Alice")
+    eq(owedCount(w), 1, "couldn't split into full bags -> nothing delivered, still owed")
+end)
+
+test("trade engine: split delivery works when a free slot exists", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    w.addon.payout:Owe("Alice", 40005, 1, linkFor(40005))   -- owed 1
+    putBag(w, 0, 1, 40005, 3)                                -- a stack of 3, free slots available
+    w.addon.payout:StartPayout()
+    runTrade(w, "Alice")
+    eq(owedCount(w), 0, "split off 1 and delivered it")
+end)
+
+test("trade engine: declines a non-owed player's trade during payout", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    w.addon.payout:Owe("Alice", 40005, 1, linkFor(40005))   -- someone is owed
+    w.addon.payout:StartPayout()
+    setPartner(w, "Bob")                                     -- Bob is NOT owed
+    fireEvent(w, "TRADE_SHOW")
+    check(w.env.__closeTrade >= 1, "non-owed trade declined (CloseTrade called)")
+    eq(owedCount(w), 1, "Alice still owed; nothing handed to Bob")
+end)
+
+-- ===========================================================================
+-- ADVERSARIAL / FAILURE-MODE cases (where things break, by design or as a known gap)
+-- ===========================================================================
+
+test("KNOWN RACE: bag scan before trade-complete records the copy as removed, not delivered", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    local lotId = resolveOwedTo(w, 40005, "Alice")
+    -- the item leaves the ML's bags and BAG_UPDATE reconciles BEFORE the trade-complete callback
+    setBag(w, 40005, 0); bagUpdate(w)
+    eq(w.addon.lootCore:Get(lotId).awards[1].state, "removed", "owed copy retired as removed (the documented race)")
+    check(not w.addon.lootCore:MarkDeliveredFor("Alice", 40005), "delivery can no longer be recorded")
+end)
+
+test("guard: a response on a resolved lot is rejected", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    local lotId = resolveOwedTo(w, 40005, "Alice")
+    check(not w.addon.lootCore:SetResponse(lotId, "bob", "ms"), "core refuses to mutate a resolved lot")
+end)
+
+test("guard: a rolling lot is never retired on a mid-roll bag-count drop", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    setBag(w, 40004, 2); bagUpdate(w)
+    local lot = openLot(w, 40004)
+    w.addon:StartLiveRoll(lot.id)                 -- count 2, rolling
+    setBag(w, 40004, 1); bagUpdate(w)             -- a copy leaves mid-roll
+    eq(w.addon.lootCore:State(lot.id), "rolling", "still rolling, not retired")
+    eq(w.addon.lootCore:Get(lot.id).count, 2, "count not shrunk under an active roll")
+end)
+
+test("guard: MarkDeliveredFor with the wrong player or item is a no-op", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    local lotId = resolveOwedTo(w, 40005, "Alice")
+    check(not w.addon.lootCore:MarkDeliveredFor("Nobody", 40005), "wrong player -> false")
+    check(not w.addon.lootCore:MarkDeliveredFor("Alice", 99999), "wrong item -> false")
+    eq(w.addon.lootCore:Get(lotId).awards[1].state, "owed", "award still owed")
+end)
+
+test("guard: reconcile retires an un-rolled copy before an owed one", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    local lotId = resolveOwedTo(w, 40005, "Alice")   -- owed copy held in bags
+    setBag(w, 40005, 2); bagUpdate(w)                -- a fresh copy drops alongside it
+    local fresh = openLot(w, 40005)
+    check(fresh and fresh.id ~= lotId, "a separate fresh lot exists")
+    setBag(w, 40005, 1); bagUpdate(w)                -- drop one: the un-rolled one should go
+    eq(w.addon.lootCore:LiveCount(fresh.id), 0, "the un-rolled fresh copy was retired")
+    eq(w.addon.lootCore:Get(lotId).awards[1].state, "owed", "the owed copy was preserved")
+end)
+
+test("guard: a stray LOT message without SNAP_BEGIN is ignored (no crash)", function()
+    local w = makeWorld("Raidertwo", false)
+    local ok = pcall(function() w.addon:HandleCommMessage("Masterlooter", "LOT|s|L:1|40005|pending|1|") end)
+    check(ok, "stray LOT handled without error")
+    eq(#w.addon.lootCore:All(), 0, "nothing staged into the ledger")
+end)
+
+test("guard: a roll with no responders resolves to no winner and no owe", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    setBag(w, 40005, 1); bagUpdate(w)
+    local lot = openLot(w, 40005)
+    w.addon:StartLiveRoll(lot.id)
+    w.addon:ResolveLiveRoll(lot.id)                  -- nobody rolled
+    eq(w.addon.lootCore:Get(lot.id).awards[1].winner, nil, "no winner")
+    eq(w.addon.lootCore:Get(lot.id).awards[1].state, "resolved", "ML keeps it")
+    eq(owedCount(w), 0, "no owe created")
+end)
+
+test("guard: unlock + reroll retracts the owe and re-creates it for the new winner", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    local lotId = resolveOwedTo(w, 40005, "Alice")
+    eq(owedCount(w), 1, "owed after first resolve")
+    w.addon.lootCore:Unlock(lotId)
+    eq(owedCount(w), 0, "owe retracted on unlock")
+    w.addon:StartLiveRoll(lotId)
+    w.addon:RegisterInterest(lotId, "Bob", "ms")
+    w.addon:ResolveLiveRoll(lotId)
+    eq(owedCount(w), 1, "re-owed after reroll")
 end)
 
 -- ===========================================================================
