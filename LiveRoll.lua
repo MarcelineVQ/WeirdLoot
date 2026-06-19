@@ -42,6 +42,54 @@ function addon:InitializeLiveRoll()
         anchor:SetPoint(point, UIParent, relativePoint, x, y)
         self.live.anchor = anchor
     end
+
+    -- The core drives surfacing now: a fresh lot auto-surfaces (ML + autoRoll), and any
+    -- ledger change reconciles the on-screen pending popups with the core's PENDING lots.
+    if self.lootCore and not self._liveRollWired then
+        self._liveRollWired = true
+        self.lootCore:On("lotAdded", function(lot) self:OnLotAdded(lot) end)
+        self.lootCore:On("ledgerChanged", function() self:SyncPendingPopups() end)
+    end
+end
+
+-- A freshly-minted lot auto-surfaces to the ML (unless autoRoll is off), moving it to
+-- PENDING so SyncPendingPopups shows its Start Roll / Skip popup.
+function addon:OnLotAdded(lot)
+    if not self:IsAuthorizedLootMaster() then return end
+    if not self.db or not self.db.autoRoll then return end
+    if lot and lot.state == self.lootCore.STATE.NEW then
+        self.lootCore:Surface(lot.id)
+    end
+end
+
+-- Reconcile pending popups against the core: show one for every PENDING lot that lacks a
+-- popup, and close any pending popup whose lot has left PENDING (rolled / skipped / gone).
+function addon:SyncPendingPopups()
+    if not self:IsAuthorizedLootMaster() then return end
+    local core = self.lootCore
+    for _, lot in ipairs(core:List()) do
+        if lot.state == core.STATE.PENDING and not self:HasOpenPendingForLot(lot.id) then
+            self:ShowPendingPopup(lot)
+        end
+    end
+    for i = #self.live.active, 1, -1 do
+        local f = self.live.active[i]
+        if f.mode == "pending" and f.lotId and core:State(f.lotId) ~= core.STATE.PENDING then
+            self:ClosePendingFrame(f)
+        end
+    end
+end
+
+function addon:HasOpenPendingForLot(lotId)
+    for _, f in ipairs(self.live.active) do
+        if f.mode == "pending" and f.lotId == lotId then return true end
+    end
+    return false
+end
+
+function addon:HasOpenRollForLot(lotId)
+    local roll = self.live.rolls and self.live.rolls[lotId]
+    return roll ~= nil and not roll.resolved
 end
 
 -- ---------------------------------------------------------------------------
@@ -377,6 +425,13 @@ local function closePopup(self, f)
     layoutPopups(self)
 end
 
+-- Late-bound method wrapper so the event handlers defined earlier (SyncPendingPopups) can
+-- close a frame without a forward reference to the local closePopup.
+function addon:ClosePendingFrame(f)
+    closePopup(self, f)
+    compactPopups(self)
+end
+
 local function formatRollItemLabel(link, name, quantity)
     local itemText = link ~= "" and link or name or "Item"
     if (quantity or 1) > 1 then
@@ -461,33 +516,21 @@ function addon:RefreshInterestPopup(roll)
     local f = roll and roll.popup
     if not f or f.mode ~= "interest" or not roll.owner then return end
 
-    if roll.itemId then
-        local total = 0
-        for _, choice in pairs(self.session.responses[roll.itemId] or {}) do
-            if self:IsResponseActive(choice) then
-                total = total + 1
-            end
-        end
-        f.count:SetText(total > 0 and (total .. " rolling") or "")
-        return
-    end
-
+    -- count active responses from the core lot (the single source of truth)
     local total = 0
-    for _, r in pairs(roll.registrants) do
-        if r.tier and r.tier ~= "pass" then total = total + 1 end
+    local lot = self.lootCore:Get(roll.id)
+    if lot then
+        for _, choice in pairs(lot.responses) do
+            if self:IsResponseActive(choice) then total = total + 1 end
+        end
     end
     f.count:SetText(total > 0 and (total .. " rolling") or "")
 end
 
-function addon:RefreshLiveRollCountForItem(itemId)
-    if not itemId or not self.live or not self.live.rolls then
-        return
-    end
-
-    for _, roll in pairs(self.live.rolls) do
-        if roll and not roll.resolved and roll.itemId == itemId then
-            self:RefreshInterestPopup(roll)
-        end
+function addon:RefreshLiveRollCountForItem(lotId)
+    local roll = lotId and self.live and self.live.rolls and self.live.rolls[lotId]
+    if roll and not roll.resolved then
+        self:RefreshInterestPopup(roll)
     end
 end
 
@@ -520,21 +563,23 @@ end
 -- pending popup (loot master only): a freshly-collected item, not yet broadcast.
 -- The ML presses Start Roll to actually put it up for the raid, or Skip to dismiss.
 -- ---------------------------------------------------------------------------
-function addon:ShowPendingPopup(item, slot)
-    if not item or not item.link or item.link == "" then return end
-    local link = item.link
+function addon:ShowPendingPopup(lot, slot)
+    if not lot or not lot.id then return end
+    local lotId = lot.id
+    local name, link, icon = util:ItemRender(lot.itemId)
+    name = name or link or ("item:" .. tostring(lot.itemId))
+    local quantity = self.lootCore:LiveCount(lotId)
+
     local f = acquirePopup(self)
     f.mode = "pending"
     f:SetScript("OnUpdate", nil)        -- no countdown until the roll actually starts
     f.timer:Hide()
-    f.pendingLink = link
-    self.session.pendingLinks = self.session.pendingLinks or {}
-    self.session.pendingLinks[link] = true      -- persisted: re-shown to the ML after a reload
+    f.lotId = lotId
 
-    f.icon:SetTexture(item.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
+    f.icon:SetTexture(icon or "Interface\\Icons\\INV_Misc_QuestionMark")
     f.itemLink = link
-    f.name:SetText(formatRollItemLabel(link, item.name, item.quantity))
-    f.sub:SetText("|cffffffffPrio:|r " .. (self:GetLiveItemPrio(item) or "BiS > MS > MU > OS > TM"))
+    f.name:SetText(formatRollItemLabel(link, name, quantity))
+    f.sub:SetText("|cffffffffPrio:|r " .. (self:GetLiveItemPrio({ name = name }) or "BiS > MS > MU > OS > TM"))
     f.count:Hide()
 
     f.bisBtn:Hide(); f.msBtn:Hide(); f.muBtn:Hide(); f.osBtn:Hide(); f.tmBtn:Hide(); f.passBtn:Hide(); f.okBtn:Hide()
@@ -543,9 +588,7 @@ function addon:ShowPendingPopup(item, slot)
     f.cancelBtn:SetWidth(50)
     f.cancelBtn:SetText("Skip")
     f.cancelBtn:SetScript("OnClick", function()
-        self.session.pendingLinks[link] = nil      -- Skipped: decided, don't re-show on reload
-        closePopup(self, f)
-        compactPopups(self)
+        self.lootCore:Skip(lotId)       -- pending -> skipped; ledgerChanged closes this popup
     end)
 
     f.rollBtn:Show()
@@ -553,7 +596,7 @@ function addon:ShowPendingPopup(item, slot)
     f.rollBtn:SetText("Start Roll")
     f.rollBtn:SetScript("OnClick", function()
         closePopup(self, f)
-        self:StartLiveRoll(item)        -- clears pendingLinks for this item
+        self:StartLiveRoll(lotId)
     end)
 
     f:SetScript("OnEnter", nil)
@@ -567,7 +610,7 @@ end
 -- ---------------------------------------------------------------------------
 -- result popup
 -- ---------------------------------------------------------------------------
-function addon:ShowResultPopup(roll, winner, winnerRoll, sections, slot)
+function addon:ShowResultPopup(roll, winners, sections, slot)
     local f = acquirePopup(self)
     f.mode = "result"
     f:SetScript("OnUpdate", nil)        -- no countdown on a result popup
@@ -576,26 +619,25 @@ function addon:ShowResultPopup(roll, winner, winnerRoll, sections, slot)
     f.itemLink = roll.link
     f.name:SetText(formatRollItemLabel(roll.link, roll.name, roll.quantity))
 
+    winners = winners or {}
     local myKey = util:NormalizeKey(util:GetPlayerName("player") or "")
-    local winKey = winner and winner ~= "" and util:NormalizeKey(winner) or nil
-    local myRoll, mySection, winnerSection
+    local winnerKeys = {}
+    for _, w in ipairs(winners) do winnerKeys[util:NormalizeKey(w)] = true end
+    local myRoll, mySection
     for _, s in ipairs(sections or {}) do
         for _, m in ipairs(s.members) do
-            local k = util:NormalizeKey(m.name)
-            if k == myKey then myRoll = m.roll; mySection = s.label end
-            if winKey and k == winKey then winnerSection = s.label end
+            if util:NormalizeKey(m.name) == myKey then myRoll = m.roll; mySection = s.label end
         end
     end
 
     local line
-    if not winKey then
+    if #winners == 0 then
         line = "No rollers."
-    elseif winKey == myKey then
-        line = string.format("|cff40ff40You won!|r  (your roll %s)", tostring(myRoll or winnerRoll))
+    elseif winnerKeys[myKey] then
+        line = string.format("|cff40ff40You won!|r  (your roll %s)", tostring(myRoll or "?"))
     else
-        local mine = myRoll and string.format("Your roll %d%s.  ", myRoll, mySection and (" ("..mySection..")") or "") or ""
-        line = string.format("|cffff6060You lost.|r  %sWinner: %s (%s%s)", mine, winner,
-            tostring(winnerRoll), winnerSection and (", " .. winnerSection) or "")
+        local mine = myRoll and string.format("Your roll %d%s.  ", myRoll, mySection and (" (" .. mySection .. ")") or "") or ""
+        line = string.format("|cffff6060You lost.|r  %sWinner%s: %s", mine, (#winners > 1 and "s" or ""), table.concat(winners, ", "))
     end
     f.sub:SetText(line)
 
@@ -607,7 +649,7 @@ function addon:ShowResultPopup(roll, winner, winnerRoll, sections, slot)
     -- hover: full breakdown by priority section so a higher roll in a lower section is
     -- clearly explained
     f.sections = sections
-    f.winnerKey = winKey
+    f.winnerKeys = winnerKeys
     f.myKey = myKey
     f:SetScript("OnEnter", function(selfFrame)
         GameTooltip:SetOwner(selfFrame, "ANCHOR_RIGHT")
@@ -624,7 +666,7 @@ function addon:ShowResultPopup(roll, winner, winnerRoll, sections, slot)
                 for _, m in ipairs(mem) do
                     local key = util:NormalizeKey(m.name)
                     local isMe = selfFrame.myKey and key == selfFrame.myKey
-                    local won = selfFrame.winnerKey and key == selfFrame.winnerKey
+                    local won = selfFrame.winnerKeys and selfFrame.winnerKeys[key]
                     local label = isMe and "You" or m.name
                     if won then
                         label = "|cff40ff40" .. label .. "|r"            -- winner: green
@@ -671,59 +713,14 @@ function addon:GetLiveItemPrio(item)
     return formatLootRuleDisplay(lootRule) or "BiS > MS > MU > OS > TM"   -- default: bracket order
 end
 
-function addon:HasOpenRollForLink(link)
-    for _, roll in pairs(self.live.rolls or {}) do
-        if not roll.resolved and roll.link == link then return true end
-    end
-    return false
+-- Auto-surfacing and pending-popup restoration are now driven by core events
+-- (OnLotAdded + SyncPendingPopups). These remain as thin entry points for any callers.
+function addon:AutoRollAddedItems()
+    self:SyncPendingPopups()
 end
 
--- Surface a pending popup for each newly-arrived (looted or traded-in) item, once per
--- item link. The ML decides when to actually broadcast each roll (Start Roll). Loot-
--- master only, opt-out via WeirdLootDB.autoRoll. Called from OnBagUpdate with the set
--- of links whose bag count just went up.
--- is a pending popup currently on screen for this item link?
-function addon:HasOpenPendingForLink(link)
-    for _, f in ipairs(self.live.active) do
-        if f.mode == "pending" and f.pendingLink == link then return true end
-    end
-    return false
-end
-
-function addon:AutoRollAddedItems(addedLinks)
-    if not self.db.autoRoll then return end
-    if not self:IsAuthorizedLootMaster() then return end
-    for _, item in ipairs(self.session.items or {}) do
-        if addedLinks[item.link] then
-            -- A genuinely new copy just arrived in the bags. If a previous copy was rolled
-            -- out the item is locked; clear that so the duplicate can be rolled (the lock
-            -- only ever meant "the drop already handled was rolled out").
-            if item.id then self:UnlockItem(item.id) end
-            -- Dedup on the actual on-screen popup, NOT the persisted pendingLinks flag
-            -- (which can be stale and would wrongly suppress a real new drop).
-            if not self:HasOpenPendingForLink(item.link) and not self:HasOpenRollForLink(item.link) then
-                self:ShowPendingPopup(item)
-            end
-        end
-    end
-end
-
--- After a reload, re-show the pending popups for any items the ML hadn't decided on yet
--- (Start/Skip). Skipped or rolled items aren't in pendingLinks, so they stay gone.
 function addon:RestorePendingPopups()
-    if not self:IsAuthorizedLootMaster() then return end
-    local pending = self.session.pendingLinks
-    if not pending then return end
-    for _, item in ipairs(self.session.items or {}) do
-        if pending[item.link] and not self:HasOpenRollForLink(item.link) then
-            -- guard against a double restore (e.g. login path + delayed ML re-check)
-            local already = false
-            for _, f in ipairs(self.live.active) do
-                if f.mode == "pending" and f.pendingLink == item.link then already = true break end
-            end
-            if not already then self:ShowPendingPopup(item) end
-        end
-    end
+    self:SyncPendingPopups()
 end
 
 -- Abort an open roll. For raiders the item disappears (CANCEL closes their popup). For
@@ -736,11 +733,9 @@ function addon:CancelLiveRoll(rollId)
     self:SendLargeMessage("CANCEL", { rollId }, "RAID")
     self.live.rolls[rollId] = nil
 
-    local item = { id = roll.itemId, link = roll.link, name = roll.name, icon = roll.icon }
-    local slot = roll.popup and roll.popup.slot
     self:CloseInterestPopup(roll)
-    self:ShowPendingPopup(item, slot)        -- back to pending in place, not gone
-    self:Print("Roll cancelled: " .. (roll.name or roll.link or "item") .. " (back to pending).")
+    self.lootCore:Cancel(rollId)             -- rolling -> pending; SyncPendingPopups re-shows it
+    self:Print("Roll cancelled: " .. (roll.name or "item") .. " (back to pending).")
 end
 
 function addon:OnCancelMessage(fields)
@@ -751,46 +746,43 @@ function addon:OnCancelMessage(fields)
     self.live.rolls[fields[1]] = nil
 end
 
-function addon:StartLiveRoll(item)
+-- Start a live roll for a lot id. The core lot is the single source of truth; the roll
+-- object here is just the popup/wire wrapper, keyed by the SAME id as the lot.
+function addon:StartLiveRoll(lotId)
     if not self:IsAuthorizedLootMaster() then
         self:Print("Only the loot master can put items up for roll.")
         return
     end
-    if not item or not item.link or item.link == "" then return end
+    local core = self.lootCore
+    local lot = core:Get(lotId)
+    if not lot then return end
 
-    if item.id and self:IsItemLocked(item.id) then
-        self:Print((item.name or item.link) .. " was already rolled out. Use Unlock Roll to reroll it.")
-        if self.session.pendingLinks then self.session.pendingLinks[item.link] = nil end  -- don't leave it stuck pending
+    local name, link, icon = util:ItemRender(lot.itemId)
+    name = name or link or ("item:" .. tostring(lot.itemId))
+
+    if lot.state == core.STATE.RESOLVED then
+        self:Print(name .. " was already rolled out. Use Unlock Roll to reroll it.")
         return
     end
 
-    if self.session.pendingLinks then self.session.pendingLinks[item.link] = nil end  -- decided: now rolling
+    -- move the lot to rolling (surface first if it is still idle/new/skipped)
+    if lot.state ~= core.STATE.PENDING then core:Surface(lotId) end
+    if not core:StartRoll(lotId) then return end
 
-    local rollId = nextRollId(self)
-    local prio = self:GetLiveItemPrio(item)
+    local prio = self:GetLiveItemPrio({ name = name })
+    local quantity = core:LiveCount(lotId)
     local roll = {
-        id = rollId, itemId = item.id, link = item.link, name = item.name or item.link,
-        icon = item.icon, prio = prio, owner = true, registrants = {}, resolved = false,
-        duration = ROLL_DURATION, quantity = item.quantity or 1,
+        id = lotId, itemId = lot.itemId, link = link, name = name,
+        icon = icon, prio = prio, owner = true, registrants = {}, resolved = false,
+        duration = ROLL_DURATION, quantity = quantity,
     }
+    self.live.rolls[lotId] = roll
 
-    if item.id then
-        for playerKey, choice in pairs(self.session.responses[item.id] or {}) do
-            if self:IsResponseActive(choice) then
-                roll.registrants[playerKey] = {
-                    name = playerKey,
-                    tier = choice,
-                }
-            end
-        end
-    end
-
-    self.live.rolls[rollId] = roll
-
+    -- the wire carries the itemId (not a link): every client renders its own localized name
     self:SendLargeMessage("DROP",
-        { rollId, item.link, item.name or "", item.icon or "", prio or "", tostring(ROLL_DURATION), tostring(item.quantity or 1) }, "RAID")
+        { lotId, tostring(lot.itemId), prio or "", tostring(ROLL_DURATION), tostring(quantity) }, "RAID")
     self:ShowInterestPopup(roll)
-    self:Print("Put " .. (item.name or item.link) .. " up for roll. Press Roll! when ready.")
+    self:Print("Put " .. name .. " up for roll. Press End Roll when ready.")
 end
 
 function addon:ResolveLiveRoll(rollId)
@@ -799,51 +791,32 @@ function addon:ResolveLiveRoll(rollId)
     if not self:IsAuthorizedLootMaster() then return end
     roll.resolved = true
 
-    -- Registrants' brackets are already in session.responses (RegisterInterest). Resolve
-    -- through the SAME engine the batch flow uses: bracket -> named -> spec -> status -> roll.
-    local sit = self:LiveRollSessionItem(roll)
-    local item = { id = sit.id, name = sit.name or roll.name, link = sit.link or roll.link, icon = sit.icon or roll.icon, quantity = sit.quantity or roll.quantity or 1 }
-    local record = self:ResolveSessionItem(item)
-
-    local winner = (record.winner and record.winner ~= "No winner") and record.winner or nil
-    local winnerRoll
-    for _, w in ipairs(record.winnerDetails or {}) do
-        if w.name == record.winner then winnerRoll = w.roll end
+    -- Resolve through the core: it hands this lot's responses to ResolveSessionItem (bracket
+    -- -> named -> spec -> status -> roll, top-N by count) and freezes the ordered winners onto
+    -- per-copy awards. lotResolved fires here -> payout owes; ledgerChanged -> projection + sync.
+    local record = self.lootCore:Resolve(rollId) or {}
+    local winners = record.winners
+    if not winners or #winners == 0 then
+        winners = (record.winner and record.winner ~= "No winner") and { record.winner } or {}
     end
-
-    -- adapt the record's roller breakdown into the popup's section format (grouped by bracket)
     local sections = self:SectionsFromResult(record)
+    local winnersText = table.concat(winners, ",")
 
+    -- the wire carries itemId (not a link) and the full winners list (top-N may be > 1)
     self:SendLargeMessage("WIN", {
-        rollId, roll.link, winner or "", "roll", tostring(winnerRoll or 0), self:EncodeSections(sections),
+        rollId, tostring(roll.itemId or 0), winnersText, "roll", "0", self:EncodeSections(sections),
     }, "RAID")
-
-    -- finish: record + lock + broadcast, identical to the batch path
-    self:RemoveResultByItemId(item.id)
-    self.session.results = self.session.results or {}
-    self.session.results[#self.session.results + 1] = record
-    self:LockItem(item.id)
-    self:BroadcastResults({ record })
-    self:BroadcastSessionLocks()
     self:TriggerCallback("RESULTS_UPDATED")
-
-    -- payout (skip when the ML won their own roll -- already in hand)
-    local selfWin = winner and util:NormalizeKey(winner) == util:NormalizeKey(util:GetPlayerName("player") or "")
-    if winner and self.payout and not selfWin then
-        local itemId = tonumber(string.match(roll.link or "", "|Hitem:(%d+)"))
-        if itemId then self.payout:Owe(winner, itemId, 1, roll.link) end
-    end
 
     local slot = roll.popup and roll.popup.slot
     self:CloseInterestPopup(roll)
-    self:ShowResultPopup(roll, winner, winnerRoll, sections, slot)
+    self:ShowResultPopup(roll, winners, sections, slot)
+    self.live.rolls[rollId] = nil   -- live-roll UI done; the core holds the truth
 
-    if not winner then
-        self:Print(roll.name .. " -> no rollers.")
-    elseif selfWin then
-        self:Print(string.format("%s -> %s (%s). You already hold it; not queued for payout.", roll.name, winner, tostring(winnerRoll)))
+    if #winners == 0 then
+        self:Print((roll.name or "item") .. " -> no rollers.")
     else
-        self:Print(string.format("%s -> %s (%s). Queued for payout.", roll.name, winner, tostring(winnerRoll)))
+        self:Print(string.format("%s -> %s.", roll.name or "item", winnersText))
     end
 end
 
@@ -866,18 +839,6 @@ function addon:SectionsFromResult(record)
     end
     return sections
 end
-
--- Find the live roll's backing session item (so the result/lock use the real item id),
--- or synthesize a minimal one if it's no longer in the session list.
-function addon:LiveRollSessionItem(roll)
-    for _, it in ipairs(self.session.items or {}) do
-        if (roll.itemId and it.id == roll.itemId) or it.link == roll.link then
-            return it
-        end
-    end
-    return { id = roll.itemId or roll.link, name = roll.name, link = roll.link, icon = roll.icon, quantity = roll.quantity or 1 }
-end
-
 
 -- pack sections for WIN: "label~name=roll,name=roll" joined by ";"
 function addon:EncodeSections(sections)
@@ -921,14 +882,10 @@ function addon:RegisterInterest(rollId, name, tier)
     local roll = self.live.rolls[rollId]
     if not roll or roll.resolved then return end
     roll.registrants[util:NormalizeKey(name)] = { name = name, tier = tier }
-    -- Mirror the pick into the shared response model so the Loot tab reflects it and the
-    -- same resolver (BuildRollerList -> ResolveSessionItem) sees these rollers.
-    if roll.itemId then
-        self:SetPlayerResponse(roll.itemId, name, tier)
-        if self:IsAuthorizedLootMaster() then
-            self:BroadcastSelectionState(roll.itemId, name, tier)
-        end
-        self:TriggerCallback("SESSION_UPDATED")
+    -- Record the pick on the core lot (rollId == lot id). Only the ML owns the lot; the
+    -- snapshot sync carries it to raiders. SetPlayerResponse fires SESSION_UPDATED + count.
+    if self:IsAuthorizedLootMaster() then
+        self:SetPlayerResponse(rollId, name, tier)
     end
     self:RefreshInterestPopup(roll)
 end
@@ -937,14 +894,19 @@ end
 -- incoming comm messages (dispatched from Comm.lua HandleCommMessage)
 -- ---------------------------------------------------------------------------
 function addon:OnDropMessage(fields)
+    -- wire: { lotId, itemId, prio, duration, quantity }. Render display from itemId so each
+    -- client shows its OWN localized name/link/icon.
+    local itemId = tonumber(fields[2])
+    local name, link, icon = util:ItemRender(itemId)
     local roll = {
         id = fields[1],
-        link = fields[2] or "",
-        name = (fields[3] ~= "" and fields[3]) or fields[2],
-        icon = (fields[4] ~= "" and fields[4]) or nil,
-        prio = fields[5] or "",
-        duration = tonumber(fields[6]) or ROLL_DURATION,
-        quantity = tonumber(fields[7]) or 1,
+        itemId = itemId,
+        link = link,
+        name = name or link or ("item:" .. tostring(itemId)),
+        icon = icon,
+        prio = fields[3] or "",
+        duration = tonumber(fields[4]) or ROLL_DURATION,
+        quantity = tonumber(fields[5]) or 1,
         owner = false, registrants = {}, resolved = false,
     }
     self.live.rolls[roll.id] = roll
@@ -957,17 +919,26 @@ function addon:OnRspMessage(sender, fields)
 end
 
 function addon:OnWinMessage(fields)
-    local rollId, link, winner, _, winnerRoll, sectionsText = fields[1], fields[2], fields[3], fields[4], fields[5], fields[6]
-    local roll = self.live.rolls[rollId] or { id = rollId, link = link or "", name = link, icon = nil }
+    -- wire: { lotId, itemId, winnersText, "roll", "0", sectionsText }
+    local rollId, itemId, winnersText, sectionsText = fields[1], tonumber(fields[2]), fields[3], fields[6]
+    local roll = self.live.rolls[rollId]
+    if not roll then
+        local name, link, icon = util:ItemRender(itemId)
+        roll = { id = rollId, itemId = itemId, link = link, name = name or link, icon = icon }
+    end
     roll.resolved = true
 
-    -- Do NOT auto-hide a won item. If the player still has the dialog open (they chose
-    -- a tier or were still deciding), convert it to a result popup they must OK to
-    -- dismiss. If they already Passed (popup gone), leave it gone -- don't re-pop it.
+    local winners = {}
+    for _, w in ipairs(util:Split(winnersText or "", ",")) do
+        if w ~= "" then winners[#winners + 1] = w end
+    end
+
+    -- Do NOT auto-hide a won item. If the player still has the dialog open, convert it to a
+    -- result popup they must OK to dismiss. If they already Passed (popup gone), leave it gone.
     if roll.popup then
         local sections = self:DecodeSections(sectionsText)
         local slot = roll.popup.slot
         self:CloseInterestPopup(roll)
-        self:ShowResultPopup(roll, winner, tonumber(winnerRoll), sections, slot)
+        self:ShowResultPopup(roll, winners, sections, slot)
     end
 end

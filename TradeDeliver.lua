@@ -335,6 +335,7 @@ function TradeDeliver:New(config)
     e.prefix = config.prefix or e.name
     e._print = config.print or function(s) DEFAULT_CHAT_FRAME:AddMessage(e.name .. ": " .. s) end
     e._dbg = config.debug or function() end
+    e._onDelivered = config.onDelivered or function() end  -- (player, itemId, count) on trade complete
     -- autoCancel is a runtime flag (default ON), not persisted: while payout is
     -- active, a trade from someone NOT on the owed list is declined + whispered.
     -- Kept off db on purpose so it always defaults on each session.
@@ -687,6 +688,8 @@ function Engine:_onTradeComplete()
     for _, pl in ipairs(p.placed) do
         pl.it.count = (pl.it.count or 1) - pl.qty
         total = total + pl.qty
+        -- report each delivered copy so the loot core can record where it went
+        self._onDelivered(entry.name, pl.it.id, pl.qty)
     end
     for i = #entry.items, 1, -1 do
         if (entry.items[i].count or 0) <= 0 then table.remove(entry.items, i) end

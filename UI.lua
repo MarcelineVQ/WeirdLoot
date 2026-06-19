@@ -891,11 +891,11 @@ function addon:BuildLootTab()
                 end
 
                 local playerName = util:GetPlayerName("player")
+                -- SetPlayerResponse routes itself: the ML writes the core (snapshot syncs out),
+                -- a raider whispers the pick to the ML. No separate broadcast needed here.
                 if not addon:SetPlayerResponse(row.item.id, playerName, option.key) then
                     return
                 end
-                addon:BroadcastSelectionState(row.item.id, playerName, option.key)
-                addon:SendSelection(row.item.id, option.key)
                 updateLootChoiceButtons(row, option.key)
             end)
             row.choiceButtons[option.key] = responseButton
@@ -924,14 +924,14 @@ function addon:BuildLootTab()
             end
 
             local rollers = {}
-            for playerKey, choice in pairs(addon.session.responses[row.item.id] or {}) do
+            for playerKey, choice in pairs(row.item.responses or {}) do
                 if addon:IsResponseActive(choice) then
                     local attendee = addon:GetAttendee(playerKey) or addon:GetRosterProfile(playerKey)
                     rollers[#rollers + 1] = {
                         name = attendee and attendee.name or playerKey,
                         className = attendee and attendee.className or "",
                         specName = attendee and attendee.specName or "",
-                        responseType = addon:GetPlayerResponse(row.item.id, playerKey),
+                        responseType = choice,
                     }
                 end
             end
@@ -1559,7 +1559,7 @@ function addon:RefreshLootTab()
         row.info:SetText(getLootItemInfoText(item))
 
         local rollCount = 0
-        for _, choice in pairs(self.session.responses[item.id] or {}) do
+        for _, choice in pairs(item.responses or {}) do
             if self:IsResponseActive(choice) then
                 rollCount = rollCount + 1
             end

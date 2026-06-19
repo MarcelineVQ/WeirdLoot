@@ -33,6 +33,28 @@ function addon:SendLargeMessage(command, values, distribution, target)
     self:SendCommMessage(self.prefix, logical, distribution, target, "NORMAL")
 end
 
+-- responses map <-> compact string. Player keys are normalized (no '|'/':'/','/'='), so a
+-- "player=tier" list joined by ',' rides safely inside one encoded field.
+local function encodeResponses(responses)
+    local parts = {}
+    for player, tier in pairs(responses or {}) do
+        parts[#parts + 1] = tostring(player) .. "=" .. tostring(tier)
+    end
+    return table.concat(parts, ",")
+end
+
+local function decodeResponses(str)
+    local out = {}
+    for pair in string.gmatch(str or "", "[^,]+") do
+        local player, tier = string.match(pair, "^(.-)=(.+)$")
+        if player then out[player] = tier end
+    end
+    return out
+end
+
+-- One snapshot of the whole core ledger, replacing the old per-ITEM / per-LOCK / per-RESULT
+-- message storm. Sent as SNAP_BEGIN -> LOT* -> SNAP_END; the raider stages the lots and
+-- applies them atomically via core:ApplyRemote.
 function addon:BroadcastSession()
     if not self:IsAuthorizedLootMaster() then
         self:Print("Only the loot master can broadcast the session.")
@@ -45,12 +67,12 @@ function addon:BroadcastSession()
         return
     end
 
-    self:RefreshSessionItems()
+    local core = self.lootCore
 
-    self:SendLargeMessage("SESSION_BEGIN", {
+    self:SendLargeMessage("SNAP_BEGIN", {
         session.id or "",
-        tostring(self.config.revision or 0),
         self:GetLootMasterName() or "",
+        tostring(core.seq or 0),
     }, "RAID")
 
     for _, attendee in ipairs(session.attendees or {}) do
@@ -63,67 +85,34 @@ function addon:BroadcastSession()
         }, "RAID")
     end
 
-    for _, item in ipairs(session.items or {}) do
-        self:SendLargeMessage("ITEM", {
-            session.id or "",
-            item.id or "",
-            item.link or "",
-            item.name or "",
-            item.icon or "",
-            tostring(item.quantity or 1),
-            self:IsItemLocked(item.id) and "1" or "0",
-        }, "RAID")
-    end
-
-    self:SendLargeMessage("SESSION_END", {
-        session.id or "",
-        tostring(#(session.items or {})),
-    }, "RAID")
-
-    for itemId, responses in pairs(session.responses or {}) do
-        for playerKey, choice in pairs(responses) do
-            self:BroadcastSelectionState(itemId, playerKey, choice)
+    for _, lot in ipairs(core:All()) do
+        if lot.state == core.STATE.RESOLVED or core:LiveCount(lot.id) > 0 then
+            local rec = lot.record
+            self:SendLargeMessage("LOT", {
+                session.id or "",
+                lot.id,
+                tostring(lot.itemId or 0),
+                lot.state,
+                tostring(core:LiveCount(lot.id)),
+                encodeResponses(lot.responses),
+                rec and (rec.winnersText or rec.winner or "") or "",
+                rec and rec.summary or "",
+                rec and rec.detailText or "",
+            }, "RAID")
         end
     end
 
-    if #(session.results or {}) > 0 then
-        self:BroadcastResults(session.results)
-    end
-
-    self:Print("Session broadcast to raid.")
-end
-
-function addon:BroadcastSessionLocks()
-    local session = self:GetCurrentSession()
-    if not self:IsAuthorizedLootMaster() or not session.id then
-        return
-    end
-
-    for _, item in ipairs(session.items or {}) do
-        self:SendLargeMessage("ITEM_LOCK", {
-            session.id or "",
-            item.id or "",
-            self:IsItemLocked(item.id) and "1" or "0",
-        }, "RAID")
-    end
+    self:SendLargeMessage("SNAP_END", { session.id or "" }, "RAID")
 end
 
 function addon:BuildSessionSyncSignature()
-    local session = self:GetCurrentSession()
-    local parts = {
-        session.id or "",
-        tostring(#(session.items or {})),
-        tostring(#(session.attendees or {})),
-    }
-
-    for _, item in ipairs(session.items or {}) do
-        parts[#parts + 1] = table.concat({
-            item.id or "",
-            item.link or "",
-            tostring(item.quantity or 1),
-        }, "~")
+    local core = self.lootCore
+    local parts = { tostring(core.seq or 0) }
+    for _, lot in ipairs(core:All()) do
+        local n = 0
+        for _ in pairs(lot.responses or {}) do n = n + 1 end
+        parts[#parts + 1] = table.concat({ lot.id, lot.state, tostring(core:LiveCount(lot.id)), tostring(n) }, "~")
     end
-
     return table.concat(parts, "|")
 end
 
@@ -258,63 +247,59 @@ function addon:HandleCommMessage(sender, logical)
     local fields = util:SplitEncoded(logical)
     local command = table.remove(fields, 1)
 
-    if command == "SESSION_BEGIN" then
-        local sessionId = fields[1]
-        local lootMasterName = fields[3]
+    if command == "SNAP_BEGIN" then
+        local sessionId, lootMasterName, seq = fields[1], fields[2], tonumber(fields[3]) or 0
         self.session.id = sessionId
         self.session.active = true
-        self.session.items = {}
-        self.session.responses = {}
-        self.session.results = {}
-        self.session.lockedItems = {}
         self.session.attendees = {}
-        self.roster.lootMasterName = lootMasterName ~= "" and lootMasterName or self.roster.lootMasterName
-        if self.ui then
-            self.ui.selectedResult = nil
-        end
-        self:TriggerCallback("SESSION_UPDATED")
+        self.roster.lootMasterName = (lootMasterName ~= "" and lootMasterName) or self.roster.lootMasterName
+        if self.ui then self.ui.selectedResult = nil end
+        self.comm.incoming = { seq = seq, lots = {} } -- stage lots until SNAP_END
     elseif command == "ATTENDEE" then
-        local attendee = {
+        self.session.attendees[#self.session.attendees + 1] = {
             name = fields[2],
             className = fields[3],
             specName = fields[4],
             status = fields[5],
         }
-        self.session.attendees[#self.session.attendees + 1] = attendee
         self:TriggerCallback("SESSION_UPDATED")
-    elseif command == "ITEM" then
-        local item = {
+    elseif command == "LOT" then
+        local inc = self.comm.incoming
+        if not inc then return end
+        local lot = {
             id = fields[2],
-            link = fields[3],
-            name = fields[4],
-            icon = fields[5],
-            quantity = tonumber(fields[6]) or 1,
+            itemId = tonumber(fields[3]),
+            state = fields[4],
+            count = tonumber(fields[5]) or 0,
+            responses = decodeResponses(fields[6]),
         }
-        self.session.items[#self.session.items + 1] = item
-        self.session.responses[item.id] = self.session.responses[item.id] or {}
-        self.session.lockedItems = self.session.lockedItems or {}
-        self.session.lockedItems[item.id] = fields[7] == "1"
-        self:TriggerCallback("SESSION_UPDATED")
-    elseif command == "SESSION_END" then
-        local playerName = util:GetPlayerName("player")
-        for _, item in ipairs(self.session.items or {}) do
-            if self.session.responses[item.id] == nil then
-                self.session.responses[item.id] = {}
+        if lot.state == self.lootCore.STATE.RESOLVED then
+            local name, link, icon = util:ItemRender(lot.itemId)
+            local winnersText = fields[7] or ""
+            local winners = {}
+            for _, w in ipairs(util:Split(winnersText, ",")) do
+                if w ~= "" then winners[#winners + 1] = w end
             end
-            if self.session.responses[item.id][util:NormalizeKey(playerName or "")] == nil then
-                self.session.responses[item.id][util:NormalizeKey(playerName or "")] = "pass"
-            end
+            lot.record = {
+                itemId = lot.id, realItemId = lot.itemId,
+                itemName = name or link or ("item:" .. tostring(lot.itemId)),
+                itemLink = link, itemIcon = icon, quantity = lot.count,
+                winners = winners, winnersText = winnersText, winner = winners[1] or "No winner",
+                summary = fields[8] or "", detailText = fields[9] or "", locked = true,
+            }
         end
-        self:TriggerCallback("SESSION_UPDATED")
+        inc.lots[#inc.lots + 1] = lot
+    elseif command == "SNAP_END" then
+        local inc = self.comm.incoming
+        if inc then
+            self.lootCore:ApplyRemote({ seq = inc.seq, lots = inc.lots }) -- -> projections + UI refresh
+            self.comm.incoming = nil
+        end
     elseif command == "SELECTION" then
         if not self:IsAuthorizedLootMaster() then
             return
         end
-        if self:SetPlayerResponse(fields[2], fields[3], fields[4]) then
-            self:BroadcastSelectionState(fields[2], fields[3], fields[4])
-        end
-    elseif command == "SELECTION_SYNC" then
-        self:SetPlayerResponse(fields[2], fields[3], fields[4])
+        self:SetPlayerResponse(fields[2], fields[3], fields[4]) -- ML core write; snapshot syncs back
     elseif command == "REQUEST_SESSION_SYNC" then
         if not self:IsAuthorizedLootMaster() then
             return
@@ -328,28 +313,6 @@ function addon:HandleCommMessage(sender, logical)
         end
         self:SaveNamedItemsText(fields[2] or "", true)
         self:Print("Named items updated from " .. ((fields[1] ~= "" and fields[1]) or sender or "loot master") .. ".")
-    elseif command == "ITEM_LOCK" then
-        self.session.lockedItems = self.session.lockedItems or {}
-        self.session.lockedItems[fields[2]] = fields[3] == "1"
-        self:TriggerCallback("SESSION_UPDATED")
-    elseif command == "RESULT" then
-        local result = {
-            itemId = fields[2],
-            itemName = fields[3],
-            itemLink = fields[4],
-            itemIcon = fields[5],
-            quantity = tonumber(fields[6]) or 1,
-            winner = fields[7],
-            winnersText = fields[7],
-            summary = fields[8],
-            detailText = fields[9],
-            locked = true,
-        }
-        self.session.results = self.session.results or {}
-        self.session.results[#self.session.results + 1] = result
-        self:TriggerCallback("RESULTS_UPDATED")
-    elseif command == "RESULTS_DONE" then
-        self:TriggerCallback("RESULTS_UPDATED")
     elseif command == "DROP" then
         self:OnDropMessage(fields)
     elseif command == "RSP" then

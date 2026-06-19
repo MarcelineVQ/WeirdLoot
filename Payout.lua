@@ -29,7 +29,39 @@ function addon:InitializePayout()
         debug  = function(text)
             if WeirdLootDB.payoutDebug then addon:Print("|cff888888[pay]|r " .. text) end
         end,
+        -- a completed trade is the authoritative "where it went": record per-copy delivery.
+        onDelivered = function(player, itemId)
+            if addon.lootCore then addon.lootCore:MarkDeliveredFor(player, itemId, time()) end
+        end,
     })
+
+    -- Owes are derived from the core's per-copy awards. A resolve adds owes for that lot's
+    -- non-ML winners (whispered once if payout is live); an unlock retracts them. The ML
+    -- owns this; raiders never run payout.
+    if self.lootCore and not self._payoutWired then
+        self._payoutWired = true
+        self.lootCore:On("lotResolved", function(lot) addon:OnLotResolvedPayout(lot) end)
+        self.lootCore:On("lotUnlocked", function(lot, winners) addon:OnLotUnlockedPayout(lot, winners) end)
+    end
+end
+
+function addon:OnLotResolvedPayout(lot)
+    if not self.payout or not self:IsAuthorizedLootMaster() then return end
+    local selfKey = addon.util:NormalizeKey(addon.util:GetPlayerName("player") or "")
+    local _, link = addon.util:ItemRender(lot.itemId)
+    for _, award in ipairs(lot.awards or {}) do
+        local winner = award.state == addon.lootCore.AWARD.OWED and award.winner or nil
+        if winner and addon.util:NormalizeKey(winner) ~= selfKey then
+            self.payout:Owe(winner, lot.itemId, 1, link)
+        end
+    end
+end
+
+function addon:OnLotUnlockedPayout(lot, winners)
+    if not self.payout or not self:IsAuthorizedLootMaster() then return end
+    for _, winner in ipairs(winners or {}) do
+        self.payout:Forgive(winner, lot.itemId)
+    end
 end
 
 -- Rebuild the owed ledger from the processed results. Called at the end of

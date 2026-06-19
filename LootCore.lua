@@ -88,10 +88,22 @@ function LootCore.New()
     return self
 end
 
+-- wipe the ledger (new/cleared session). Keeps wiring (resolver/ML) intact.
+function LootCore:Reset()
+    self.lots = {}
+    self.order = {}
+    self.seq = 0
+    self:emit("ledgerChanged")
+end
+
 -- wiring set by consumers (kept out of the core's logic so it stays pure)
+local function normName(s)
+    if type(s) ~= "string" then return s end
+    return string.lower((string.gsub(s, "^%s*(.-)%s*$", "%1")))
+end
 function LootCore:SetResolver(fn) self._resolver = fn end
-function LootCore:SetML(playerKey) self._mlKey = playerKey end
-function LootCore:IsML(playerKey) return self._mlKey ~= nil and playerKey == self._mlKey end
+function LootCore:SetML(playerKey) self._mlKey = normName(playerKey) end
+function LootCore:IsML(playerKey) return self._mlKey ~= nil and normName(playerKey) == self._mlKey end
 
 -- ---------------------------------------------------------------------------
 -- events
@@ -276,8 +288,10 @@ end
 function LootCore:StartRoll(id)
     local lot = self.lots[id]; if not lot then return false end
     if lot.state == STATE.PENDING then
+        -- Pre-roll loot-tab picks already on the lot carry INTO the roll (the resolver sees
+        -- them). Responses are not cleared here: identity (a fresh lot per re-drop) and Unlock
+        -- (which clears on re-roll) are what prevent stale responses, not clearing at start.
         lot.state = STATE.ROLLING
-        lot.responses = {} -- a roll always starts from a clean slate for THIS lot
         self:emit("ledgerChanged")
         return true
     end
@@ -340,13 +354,18 @@ end
 function LootCore:Unlock(id)
     local lot = self.lots[id]; if not lot then return false end
     if lot.state ~= STATE.RESOLVED then return false end
+    -- capture prior winners so consumers (payout) can retract owes before the awards vanish
+    local priorWinners = {}
+    for _, a in ipairs(lot.awards or {}) do
+        if a.winner then priorWinners[#priorWinners + 1] = a.winner end
+    end
     local live = liveCount(lot)
     lot.state = STATE.IDLE
     lot.count = live > 0 and live or lot.count
     lot.awards = nil
     lot.responses = {}
     lot.record = nil
-    self:emit("lotUnlocked", lot)
+    self:emit("lotUnlocked", lot, priorWinners)
     self:emit("ledgerChanged")
     return true
 end
@@ -426,6 +445,15 @@ function LootCore:Resolved() -- lots that have been rolled (the results-tab proj
 end
 
 function LootCore:Log() return self:Resolved() end -- session loot history (awards carry disposition)
+
+function LootCore:All() -- every lot in mint order (for the snapshot wire)
+    local out = {}
+    for i = 1, #self.order do
+        local l = self.lots[self.order[i]]
+        if l then out[#out + 1] = l end
+    end
+    return out
+end
 
 -- ---------------------------------------------------------------------------
 -- sync (core owns the snapshot shape; Comm owns the wire)
@@ -512,14 +540,14 @@ function LootCore.RunSelfChecks(verbose)
         ok(next(newLot.responses) == nil, "new lot has empty responses (no bleed)")
     end
 
-    -- 4. StartRoll clears responses for the lot
+    -- 4. pre-roll loot-tab responses carry INTO the roll (StartRoll does not clear them)
     do
         local c = LootCore.New(); c:SetResolver(topN); c:SetML("ML")
         c:Reconcile({ [400] = 1 }, { [400] = true })
         local id = c:openLotForItem(400).id
         c:SetResponse(id, "Bob", resp("ms", 10)) -- pre-roll loot-tab response
         c:Surface(id); c:StartRoll(id)
-        ok(next(c:Get(id).responses) == nil, "StartRoll clears prior responses")
+        ok(c:Get(id).responses["Bob"] ~= nil, "pre-roll response carries into the roll")
     end
 
     -- 5. top-N resolve: 2 copies, 3 rollers -> top 2 win one each, 3rd gets nothing

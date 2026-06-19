@@ -7,6 +7,22 @@ function string.trim(value)
     return (value or ""):match("^%s*(.-)%s*$")
 end
 
+-- The numeric item id is the canonical loot identity (links/names vary across clients).
+-- Parse it out of any item link or itemString.
+function util:ItemIdFromLink(link)
+    if type(link) ~= "string" then return nil end
+    local id = link:match("|Hitem:(%d+)") or link:match("item:(%d+)")
+    return id and tonumber(id) or nil
+end
+
+-- Render display fields from an itemId on demand. The link is force-cached by GetItemInfo;
+-- if the client hasn't cached it yet, fields may be nil until a later refresh.
+function util:ItemRender(itemId)
+    if not itemId then return nil end
+    local name, link, _, _, _, _, _, _, _, icon = GetItemInfo(itemId)
+    return name, link or ("item:" .. itemId), icon or "Interface\\Icons\\INV_Misc_QuestionMark"
+end
+
 function util:Split(value, delimiter)
     local results = {}
     if value == nil or value == "" then

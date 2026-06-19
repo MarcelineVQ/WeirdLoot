@@ -156,6 +156,50 @@ function addon:InitializeSession()
     self.session.ownerKey = ownerKey
     self.session.lockedItems = self.session.lockedItems or {}
     self.session.pendingLinks = self.session.pendingLinks or {}
+
+    -- The LootCore owns loot truth; session.items/results are projections rebuilt from it.
+    -- Subscribe once: any ledger change re-projects, refreshes the UI, and (ML only) syncs.
+    if self.lootCore and not self._lootCoreWired then
+        self._lootCoreWired = true
+        self.lootCore:On("ledgerChanged", function()
+            self:RebuildLootProjections()
+            self:TriggerCallback("SESSION_UPDATED")
+            if self:IsAuthorizedLootMaster() then self:AutoBroadcastSession() end
+        end)
+    end
+    self:RebuildLootProjections()
+end
+
+-- Rebuild the session.items / session.results display projections from the core ledger.
+-- Runs on both the ML (after Reconcile/Resolve) and raiders (after ApplyRemote), so both
+-- render from one source of truth. Names/links/icons are rendered on demand from itemId.
+function addon:RebuildLootProjections()
+    local core = self.lootCore
+    local session = self.session
+    if not core or not session then return end
+
+    local items = {}
+    for _, lot in ipairs(core:List()) do
+        local name, link, icon = util:ItemRender(lot.itemId)
+        items[#items + 1] = {
+            id = lot.id,
+            itemId = lot.itemId,
+            link = link,
+            name = name or link or ("item:" .. tostring(lot.itemId)),
+            icon = icon,
+            quantity = core:LiveCount(lot.id),
+            state = lot.state,
+            responses = lot.responses,          -- playerKey -> tier string
+            locked = lot.state == core.STATE.RESOLVED,
+        }
+    end
+    session.items = items
+
+    local results = {}
+    for _, lot in ipairs(core:Resolved()) do
+        if lot.record then results[#results + 1] = lot.record end
+    end
+    session.results = results
 end
 
 function addon:BuildBagSnapshot()
@@ -280,6 +324,13 @@ function addon:StartLootSession()
     self.session.pendingLinks = {}
     self.session.attendees = util:CloneTable(self:GetAttendees())
 
+    -- Wipe the ledger and baseline the loot already in bags as idle (not fresh drops), so a
+    -- session started mid-bag does not auto-roll everything the ML is already carrying.
+    self.lootCore:Reset()
+    local eligible = self:ItemIdCounts(self:BuildTradeableEpicCounts())
+    self.session.prevEligible = eligible
+    self.lootCore:Reconcile(eligible, {})
+
     self.sessionDb.history = self.sessionDb.history or {}
 
     -- A fresh session starts with a fresh payout ledger: drop any owes carried over from
@@ -303,11 +354,24 @@ function addon:ClearSession()
     self.session.results = {}
     self.session.lockedItems = {}
     self.session.pendingLinks = {}
+    self.session.prevEligible = {}
+    self.lootCore:Reset()
     self:TriggerCallback("SESSION_UPDATED")
 end
 
 function addon:GetCurrentSession()
     return self.session
+end
+
+-- Convert a link-keyed count map (from the bag scans) into an itemId-keyed one. Two links
+-- that share an itemId (e.g. random-suffix variants) collapse into one lot.
+function addon:ItemIdCounts(linkCounts)
+    local out = {}
+    for link, count in pairs(linkCounts or {}) do
+        local itemId = util:ItemIdFromLink(link)
+        if itemId then out[itemId] = (out[itemId] or 0) + count end
+    end
+    return out
 end
 
 function addon:BuildSessionItemList(includeAllEpics)
@@ -365,6 +429,7 @@ end
 function addon:RefreshSessionItems(forceRefresh)
     local session = self:GetCurrentSession()
     if not session.active and not forceRefresh then
+        self:RebuildLootProjections()
         return
     end
     if not session.active and forceRefresh then
@@ -372,27 +437,23 @@ function addon:RefreshSessionItems(forceRefresh)
         session = self:GetCurrentSession()
     end
 
-    if forceRefresh then
-        session.scanMode = "all"
-    elseif session.scanMode ~= "all" then
-        session.scanMode = "delta"
-    end
-
-    session.items = self:BuildSessionItemList(session.scanMode == "all")
-    session.attendees = util:CloneTable(self:GetAttendees())
-
-    local validIds = {}
-    for _, item in ipairs(session.items) do
-        validIds[item.id] = true
-        session.responses[item.id] = session.responses[item.id] or {}
-    end
-
-    for itemId in pairs(session.responses) do
-        if not validIds[itemId] then
-            session.responses[itemId] = nil
+    if forceRefresh and self:IsAuthorizedLootMaster() then
+        -- manual Scan Bags: pick up all eligible loot and surface every open lot to the ML.
+        local eligible = self:ItemIdCounts(self:BuildManualScanCounts())
+        local fresh = {}
+        for itemId in pairs(eligible) do fresh[itemId] = true end
+        session.prevEligible = eligible
+        local core = self.lootCore
+        core:Reconcile(eligible, fresh)
+        for _, lot in ipairs(core:List()) do
+            if lot.state == core.STATE.IDLE or lot.state == core.STATE.NEW or lot.state == core.STATE.SKIPPED then
+                core:Surface(lot.id)
+            end
         end
     end
 
+    session.attendees = util:CloneTable(self:GetAttendees())
+    self:RebuildLootProjections()
     self:TriggerCallback("SESSION_UPDATED")
 end
 
@@ -401,68 +462,52 @@ function addon:OnBagUpdate()
     if not session.active then
         return false
     end
-
-    local currentSnapshot = self:BuildBagSnapshot()
-
-    -- Post-login settle window: bags load in STAGES after a login/reload, so a single
-    -- prime can baseline a partially-loaded bag and then mistake a later-loading bag's
-    -- items for fresh loot (auto-posting them). While inside the settle window we keep
-    -- re-baselining to the latest scan and never auto-roll. Genuine drops (you're not
-    -- looting in the first seconds after a loading screen) still roll once it closes.
-    if not self.bagSettleAt or (GetTime() < self.bagSettleAt) then
-        session.currentSnapshot = currentSnapshot
+    -- Only the ML reconciles bag reality into the ledger; raiders mirror via the snapshot.
+    if not self:IsAuthorizedLootMaster() then
         return false
     end
 
-    local previous = session.currentSnapshot or {}
+    local eligible = self:ItemIdCounts(self:BuildTradeableEpicCounts())
 
-    -- which item links gained count since the last scan -- i.e. were just looted or
-    -- traded in. These are the candidates for an automatic live roll.
-    local added = {}
-    local anyAdded = false
-    for link, count in pairs(currentSnapshot) do
-        if count > (previous[link] or 0) then
-            added[link] = true
-            anyAdded = true
+    -- Post-login settle window: bags load in STAGES after a login/reload. While inside it we
+    -- still reconcile (to baseline counts) but mark nothing fresh, so staged-loading items are
+    -- never mistaken for fresh drops and auto-surfaced.
+    local settled = self.bagSettleAt and (GetTime() >= self.bagSettleAt)
+    local prev = session.prevEligible or {}
+    local fresh = {}
+    if settled then
+        for itemId, count in pairs(eligible) do
+            if count > (prev[itemId] or 0) then fresh[itemId] = true end
         end
     end
+    session.prevEligible = eligible
 
-    session.currentSnapshot = currentSnapshot
-    if not anyAdded then
-        return false
-    end
-
-    if session.scanMode == "all" then
-        self:RefreshSessionItems(true)
-    else
-        self:RefreshSessionItems()
-    end
-
-    -- newly-arrived loot auto-starts a live roll (loot-master only, gated inside)
-    self:AutoRollAddedItems(added)
+    self.lootCore:Reconcile(eligible, fresh) -- ledgerChanged -> projections + auto-surface (LiveRoll)
     return true
 end
 
-function addon:SetPlayerResponse(itemId, playerName, choice)
-    local session = self:GetCurrentSession()
-    if self:IsItemLocked(itemId) then
+function addon:SetPlayerResponse(lotId, playerName, choice)
+    if self:IsItemLocked(lotId) then
         return false
     end
-    if not session.responses[itemId] then
-        session.responses[itemId] = {}
+    -- Only the ML mutates the authoritative ledger. A raider sends its pick to the ML and
+    -- waits for the snapshot to reflect it (mutating the local mirror would be overwritten).
+    if not self:IsAuthorizedLootMaster() then
+        self:SendSelection(lotId, choice)
+        return true
     end
-    session.responses[itemId][util:NormalizeKey(playerName)] = normalizeResponseChoice(choice)
-    self:TriggerCallback("SESSION_UPDATED")
-    if self.RefreshLiveRollCountForItem then
-        self:RefreshLiveRollCountForItem(itemId)
+    local applied = self.lootCore:SetResponse(lotId, util:NormalizeKey(playerName), normalizeResponseChoice(choice))
+    if applied then
+        self:TriggerCallback("SESSION_UPDATED")
+        if self.RefreshLiveRollCountForItem then
+            self:RefreshLiveRollCountForItem(lotId)
+        end
     end
-    return true
+    return applied
 end
 
-function addon:GetPlayerResponse(itemId, playerName)
-    local session = self:GetCurrentSession()
-    local responses = session.responses[itemId] or {}
-    return normalizeResponseChoice(responses[util:NormalizeKey(playerName)])
+function addon:GetPlayerResponse(lotId, playerName)
+    return normalizeResponseChoice(self.lootCore:GetResponse(lotId, util:NormalizeKey(playerName)))
 end
 
 function addon:IsResponseActive(choice)
@@ -470,59 +515,37 @@ function addon:IsResponseActive(choice)
     return choice ~= "pass"
 end
 
-function addon:GetItemById(itemId)
+function addon:GetItemById(lotId)
     for _, item in ipairs(self.session.items or {}) do
-        if item.id == itemId then
+        if item.id == lotId then
             return item
         end
     end
     return nil
 end
 
-function addon:IsItemLocked(itemId)
-    local session = self:GetCurrentSession()
-    return session.lockedItems and session.lockedItems[itemId] == true or false
+-- Lock state now lives in the core: a lot is "locked" once it has been resolved.
+function addon:IsItemLocked(lotId)
+    return self.lootCore:IsResolved(lotId)
 end
 
-function addon:LockItem(itemId)
-    local session = self:GetCurrentSession()
-    session.lockedItems = session.lockedItems or {}
-    session.lockedItems[itemId] = true
-end
+-- Retained as no-ops: locking/unlocking is a side effect of Resolve/Unlock in the core now.
+function addon:LockItem() end
+function addon:UnlockItem() end
 
-function addon:UnlockItem(itemId)
-    local session = self:GetCurrentSession()
-    session.lockedItems = session.lockedItems or {}
-    session.lockedItems[itemId] = nil
-end
-
-function addon:GetResultByItemId(itemId)
+function addon:GetResultByItemId(lotId)
     for _, result in ipairs(self.session.results or {}) do
-        if result.itemId == itemId then
+        if result.itemId == lotId then
             return result
         end
     end
     return nil
 end
 
-function addon:RemoveResultByItemId(itemId)
-    local results = self.session.results or {}
-    for index = #results, 1, -1 do
-        if results[index].itemId == itemId then
-            table.remove(results, index)
-        end
-    end
-end
+function addon:RemoveResultByItemId() end
 
 function addon:HasLockedItems()
-    local session = self:GetCurrentSession()
-    for _, item in ipairs(session.items or {}) do
-        if self:IsItemLocked(item.id) then
-            return true
-        end
-    end
-
-    return false
+    return #self.lootCore:Resolved() > 0
 end
 
 function addon:UnlockAllRolls()
@@ -536,9 +559,7 @@ function addon:UnlockAllRolls()
         return false
     end
 
-    self.session.lockedItems = {}
-    self.session.results = {}
-    self:BroadcastSession()
+    self.lootCore:UnlockAll() -- ledgerChanged -> projections + snapshot broadcast
     self:TriggerCallback("RESULTS_UPDATED")
     self:Print("All loot unlocked for reroll.")
     return true

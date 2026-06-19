@@ -167,6 +167,9 @@ function addon:RefreshLootAuthority()
     self.roster.lootMasterName = lootMasterName
     self.roster.isLootMaster = isLootMaster
 
+    -- the core needs the ML identity to decide self-win (resolved) vs owed at resolve time
+    if self.lootCore then self.lootCore:SetML(lootMasterName) end
+
     self:TriggerCallback("AUTHORITY_UPDATED")
 end
 
