@@ -22,6 +22,8 @@ local function buildSessionState(ownerKey)
         attendees = {},
         itemIdsByLink = {},
         nextItemSeq = 0,
+        itemOrderByLink = {},
+        nextItemOrder = 0,
     }
 end
 
@@ -160,6 +162,8 @@ function addon:InitializeSession()
     self.session.pendingLinks = self.session.pendingLinks or {}
     self.session.itemIdsByLink = self.session.itemIdsByLink or {}
     self.session.nextItemSeq = self.session.nextItemSeq or 0
+    self.session.itemOrderByLink = self.session.itemOrderByLink or {}
+    self.session.nextItemOrder = self.session.nextItemOrder or 0
 end
 
 function addon:BuildBagSnapshot()
@@ -285,6 +289,8 @@ function addon:StartLootSession()
     self.session.attendees = util:CloneTable(self:GetAttendees())
     self.session.itemIdsByLink = {}
     self.session.nextItemSeq = 0
+    self.session.itemOrderByLink = {}
+    self.session.nextItemOrder = 0
 
     self.sessionDb.history = self.sessionDb.history or {}
 
@@ -311,11 +317,33 @@ function addon:ClearSession()
     self.session.pendingLinks = {}
     self.session.itemIdsByLink = {}
     self.session.nextItemSeq = 0
+    self.session.itemOrderByLink = {}
+    self.session.nextItemOrder = 0
     self:TriggerCallback("SESSION_UPDATED")
 end
 
 function addon:GetCurrentSession()
     return self.session
+end
+
+function addon:AssignPickupOrder(currentSnapshot, tradeableCounts, includeAllEpics)
+    local session = self:GetCurrentSession()
+    session.itemOrderByLink = session.itemOrderByLink or {}
+    session.nextItemOrder = session.nextItemOrder or 0
+
+    for bag = 0, MAX_BAG_ID do
+        local slots = GetContainerNumSlots(bag) or 0
+        for slot = 1, slots do
+            local link = GetContainerItemLink(bag, slot)
+            if link and currentSnapshot[link] and currentSnapshot[link] > 0 then
+                local eligibleCount = includeAllEpics and currentSnapshot[link] or (tradeableCounts[link] or 0)
+                if eligibleCount > 0 and not session.itemOrderByLink[link] then
+                    session.nextItemOrder = session.nextItemOrder + 1
+                    session.itemOrderByLink[link] = session.nextItemOrder
+                end
+            end
+        end
+    end
 end
 
 function addon:BuildSessionItemList(includeAllEpics)
@@ -335,6 +363,7 @@ function addon:BuildSessionItemList(includeAllEpics)
     end
 
     local tradeableCounts = self:BuildTradeableEpicCounts()
+    self:AssignPickupOrder(currentSnapshot, tradeableCounts, includeAllEpics)
     local sortedLinks = {}
     for link, totalCount in pairs(currentSnapshot) do
         local eligibleCount = includeAllEpics and totalCount or (tradeableCounts[link] or 0)
@@ -350,10 +379,12 @@ function addon:BuildSessionItemList(includeAllEpics)
     end
 
     table.sort(sortedLinks, function(left, right)
-        if left.name == right.name then
+        local leftOrder = session.itemOrderByLink[left.link] or math.huge
+        local rightOrder = session.itemOrderByLink[right.link] or math.huge
+        if leftOrder == rightOrder then
             return left.link < right.link
         end
-        return left.name < right.name
+        return leftOrder < rightOrder
     end)
 
     local items = {}
@@ -436,6 +467,12 @@ function addon:RefreshSessionItems(forceRefresh)
     for link in pairs(session.itemIdsByLink or {}) do
         if not validLinks[link] then
             session.itemIdsByLink[link] = nil
+        end
+    end
+
+    for link in pairs(session.itemOrderByLink or {}) do
+        if not validLinks[link] then
+            session.itemOrderByLink[link] = nil
         end
     end
 
