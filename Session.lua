@@ -537,9 +537,10 @@ function addon:SetPlayerResponse(lotId, playerName, choice)
         if self.RefreshLiveRollCountForItem then
             self:RefreshLiveRollCountForItem(lotId)
         end
-        -- SetResponse does not emit ledgerChanged (it is not a lifecycle change), so push the
-        -- updated lot to the raiders explicitly. The lot is already dirty, so this is one LOTD.
-        self:AutoBroadcastSession()
+        -- Coalesced: a pick is NOT broadcast on its own (per-pick sends flood the wire during a
+        -- live roll). SetResponse marked the lot dirty in the core, so the pick rides the lot's
+        -- next LOTD: its resolve, or any other ledger change that flushes the delta. N picks on a
+        -- lot collapse into one message. The ML drives the live-roll count locally meanwhile.
     end
     return applied
 end

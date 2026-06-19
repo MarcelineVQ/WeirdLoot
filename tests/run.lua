@@ -636,6 +636,7 @@ test("delta fuzz: a delta-synced raider always equals the ML across random opera
             if #ml.addon.lootCore:Resolved() > 0 then ml.addon:UnlockAllRolls() end
         end
 
+        ml.addon:AutoBroadcastSession()                   -- flush coalesced response dirty for the compare
         flushWireTo(raider)                               -- deliver whatever deltas/snapshots resulted
         flushWireTo(ml)                                   -- deliver any raider->ML traffic (resync requests)
         flushWireTo(raider)                               -- and any snapshot that produced
@@ -660,7 +661,8 @@ test("delta sync: a dropped delta is detected via rev gap and auto-resynced", fu
 
     ml.addon:StartLiveRoll(lot.id)
     clearWire()                                           -- DROP this delta (simulate a lost LOTD)
-    ml.addon:SetPlayerResponse(lot.id, "Alice", "ms")     -- next change -> a delta with a rev gap
+    ml.addon:SetPlayerResponse(lot.id, "Alice", "ms")     -- recorded locally (coalesced, not broadcast)
+    ml.addon:ResolveLiveRoll(lot.id)                      -- a state change -> a delta with a rev gap
     flushWireTo(raider)                                   -- raider sees the gap, requests a full resync
     check(raider.addon.comm.resyncPending == true, "raider flagged a resync after the gap")
     flushWireTo(ml)                                       -- ML answers REQUEST_SESSION_SYNC with a snapshot
