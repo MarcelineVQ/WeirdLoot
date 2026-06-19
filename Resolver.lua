@@ -777,6 +777,7 @@ function addon:ProcessLoot()
             results[#results + 1] = record
 
             self:LockItem(item.id)
+            self:AddResolvedHeldItem(item.link, item.quantity or 1)
         end
     end
 

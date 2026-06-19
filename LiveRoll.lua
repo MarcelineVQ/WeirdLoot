@@ -880,10 +880,6 @@ function addon:AutoRollAddedItems(addedLinks)
     if not self:IsAuthorizedLootMaster() then return end
     for _, item in ipairs(self.session.items or {}) do
         if addedLinks[item.link] then
-            -- A genuinely new copy just arrived in the bags. If a previous copy was rolled
-            -- out the item is locked; clear that so the duplicate can be rolled (the lock
-            -- only ever meant "the drop already handled was rolled out").
-            if item.id then self:UnlockItem(item.id) end
             -- Dedup on the actual on-screen popup, NOT the persisted pendingLinks flag
             -- (which can be stale and would wrongly suppress a real new drop).
             if not self:HasOpenPendingForLink(item.link) and not self:HasOpenRollForLink(item.link) then
@@ -1020,6 +1016,7 @@ function addon:ResolveLiveRoll(rollId)
     self.session.results = self.session.results or {}
     self.session.results[#self.session.results + 1] = record
     self:LockItem(item.id)
+    self:AddResolvedHeldItem(item.link, item.quantity or 1)
     self:BroadcastResults({ record })
     self:BroadcastSessionLocks()
     self:TriggerCallback("RESULTS_UPDATED")
