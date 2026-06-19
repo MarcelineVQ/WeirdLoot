@@ -9,6 +9,11 @@ addon.version = "1.0"
 addon.callbacks = {}
 addon.events = CreateFrame("Frame")
 
+-- Optional structured trace sink. Debug.lua replaces this with the real recorder when loaded;
+-- without it (the test harness, or a client with debug off-by-file) it stays a no-op so comm and
+-- core callers can log unconditionally without guarding.
+function addon:LogCoreEvent() end
+
 SLASH_WEIRDLOOT1 = "/weirdloot"
 SLASH_WEIRDLOOT2 = "/wl"
 SlashCmdList.WEIRDLOOT = function(msg)

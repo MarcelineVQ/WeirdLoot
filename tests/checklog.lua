@@ -30,9 +30,11 @@ local function checkRecords(records)
 
     local lastSeq = nil
     local state, minted, owed = {}, {}, {}   -- per-id, reset on each session segment
+    local appliedRev, gapPending = nil, false -- raider-side comm tracking (recv-* events)
 
     local function resetSegment()
         state, minted, owed = {}, {}, {}
+        appliedRev, gapPending = nil, false
     end
 
     for _, rec in ipairs(records) do
@@ -113,6 +115,23 @@ local function checkRecords(records)
             else
                 owed[id] = owed[id] - 1
             end
+        elseif ev == "recv-snap" then
+            -- a full snapshot re-baselines the raider's revision unconditionally and heals any gap
+            appliedRev, gapPending = rec.rev, false
+        elseif ev == "recv-gap" then
+            gapPending = true
+        elseif ev == "recv-lot" then
+            -- H. a delta is only applied after a baseline, strictly contiguous, and never while a
+            -- gap is outstanding (a gap must be healed by a recv-snap first).
+            if gapPending then
+                fail("gap-before-resync", rec, "delta rev " .. tostring(rec.rev) .. " applied while a gap was pending")
+            end
+            if appliedRev == nil then
+                fail("recv-contiguity", rec, "delta rev " .. tostring(rec.rev) .. " applied with no prior snapshot baseline")
+            elseif rec.rev ~= appliedRev + 1 then
+                fail("recv-contiguity", rec, string.format("delta rev %s applied after %s (not contiguous)", tostring(rec.rev), tostring(appliedRev)))
+            end
+            appliedRev = rec.rev
         end
     end
 
@@ -125,6 +144,7 @@ end
 local INVARIANTS = {
     "monotonic-seq", "mint-before-use", "legal-transition",
     "awards-eq-count", "no-response-after-resolve", "deliver-needs-owed",
+    "recv-contiguity", "gap-before-resync",
 }
 
 local function report(label, records)
@@ -227,6 +247,15 @@ local function demoRecords()
     c:Surface(x); c:StartRoll(x); c:SetResponse(x, "Eve", "ms:60"); c:Resolve(x)
     c:Reconcile({}, {})                                      -- everything left bags -> retire/remove
 
+    -- a clean raider-side comm sequence: snapshot baseline, two contiguous deltas, a gap that is
+    -- healed by a resync snapshot, then a contiguous delta off the new baseline. All valid.
+    logger("recv-snap", { rev = 1, lots = 2 })
+    logger("recv-lot", { id = "L:1", rev = 2 })
+    logger("recv-lot", { id = "L:2", rev = 3 })
+    logger("recv-gap", { rev = 7, lastRev = 3 })
+    logger("recv-snap", { rev = 7, lots = 3 })
+    logger("recv-lot", { id = "L:3", rev = 8 })
+
     return recs
 end
 
@@ -241,6 +270,10 @@ local function brokenRecords()
         { seq = 6, ev = "response", id = "L:1", player = "Bob", value = "ms", ok = true },  -- stale-roll bug
         { seq = 7, ev = "deliver", id = "L:2", recipient = "Zed" },                          -- never minted/owed
         { seq = 8, ev = "resolve", id = "L:3", count = 2, awards = { { state = "owed" } } }, -- awards != count + unminted
+        { seq = 9, ev = "recv-snap", rev = 1, lots = 1 },
+        { seq = 10, ev = "recv-lot", id = "L:1", rev = 3 },     -- non-contiguous (skipped rev 2)
+        { seq = 11, ev = "recv-gap", rev = 9, lastRev = 3 },
+        { seq = 12, ev = "recv-lot", id = "L:1", rev = 10 },    -- applied while a gap is pending
     }
 end
 

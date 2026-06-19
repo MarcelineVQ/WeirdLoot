@@ -33,6 +33,9 @@ function addon:SendLargeMessage(command, values, distribution, target, prio)
     end
     local logical = command .. "|" .. util:JoinEncoded(values or {})
     self:SendCommMessage(self.prefix, logical, distribution, target, prio or "BULK")
+    -- trace every outgoing message so the wire load (delta vs snapshot, coalescing, priority
+    -- lane) is verifiable from the log: e.g. 12 picks should produce 0 sends, a roll one ALERT DROP.
+    self:LogCoreEvent("send", { cmd = command, bytes = #logical, prio = prio or "BULK", dist = distribution })
 end
 
 -- responses map <-> compact string. Player keys are normalized (no '|'/':'/','/'='), so a
@@ -317,6 +320,7 @@ function addon:HandleCommMessage(sender, logical)
             self.comm.lastRev = inc.rev      -- snapshot re-baselines the revision
             self.comm.resyncPending = nil    -- drift healed
             self.comm.incoming = nil
+            self:LogCoreEvent("recv-snap", { rev = inc.rev, lots = #inc.lots })
         end
     elseif command == "LOTD" then
         -- one-lot delta. field 9 = core seq, field 10 = broadcast revision (gap detection).
@@ -325,6 +329,7 @@ function addon:HandleCommMessage(sender, logical)
         if last == nil or rev > last + 1 then
             -- never synced, or a gap (a delta was dropped): pull a fresh full snapshot. The
             -- pending flag throttles the request to once until the snapshot re-baselines us.
+            self:LogCoreEvent("recv-gap", { rev = rev, lastRev = last })
             if not self.comm.resyncPending then
                 self.comm.resyncPending = true
                 self:RequestSessionSync()
@@ -332,8 +337,10 @@ function addon:HandleCommMessage(sender, logical)
             return
         end
         if rev <= last then return end       -- stale / duplicate
-        self.lootCore:ApplyRemoteLot(self:DecodeLot(fields), tonumber(fields[9]) or 0)
+        local lot = self:DecodeLot(fields)
+        self.lootCore:ApplyRemoteLot(lot, tonumber(fields[9]) or 0)
         self.comm.lastRev = rev
+        self:LogCoreEvent("recv-lot", { id = lot.id, itemId = lot.itemId, state = lot.state, rev = rev })
     elseif command == "SELECTION" then
         if not self:IsAuthorizedLootMaster() then
             return

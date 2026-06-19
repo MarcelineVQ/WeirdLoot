@@ -12,8 +12,11 @@ local addon = WeirdLoot
 --
 -- Record shape (flat, one table per event):
 --   { seq, t, ev, ... event fields }
--- ev is one of: session, mark, mint, grow, retire, shrink, remove, surface, skip,
---   startRoll, cancel, response, resolve, unlock, deliver.
+-- ev is one of the core transitions: session, mark, reset, mint, grow, retire, shrink, remove,
+--   surface, skip, startRoll, cancel, response, resolve, unlock, deliver; or the comm trace:
+--   send (every outgoing message: cmd/bytes/prio), recv-snap / recv-lot / recv-gap (a raider
+--   applying a full snapshot / a delta / detecting a dropped delta). The comm events make the
+--   wire load (delta vs snapshot, coalescing, priority lane, drift) verifiable from the log.
 -- See tests/checklog.lua for the field set each ev carries and the invariants checked.
 -- ---------------------------------------------------------------------------
 
