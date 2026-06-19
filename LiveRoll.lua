@@ -711,7 +711,7 @@ end
 -- ---------------------------------------------------------------------------
 -- result popup
 -- ---------------------------------------------------------------------------
-function addon:ShowResultPopup(roll, winner, winnerRoll, sections, slot)
+function addon:ShowResultPopup(roll, winnerDetails, sections, slot)
     local f = acquirePopup(self)
     f.mode = "result"
     f:SetScript("OnUpdate", nil)        -- no countdown on a result popup
@@ -727,25 +727,60 @@ function addon:ShowResultPopup(roll, winner, winnerRoll, sections, slot)
     setPopupHeight(f, POPUP_H)
 
     local myKey = util:NormalizeKey(util:GetPlayerName("player") or "")
-    local winKey = winner and winner ~= "" and util:NormalizeKey(winner) or nil
-    local myRoll, mySection, winnerSection
+    local myRoll, mySection
     for _, s in ipairs(sections or {}) do
         for _, m in ipairs(s.members) do
             local k = util:NormalizeKey(m.name)
             if k == myKey then myRoll = m.roll; mySection = s.label end
-            if winKey and k == winKey then winnerSection = s.label end
         end
     end
 
+    local winners = {}
+    local winnerKeys = {}
+    for _, winner in ipairs(winnerDetails or {}) do
+        local winnerKey = util:NormalizeKey(winner.name)
+        winnerKeys[winnerKey] = true
+        local winnerSection
+        for _, s in ipairs(sections or {}) do
+            for _, m in ipairs(s.members) do
+                if util:NormalizeKey(m.name) == winnerKey then
+                    winnerSection = s.label
+                    break
+                end
+            end
+            if winnerSection then break end
+        end
+        winners[#winners + 1] = {
+            name = winner.name,
+            roll = winner.roll,
+            section = winnerSection,
+            key = winnerKey,
+        }
+    end
+
+    local youWon = winnerKeys[myKey] == true
+
     local line
-    if not winKey then
+    if #winners == 0 then
         line = "No rollers."
-    elseif winKey == myKey then
-        line = string.format("|cff40ff40You won!|r  (your roll %s)", tostring(myRoll or winnerRoll))
+    elseif youWon then
+        if #winners > 1 then
+            local mine = myRoll and string.format("your roll %s", tostring(myRoll)) or "your roll"
+            line = string.format("|cff40ff40You won!|r  (%s)", mine)
+        else
+            line = string.format("|cff40ff40You won!|r  (your roll %s)", tostring(myRoll or winners[1].roll))
+        end
     else
         local mine = myRoll and string.format("Your roll %d%s.  ", myRoll, mySection and (" ("..mySection..")") or "") or ""
-        line = string.format("|cffff6060You lost.|r  %sWinner: %s (%s%s)", mine, winner,
-            tostring(winnerRoll), winnerSection and (", " .. winnerSection) or "")
+        local winnerParts = {}
+        for _, winner in ipairs(winners) do
+            winnerParts[#winnerParts + 1] = string.format("%s (%s%s)",
+                winner.name or "Unknown",
+                tostring(winner.roll or "-"),
+                winner.section and (", " .. winner.section) or "")
+        end
+        local winnerLabel = #winnerParts > 1 and "Winners" or "Winner"
+        line = string.format("|cffff6060You lost.|r  %s%s: %s", mine, winnerLabel, table.concat(winnerParts, "; "))
     end
     f.sub:SetText(line)
 
@@ -757,7 +792,7 @@ function addon:ShowResultPopup(roll, winner, winnerRoll, sections, slot)
     -- hover: full breakdown by priority section so a higher roll in a lower section is
     -- clearly explained
     f.sections = sections
-    f.winnerKey = winKey
+    f.winnerKeys = winnerKeys
     f.myKey = myKey
     f:SetScript("OnEnter", function(selfFrame)
         GameTooltip:SetOwner(selfFrame, "ANCHOR_RIGHT")
@@ -774,7 +809,7 @@ function addon:ShowResultPopup(roll, winner, winnerRoll, sections, slot)
                 for _, m in ipairs(mem) do
                     local key = util:NormalizeKey(m.name)
                     local isMe = selfFrame.myKey and key == selfFrame.myKey
-                    local won = selfFrame.winnerKey and key == selfFrame.winnerKey
+                    local won = selfFrame.winnerKeys and selfFrame.winnerKeys[key]
                     local label = isMe and "You" or m.name
                     if won then
                         label = "|cff40ff40" .. label .. "|r"            -- winner: green
@@ -973,17 +1008,11 @@ function addon:ResolveLiveRoll(rollId)
     end
     local record = self:ResolveSessionItem(item)
 
-    local winner = (record.winner and record.winner ~= "No winner") and record.winner or nil
-    local winnerRoll
-    for _, w in ipairs(record.winnerDetails or {}) do
-        if w.name == record.winner then winnerRoll = w.roll end
-    end
-
     -- adapt the record's roller breakdown into the popup's section format (grouped by bracket)
     local sections = self:SectionsFromResult(record)
 
     self:SendLargeMessage("WIN", {
-        rollId, roll.link, winner or "", "roll", tostring(winnerRoll or 0), self:EncodeSections(sections),
+        rollId, roll.link, self:EncodeWinnerDetails(record.winnerDetails), self:EncodeSections(sections),
     }, "RAID")
 
     -- finish: record + lock + broadcast, identical to the batch path
@@ -996,22 +1025,32 @@ function addon:ResolveLiveRoll(rollId)
     self:TriggerCallback("RESULTS_UPDATED")
 
     -- payout (skip when the ML won their own roll -- already in hand)
-    local selfWin = winner and util:NormalizeKey(winner) == util:NormalizeKey(util:GetPlayerName("player") or "")
-    if winner and self.payout and not selfWin then
+    local myKey = util:NormalizeKey(util:GetPlayerName("player") or "")
+    local selfWon = false
+    if self.payout then
         local itemId = tonumber(string.match(roll.link or "", "|Hitem:(%d+)"))
-        if itemId then self.payout:Owe(winner, itemId, 1, roll.link) end
+        if itemId then
+            for _, winner in ipairs(record.winnerDetails or {}) do
+                local winnerKey = util:NormalizeKey(winner.name)
+                if winnerKey == myKey then
+                    selfWon = true
+                elseif winner.name and winner.name ~= "" then
+                    self.payout:Owe(winner.name, itemId, 1, roll.link)
+                end
+            end
+        end
     end
 
     local slot = roll.popup and roll.popup.slot
     self:CloseInterestPopup(roll)
-    self:ShowResultPopup(roll, winner, winnerRoll, sections, slot)
+    self:ShowResultPopup(roll, record.winnerDetails or {}, sections, slot)
 
-    if not winner then
+    if #(record.winnerDetails or {}) == 0 then
         self:Print(roll.name .. " -> no rollers.")
-    elseif selfWin then
-        self:Print(string.format("%s -> %s (%s). You already hold it; not queued for payout.", roll.name, winner, tostring(winnerRoll)))
+    elseif selfWon then
+        self:Print(string.format("%s -> %s. You already hold one copy; other winners queued for payout as needed.", roll.name, record.winnersText or record.winner or "winner"))
     else
-        self:Print(string.format("%s -> %s (%s). Queued for payout.", roll.name, winner, tostring(winnerRoll)))
+        self:Print(string.format("%s -> %s. Queued for payout.", roll.name, record.winnersText or record.winner or "winner"))
     end
 end
 
@@ -1056,6 +1095,22 @@ function addon:EncodeSections(sections)
         secParts[#secParts + 1] = (s.label or "") .. "~" .. table.concat(mem, ",")
     end
     return table.concat(secParts, ";")
+end
+
+function addon:EncodeWinnerDetails(winnerDetails)
+    local parts = {}
+    for _, winner in ipairs(winnerDetails or {}) do
+        parts[#parts + 1] = (winner.name or "") .. "=" .. tostring(winner.roll or 0)
+    end
+    return table.concat(parts, ",")
+end
+
+function addon:DecodeWinnerDetails(text)
+    local winners = {}
+    for name, value in string.gmatch(text or "", "([^=,]+)=([^,]+)") do
+        winners[#winners + 1] = { name = name, roll = tonumber(value) or 0 }
+    end
+    return winners
 end
 
 function addon:DecodeSections(text)
@@ -1176,7 +1231,7 @@ function addon:OnLiveSyncMessage(fields)
 end
 
 function addon:OnWinMessage(fields)
-    local rollId, link, winner, _, winnerRoll, sectionsText = fields[1], fields[2], fields[3], fields[4], fields[5], fields[6]
+    local rollId, link, winnersText, sectionsText = fields[1], fields[2], fields[3], fields[4]
     local roll = self.live.rolls[rollId] or { id = rollId, link = link or "", name = link, icon = nil }
     roll.resolved = true
 
@@ -1184,9 +1239,10 @@ function addon:OnWinMessage(fields)
     -- a tier or were still deciding), convert it to a result popup they must OK to
     -- dismiss. If they already Passed (popup gone), leave it gone -- don't re-pop it.
     if roll.popup then
+        local winners = self:DecodeWinnerDetails(winnersText)
         local sections = self:DecodeSections(sectionsText)
         local slot = roll.popup.slot
         self:CloseInterestPopup(roll)
-        self:ShowResultPopup(roll, winner, tonumber(winnerRoll), sections, slot)
+        self:ShowResultPopup(roll, winners, sections, slot)
     end
 end
