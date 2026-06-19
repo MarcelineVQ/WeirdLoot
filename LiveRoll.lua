@@ -50,6 +50,9 @@ end
 local POPUP_W, POPUP_H = 340, 94
 local ROLL_DURATION = 20        -- seconds raiders have to roll before it auto-resolves
 local popupBasePoint, savePopupBasePoint, layoutPopups
+local RESPONSE_ORDER = { bis = 5, ms = 4, mu = 3, os = 2, tm = 1, pass = 0 }
+local RESPONSE_LABELS = { bis = "BiS", ms = "MS", mu = "MU", os = "OS", tm = "TM", pass = "Pass" }
+local ROLL_LINE_LIMIT = 8
 
 local function makeButton(parent, text, width)
     local b = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
@@ -57,6 +60,108 @@ local function makeButton(parent, text, width)
     b:SetHeight(18)
     b:SetText(text)
     return b
+end
+
+local function getPlayerDisplayName(self, playerKey)
+    local attendee = self:GetAttendee(playerKey) or self:GetRosterProfile(playerKey)
+    if attendee and attendee.name and attendee.name ~= "" then
+        return attendee.name
+    end
+    return playerKey
+end
+
+local function getPlayerClassName(self, playerKey)
+    local attendee = self:GetAttendee(playerKey) or self:GetRosterProfile(playerKey)
+    if attendee and attendee.className and attendee.className ~= "" then
+        return attendee.className
+    end
+    return ""
+end
+
+local function nextLiveRollValue()
+    return math.random(1, 100)
+end
+
+local function buildLiveRollEntries(self, roll)
+    local entries = {}
+    for playerKey, registrant in pairs(roll and roll.registrants or {}) do
+        local tier = registrant.tier or "pass"
+        if tier ~= "pass" then
+            entries[#entries + 1] = {
+                key = playerKey,
+                name = registrant.name or getPlayerDisplayName(self, playerKey),
+                className = registrant.className or getPlayerClassName(self, playerKey),
+                tier = tier,
+                roll = registrant.roll or 0,
+            }
+        end
+    end
+
+    table.sort(entries, function(left, right)
+        local leftRank = RESPONSE_ORDER[left.tier] or 0
+        local rightRank = RESPONSE_ORDER[right.tier] or 0
+        if leftRank ~= rightRank then
+            return leftRank > rightRank
+        end
+        if (left.roll or 0) ~= (right.roll or 0) then
+            return (left.roll or 0) > (right.roll or 0)
+        end
+        return string.lower(left.name or "") < string.lower(right.name or "")
+    end)
+
+    return entries
+end
+
+local function ensureRollLinePool(f, count)
+    f.rollLines = f.rollLines or {}
+    while #f.rollLines < count do
+        local line = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        line:SetJustifyH("LEFT")
+        line:SetWidth(POPUP_W - 20)
+        if #f.rollLines == 0 then
+            line:SetPoint("TOPLEFT", f.sub, "BOTTOMLEFT", 0, -6)
+        else
+            line:SetPoint("TOPLEFT", f.rollLines[#f.rollLines], "BOTTOMLEFT", 0, -2)
+        end
+        f.rollLines[#f.rollLines + 1] = line
+    end
+end
+
+local function setPopupHeight(f, height)
+    f:SetHeight(height)
+end
+
+local function refreshPopupRollLines(self, roll)
+    local f = roll and roll.popup
+    if not f or f.mode ~= "interest" then
+        return
+    end
+
+    local entries = buildLiveRollEntries(self, roll)
+    local maxVisible = math.min(#entries, ROLL_LINE_LIMIT)
+    local overflow = #entries - maxVisible
+    local lineCount = maxVisible + (overflow > 0 and 1 or 0)
+    ensureRollLinePool(f, math.max(lineCount, 1))
+
+    for index, line in ipairs(f.rollLines) do
+        if index <= maxVisible then
+            local entry = entries[index]
+            local colorCode = util:GetClassColorCode(entry.className) or "|cffffffff"
+            line:SetText(string.format("%s%s|r - %d - %s", colorCode, entry.name or "Unknown", entry.roll or 0, RESPONSE_LABELS[entry.tier] or string.upper(entry.tier or "")))
+            line:Show()
+        elseif overflow > 0 and index == maxVisible + 1 then
+            line:SetText(string.format("+%d more...", overflow))
+            line:Show()
+        else
+            line:SetText("")
+            line:Hide()
+        end
+    end
+
+    local extraRows = lineCount
+    local extraHeight = extraRows > 0 and (8 + (extraRows * 14)) or 0
+    setPopupHeight(f, POPUP_H + extraHeight)
+    layoutPopups(self)
 end
 
 -- roll-choice brackets, highest priority first: BiS > MS > MU > OS > TM (Pass
@@ -328,10 +433,11 @@ end
 -- confusing). A closing popup frees its slot; the next new popup reuses the lowest free
 -- one.
 layoutPopups = function(self)
+    local yOffset = 0
     for _, f in ipairs(self.live.active) do
-        local slot = f.slot or 0
         f:ClearAllPoints()
-        f:SetPoint("TOP", self.live.anchor or UIParent, "TOP", 0, -slot * (POPUP_H + 8))
+        f:SetPoint("TOP", self.live.anchor or UIParent, "TOP", 0, -yOffset)
+        yOffset = yOffset + (f:GetHeight() or POPUP_H) + 8
     end
 end
 
@@ -371,6 +477,13 @@ local function closePopup(self, f)
     if not f then return end
     f:SetScript("OnUpdate", nil)        -- stop the countdown on a pooled frame
     resetInterestButtons(f)             -- clear any locked roll-choice highlight
+    if f.rollLines then
+        for _, line in ipairs(f.rollLines) do
+            line:SetText("")
+            line:Hide()
+        end
+    end
+    setPopupHeight(f, POPUP_H)
     f:Hide()
     removeActive(self, f)
     self.live.pool[#self.live.pool + 1] = f
@@ -459,9 +572,9 @@ end
 
 function addon:RefreshInterestPopup(roll)
     local f = roll and roll.popup
-    if not f or f.mode ~= "interest" or not roll.owner then return end
+    if not f or f.mode ~= "interest" then return end
 
-    if roll.itemId then
+    if roll.owner and roll.itemId then
         local total = 0
         for _, choice in pairs(self.session.responses[roll.itemId] or {}) do
             if self:IsResponseActive(choice) then
@@ -469,6 +582,7 @@ function addon:RefreshInterestPopup(roll)
             end
         end
         f.count:SetText(total > 0 and (total .. " rolling") or "")
+        refreshPopupRollLines(self, roll)
         return
     end
 
@@ -476,7 +590,10 @@ function addon:RefreshInterestPopup(roll)
     for _, r in pairs(roll.registrants) do
         if r.tier and r.tier ~= "pass" then total = total + 1 end
     end
-    f.count:SetText(total > 0 and (total .. " rolling") or "")
+    if roll.owner then
+        f.count:SetText(total > 0 and (total .. " rolling") or "")
+    end
+    refreshPopupRollLines(self, roll)
 end
 
 function addon:RefreshLiveRollCountForItem(itemId)
@@ -536,6 +653,12 @@ function addon:ShowPendingPopup(item, slot)
     f.name:SetText(formatRollItemLabel(link, item.name, item.quantity))
     f.sub:SetText("|cffffffffPrio:|r " .. (self:GetLiveItemPrio(item) or "BiS > MS > MU > OS > TM"))
     f.count:Hide()
+    if f.rollLines then
+        for _, line in ipairs(f.rollLines) do
+            line:Hide()
+        end
+    end
+    setPopupHeight(f, POPUP_H)
 
     f.bisBtn:Hide(); f.msBtn:Hide(); f.muBtn:Hide(); f.osBtn:Hide(); f.tmBtn:Hide(); f.passBtn:Hide(); f.okBtn:Hide()
 
@@ -575,6 +698,12 @@ function addon:ShowResultPopup(roll, winner, winnerRoll, sections, slot)
     f.icon:SetTexture(roll.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
     f.itemLink = roll.link
     f.name:SetText(formatRollItemLabel(roll.link, roll.name, roll.quantity))
+    if f.rollLines then
+        for _, line in ipairs(f.rollLines) do
+            line:Hide()
+        end
+    end
+    setPopupHeight(f, POPUP_H)
 
     local myKey = util:NormalizeKey(util:GetPlayerName("player") or "")
     local winKey = winner and winner ~= "" and util:NormalizeKey(winner) or nil
@@ -778,8 +907,10 @@ function addon:StartLiveRoll(item)
         for playerKey, choice in pairs(self.session.responses[item.id] or {}) do
             if self:IsResponseActive(choice) then
                 roll.registrants[playerKey] = {
-                    name = playerKey,
+                    name = getPlayerDisplayName(self, playerKey),
+                    className = getPlayerClassName(self, playerKey),
                     tier = choice,
+                    roll = nextLiveRollValue(),
                 }
             end
         end
@@ -802,7 +933,24 @@ function addon:ResolveLiveRoll(rollId)
     -- Registrants' brackets are already in session.responses (RegisterInterest). Resolve
     -- through the SAME engine the batch flow uses: bracket -> named -> spec -> status -> roll.
     local sit = self:LiveRollSessionItem(roll)
-    local item = { id = sit.id, name = sit.name or roll.name, link = sit.link or roll.link, icon = sit.icon or roll.icon, quantity = sit.quantity or roll.quantity or 1 }
+    local item = {
+        id = sit.id,
+        name = sit.name or roll.name,
+        link = sit.link or roll.link,
+        icon = sit.icon or roll.icon,
+        quantity = sit.quantity or roll.quantity or 1,
+        liveRollAssignments = {},
+    }
+    for playerKey, registrant in pairs(roll.registrants or {}) do
+        if registrant.tier and registrant.tier ~= "pass" and registrant.roll then
+            item.liveRollAssignments[playerKey] = {
+                name = registrant.name or getPlayerDisplayName(self, playerKey),
+                className = registrant.className or getPlayerClassName(self, playerKey),
+                roll = registrant.roll,
+                auto = false,
+            }
+        end
+    end
     local record = self:ResolveSessionItem(item)
 
     local winner = (record.winner and record.winner ~= "No winner") and record.winner or nil
@@ -917,10 +1065,37 @@ function addon:SendInterest(rollId, tier)
     end
 end
 
+function addon:BroadcastLiveRollState(rollId, playerName, className, tier, rollValue)
+    if not self:IsAuthorizedLootMaster() then
+        return
+    end
+
+    self:SendLargeMessage("LIVE_SYNC", {
+        rollId or "",
+        playerName or "",
+        className or "",
+        tier or "pass",
+        tostring(rollValue or 0),
+    }, "RAID")
+end
+
 function addon:RegisterInterest(rollId, name, tier)
     local roll = self.live.rolls[rollId]
     if not roll or roll.resolved then return end
-    roll.registrants[util:NormalizeKey(name)] = { name = name, tier = tier }
+    local playerKey = util:NormalizeKey(name)
+    local existing = roll.registrants[playerKey] or {}
+    local displayName = (name and name ~= "") and name or existing.name or getPlayerDisplayName(self, playerKey)
+    local className = existing.className or getPlayerClassName(self, playerKey)
+    local rollValue = existing.roll
+    if tier == "pass" then
+        rollValue = nil
+    elseif not rollValue then
+        rollValue = nextLiveRollValue()
+    end
+    roll.registrants[playerKey] = { name = displayName, className = className, tier = tier, roll = rollValue }
+    if self:IsAuthorizedLootMaster() then
+        self:BroadcastLiveRollState(rollId, displayName, className, tier, rollValue)
+    end
     -- Mirror the pick into the shared response model so the Loot tab reflects it and the
     -- same resolver (BuildRollerList -> ResolveSessionItem) sees these rollers.
     if roll.itemId then
@@ -954,6 +1129,27 @@ end
 function addon:OnRspMessage(sender, fields)
     if not self:IsAuthorizedLootMaster() then return end
     self:RegisterInterest(fields[1], sender, fields[2])
+end
+
+function addon:OnLiveSyncMessage(fields)
+    local rollId = fields[1]
+    local playerName = fields[2]
+    local className = fields[3] or ""
+    local tier = fields[4] or "pass"
+    local rollValue = tonumber(fields[5]) or 0
+    local roll = self.live.rolls[rollId]
+    if not roll or roll.resolved then
+        return
+    end
+
+    local playerKey = util:NormalizeKey(playerName)
+    roll.registrants[playerKey] = {
+        name = playerName,
+        className = className,
+        tier = tier,
+        roll = tier ~= "pass" and rollValue or nil,
+    }
+    self:RefreshInterestPopup(roll)
 end
 
 function addon:OnWinMessage(fields)
