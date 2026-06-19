@@ -455,8 +455,16 @@ end
 -- confusing). A closing popup frees its slot; the next new popup reuses the lowest free
 -- one.
 layoutPopups = function(self)
-    local yOffset = 0
+    local ordered = {}
     for _, f in ipairs(self.live.active) do
+        ordered[#ordered + 1] = f
+    end
+    table.sort(ordered, function(a, b)
+        return (a.slot or 0) < (b.slot or 0)
+    end)
+
+    local yOffset = 0
+    for _, f in ipairs(ordered) do
         f:ClearAllPoints()
         f:SetPoint("TOP", self.live.anchor or UIParent, "TOP", 0, -yOffset)
         yOffset = yOffset + (f:GetHeight() or POPUP_H) + 8
@@ -523,7 +531,7 @@ end
 -- ---------------------------------------------------------------------------
 -- interest popup
 -- ---------------------------------------------------------------------------
-function addon:ShowInterestPopup(roll)
+function addon:ShowInterestPopup(roll, slot)
     local f = acquirePopup(self)
     f.roll = roll
     roll.popup = f
@@ -587,7 +595,7 @@ function addon:ShowInterestPopup(roll)
         end
     end)
 
-    addActivePopup(self, f)
+    addActivePopup(self, f, slot)
     f:Show()
     layoutPopups(self)
     self:RefreshInterestPopup(roll)
@@ -703,8 +711,9 @@ function addon:ShowPendingPopup(item, slot)
     f.rollBtn:SetWidth(46)
     f.rollBtn:SetText("Start")
     f.rollBtn:SetScript("OnClick", function()
+        local popupSlot = f.slot
         closePopup(self, f)
-        self:StartLiveRoll(item)        -- clears pendingLinks for this item
+        self:StartLiveRoll(item, popupSlot)        -- clears pendingLinks for this item
     end)
 
     f:SetScript("OnEnter", nil)
@@ -960,7 +969,7 @@ function addon:OnCancelMessage(fields)
     self.live.rolls[fields[1]] = nil
 end
 
-function addon:StartLiveRoll(item)
+function addon:StartLiveRoll(item, slot)
     if not self:IsAuthorizedLootMaster() then
         self:Print("Only the loot master can put items up for roll.")
         return
@@ -999,7 +1008,7 @@ function addon:StartLiveRoll(item)
 
     self:SendLargeMessage("DROP",
         { rollId, item.link, item.name or "", item.icon or "", prio or "", tostring(ROLL_DURATION), tostring(item.quantity or 1) }, "RAID")
-    self:ShowInterestPopup(roll)
+    self:ShowInterestPopup(roll, slot)
     self:Print("Put " .. (item.name or item.link) .. " up for roll. Press Roll! when ready.")
 end
 
