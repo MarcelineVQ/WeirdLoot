@@ -894,6 +894,72 @@ function addon:HasOpenPendingForLink(link)
     return false
 end
 
+function addon:GetActiveLiveRollForItem(item)
+    if not item then
+        return nil
+    end
+
+    for _, roll in pairs(self.live.rolls or {}) do
+        if roll and not roll.resolved then
+            if item.id then
+                if roll.itemId == item.id then
+                    return roll
+                end
+            elseif item.link and item.link ~= "" and roll.link == item.link then
+                return roll
+            end
+        end
+    end
+
+    return nil
+end
+
+function addon:DismissPendingPopupForLink(link, clearPending)
+    if not link or link == "" then
+        return nil
+    end
+
+    for _, f in ipairs(self.live.active) do
+        if f.mode == "pending" and f.pendingLink == link then
+            local slot = f.slot
+            closePopup(self, f)
+            if clearPending then
+                compactPopups(self)
+            end
+            if clearPending and self.session.pendingLinks then
+                self.session.pendingLinks[link] = nil
+            end
+            return slot
+        end
+    end
+
+    if clearPending and self.session.pendingLinks then
+        self.session.pendingLinks[link] = nil
+    end
+    return nil
+end
+
+function addon:SkipLiveLootItem(item)
+    if not self:IsAuthorizedLootMaster() then
+        self:Print("Only the loot master can skip live loot items.")
+        return
+    end
+    if not item or not item.link or item.link == "" then
+        return
+    end
+
+    self:DismissPendingPopupForLink(item.link, true)
+end
+
+function addon:StartLiveRollFromItem(item)
+    if not item or not item.link or item.link == "" then
+        return
+    end
+
+    local slot = self:DismissPendingPopupForLink(item.link, false)
+    self:StartLiveRoll(item, slot)
+end
+
 function addon:AutoRollAddedItems(addedLinks)
     if not self.db.autoRoll then return end
     if not self:IsAuthorizedLootMaster() then return end
@@ -961,6 +1027,7 @@ function addon:CancelLiveRoll(rollId)
     local slot = roll.popup and roll.popup.slot
     self:CloseInterestPopup(roll)
     self:ShowPendingPopup(item, slot)        -- back to pending in place, not gone
+    self:TriggerCallback("SESSION_UPDATED")
     self:Print("Roll cancelled: " .. (roll.name or roll.link or "item") .. " (back to pending).")
 end
 
@@ -970,6 +1037,7 @@ function addon:OnCancelMessage(fields)
     self:CloseInterestPopup(roll)
     compactPopups(self)
     self.live.rolls[fields[1]] = nil
+    self:TriggerCallback("SESSION_UPDATED")
 end
 
 function addon:StartLiveRoll(item, slot)
@@ -1012,6 +1080,7 @@ function addon:StartLiveRoll(item, slot)
     self:SendLargeMessage("DROP",
         { rollId, item.link, item.name or "", item.icon or "", prio or "", tostring(ROLL_DURATION), tostring(item.quantity or 1) }, "RAID")
     self:ShowInterestPopup(roll, slot)
+    self:TriggerCallback("SESSION_UPDATED")
     self:Print("Put " .. (item.name or item.link) .. " up for roll. Press Roll! when ready.")
 end
 
@@ -1081,6 +1150,7 @@ function addon:ResolveLiveRoll(rollId)
     local slot = roll.popup and roll.popup.slot
     self:CloseInterestPopup(roll)
     self:ShowResultPopup(roll, record.winnerDetails or {}, sections, slot)
+    self:TriggerCallback("SESSION_UPDATED")
 
     if #(record.winnerDetails or {}) == 0 then
         self:Print(roll.name .. " -> no rollers.")
@@ -1239,6 +1309,7 @@ function addon:OnDropMessage(fields)
     }
     self.live.rolls[roll.id] = roll
     self:ShowInterestPopup(roll)
+    self:TriggerCallback("SESSION_UPDATED")
 end
 
 function addon:OnRspMessage(sender, fields)
@@ -1265,6 +1336,7 @@ function addon:OnLiveSyncMessage(fields)
         roll = tier ~= "pass" and rollValue or nil,
     }
     self:RefreshInterestPopup(roll)
+    self:TriggerCallback("SESSION_UPDATED")
 end
 
 function addon:OnWinMessage(fields)
