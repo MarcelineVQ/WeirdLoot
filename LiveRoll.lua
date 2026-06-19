@@ -53,7 +53,7 @@ local popupBasePoint, savePopupBasePoint, layoutPopups
 local RESPONSE_ORDER = { bis = 5, ms = 4, mu = 3, os = 2, tm = 1, pass = 0 }
 local RESPONSE_LABELS = { bis = "BiS", ms = "MS", mu = "MU", os = "OS", tm = "TM", pass = "Pass" }
 local ROLL_LINE_LIMIT = 8
-local POPUP_INTEREST_EMPTY_H = 72
+local POPUP_INTEREST_EMPTY_H = 64
 
 local function makeButton(parent, text, width)
     local b = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
@@ -132,6 +132,11 @@ local function setPopupHeight(f, height)
     f:SetHeight(height)
 end
 
+local function getCompactPopupHeight(f)
+    local subHeight = math.ceil(f.sub:GetStringHeight() or 0)
+    return math.max(POPUP_INTEREST_EMPTY_H, 54 + subHeight)
+end
+
 local function refreshPopupRollLines(self, roll)
     local f = roll and roll.popup
     if not f or f.mode ~= "interest" then
@@ -160,12 +165,10 @@ local function refreshPopupRollLines(self, roll)
     end
 
     if lineCount == 0 then
-        local subHeight = math.ceil(f.sub:GetStringHeight() or 0)
-        local compactHeight = math.max(POPUP_INTEREST_EMPTY_H, 62 + subHeight)
-        setPopupHeight(f, compactHeight)
+        setPopupHeight(f, getCompactPopupHeight(f))
     else
         local extraHeight = 8 + (lineCount * 14)
-        setPopupHeight(f, POPUP_H + extraHeight)
+        setPopupHeight(f, getCompactPopupHeight(f) + extraHeight)
     end
     layoutPopups(self)
 end
@@ -513,7 +516,7 @@ local function closePopup(self, f)
             line:Hide()
         end
     end
-    setPopupHeight(f, POPUP_H)
+    setPopupHeight(f, getCompactPopupHeight(f))
     f:Hide()
     removeActive(self, f)
     self.live.pool[#self.live.pool + 1] = f
@@ -694,7 +697,7 @@ function addon:ShowPendingPopup(item, slot)
             line:Hide()
         end
     end
-    setPopupHeight(f, POPUP_H)
+    setPopupHeight(f, getCompactPopupHeight(f))
 
     f.bisBtn:Hide(); f.msBtn:Hide(); f.muBtn:Hide(); f.osBtn:Hide(); f.tmBtn:Hide(); f.passBtn:Hide(); f.okBtn:Hide()
 
