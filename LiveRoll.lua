@@ -146,7 +146,7 @@ local function showRollCountTooltip(self, f)
 
     GameTooltip:SetOwner(f.countHover or f, "ANCHOR_NONE")
     GameTooltip:ClearAllPoints()
-    GameTooltip:SetPoint("TOPRIGHT", f.countHover or f, "BOTTOMRIGHT", 0, -4)
+    GameTooltip:SetPoint("TOPLEFT", f, "TOPRIGHT", 8, 0)
     GameTooltip:ClearLines()
     GameTooltip:AddLine("Players Rolling", 1, 0.82, 0)
 
