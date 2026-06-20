@@ -34,6 +34,11 @@ local function checkRecords(records)
     -- reliability lifecycle, keyed by reqId (req/resend/ack/give-up events). Per-client: a raider
     -- log carries the request side, the ML log the targeted-send/ack side.
     local reqSeen, reqOpen, gaveUp, acked, lastResend = {}, {}, {}, {}, {}
+    -- midCapture: the segment began with a clear/login, so capture may have started with a
+    -- non-empty ledger (clear wipes the LOG, not the loot ledger). Lots minted / a baseline synced
+    -- before the clear are legitimately absent, so leading orphan ops are notes, not failures. A
+    -- real `reset` wipes the ledger, so it switches back to strict checking.
+    local midCapture = false
 
     local function resetSegment()
         state, minted, owed = {}, {}, {}
@@ -50,10 +55,27 @@ local function checkRecords(records)
         end
         if rec.seq then lastSeq = rec.seq end
 
+        -- pre-capture tolerance: in a clear/login-started segment the first op on an unseen id was
+        -- minted before the log was cleared. Register it and skip the one-time transition check,
+        -- instead of flagging mint-before-use / an illegal transition from an unknown prior state.
+        local preCapture = false
+        if midCapture and id and not minted[id]
+            and ev ~= "mint" and ev ~= "session" and ev ~= "reset" and ev ~= "mark" then
+            minted[id] = true
+            preCapture = true
+            note(rec, "pre-capture lot " .. tostring(id) .. " (operated on before the log was cleared)")
+        end
+
         if ev == "session" or ev == "reset" then
             -- segment boundary: a new login (session) or a ledger Reset (Start/Clear Session)
             -- legitimately restarts lot ids at L:1, so clear per-id tracking here.
             resetSegment()
+            if ev == "reset" then
+                midCapture = false -- ledger truly wiped: fresh L:1 mints expected, check strictly
+            else
+                local r = rec.reason
+                midCapture = (r == "clear" or r == "login") -- capture may begin with a populated ledger
+            end
         elseif ev == "mark" then
             -- segment label only
         elseif ev == "mint" then
@@ -74,19 +96,19 @@ local function checkRecords(records)
             if not minted[id] then fail("mint-before-use", rec, "surface on unminted " .. tostring(id))
             else
                 local s = state[id]
-                if s ~= STATE_NEW and s ~= STATE_IDLE and s ~= STATE_SKIPPED then
+                if not preCapture and s ~= STATE_NEW and s ~= STATE_IDLE and s ~= STATE_SKIPPED then
                     fail("legal-transition", rec, string.format("surface from %s (want new/idle/skipped)", tostring(s)))
                 end
                 state[id] = STATE_PENDING
             end
         elseif ev == "skip" then
-            if state[id] ~= STATE_PENDING then fail("legal-transition", rec, "skip from " .. tostring(state[id])) end
+            if not preCapture and state[id] ~= STATE_PENDING then fail("legal-transition", rec, "skip from " .. tostring(state[id])) end
             state[id] = STATE_SKIPPED
         elseif ev == "startRoll" then
-            if state[id] ~= STATE_PENDING then fail("legal-transition", rec, "startRoll from " .. tostring(state[id])) end
+            if not preCapture and state[id] ~= STATE_PENDING then fail("legal-transition", rec, "startRoll from " .. tostring(state[id])) end
             state[id] = STATE_ROLLING
         elseif ev == "cancel" then
-            if state[id] ~= STATE_ROLLING then fail("legal-transition", rec, "cancel from " .. tostring(state[id])) end
+            if not preCapture and state[id] ~= STATE_ROLLING then fail("legal-transition", rec, "cancel from " .. tostring(state[id])) end
             state[id] = STATE_PENDING
         elseif ev == "response" then
             if rec.ok then
@@ -109,7 +131,7 @@ local function checkRecords(records)
             for _, a in ipairs(awards) do if a.state == "owed" then o = o + 1 end end
             owed[id] = o
         elseif ev == "unlock" then
-            if state[id] ~= STATE_RESOLVED then fail("legal-transition", rec, "unlock from " .. tostring(state[id])) end
+            if not preCapture and state[id] ~= STATE_RESOLVED then fail("legal-transition", rec, "unlock from " .. tostring(state[id])) end
             state[id] = STATE_IDLE
             owed[id] = 0
         elseif ev == "deliver" then
@@ -133,7 +155,11 @@ local function checkRecords(records)
                 fail("gap-before-resync", rec, "delta rev " .. tostring(rec.rev) .. " applied while a gap was pending")
             end
             if appliedRev == nil then
-                fail("recv-contiguity", rec, "delta rev " .. tostring(rec.rev) .. " applied with no prior snapshot baseline")
+                if midCapture then
+                    note(rec, "recv baseline adopted mid-capture at rev " .. tostring(rec.rev) .. " (snapshot predates the clear)")
+                else
+                    fail("recv-contiguity", rec, "delta rev " .. tostring(rec.rev) .. " applied with no prior snapshot baseline")
+                end
             elseif rec.rev ~= appliedRev + 1 then
                 fail("recv-contiguity", rec, string.format("delta rev %s applied after %s (not contiguous)", tostring(rec.rev), tostring(appliedRev)))
             end
