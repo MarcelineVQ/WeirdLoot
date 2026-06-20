@@ -817,7 +817,12 @@ function addon:ShowResultPopup(roll, winnerDetails, sections, slot)
 
     local line
     if #winners == 0 then
-        line = "Winner: No rollers."
+        local namedRule = roll.name and self:GetNamedRule(roll.name)
+        if namedRule and namedRule.raw and namedRule.raw ~= "" then
+            line = "Winner: Loot Council"
+        else
+            line = "Winner: No rollers."
+        end
     else
         local winnerParts = {}
         for _, winner in ipairs(winners) do
