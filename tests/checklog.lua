@@ -31,10 +31,14 @@ local function checkRecords(records)
     local lastSeq = nil
     local state, minted, owed = {}, {}, {}   -- per-id, reset on each session segment
     local appliedRev, gapPending = nil, false -- raider-side comm tracking (recv-* events)
+    -- reliability lifecycle, keyed by reqId (req/resend/ack/give-up events). Per-client: a raider
+    -- log carries the request side, the ML log the targeted-send/ack side.
+    local reqSeen, reqOpen, gaveUp, acked, lastResend = {}, {}, {}, {}, {}
 
     local function resetSegment()
         state, minted, owed = {}, {}, {}
         appliedRev, gapPending = nil, false
+        reqSeen, reqOpen, gaveUp, acked, lastResend = {}, {}, {}, {}, {}
     end
 
     for _, rec in ipairs(records) do
@@ -116,8 +120,10 @@ local function checkRecords(records)
                 owed[id] = owed[id] - 1
             end
         elseif ev == "recv-snap" then
-            -- a full snapshot re-baselines the raider's revision unconditionally and heals any gap
+            -- a full snapshot re-baselines the raider's revision unconditionally and heals any gap;
+            -- it is also the response that resolves any outstanding sync request.
             appliedRev, gapPending = rec.rev, false
+            reqOpen = {}
         elseif ev == "recv-gap" then
             gapPending = true
         elseif ev == "recv-lot" then
@@ -132,7 +138,59 @@ local function checkRecords(records)
                 fail("recv-contiguity", rec, string.format("delta rev %s applied after %s (not contiguous)", tostring(rec.rev), tostring(appliedRev)))
             end
             appliedRev = rec.rev
+        elseif ev == "req" then
+            -- a peer opened a reliable sync request (raider log)
+            if rec.reqId then reqSeen[rec.reqId] = true; reqOpen[rec.reqId] = true end
+        elseif ev == "resend" then
+            local rid = rec.reqId
+            -- I. a give-up is terminal: nothing more may happen for that reqId
+            if rid and gaveUp[rid] then
+                fail("give-up-terminal", rec, "resend for " .. tostring(rid) .. " after it gave up")
+            end
+            -- J. a resend is never the initial send (attempt 1), and attempts strictly increase
+            if rec.attempt and rec.attempt < 2 then
+                fail("resend-monotonic", rec, "resend attempt " .. tostring(rec.attempt) .. " < 2 (attempt 1 is the initial send)")
+            end
+            if rid and rec.attempt and lastResend[rid] and rec.attempt <= lastResend[rid] then
+                fail("resend-monotonic", rec, string.format("resend attempt %s not > previous %s for %s",
+                    tostring(rec.attempt), tostring(lastResend[rid]), tostring(rid)))
+            end
+            if rid and rec.attempt then lastResend[rid] = rec.attempt end
+            -- K. a request resend must follow a request we actually saw open
+            if rec.kind == "request" and rid and not reqSeen[rid] then
+                fail("request-opened", rec, "resend(request) for " .. tostring(rid) .. " with no prior req")
+            end
+            -- L. once acked, the authority must stop resending the targeted snapshot
+            if rec.kind == "ack" and rid and acked[rid] then
+                fail("ack-once", rec, "resend(ack) for " .. tostring(rid) .. " after it was acked")
+            end
+        elseif ev == "ack" then
+            local rid = rec.reqId
+            if rid and gaveUp[rid] then fail("give-up-terminal", rec, "ack for " .. tostring(rid) .. " after give-up") end
+            if rid and acked[rid] then fail("ack-once", rec, "duplicate ack for " .. tostring(rid)) end
+            if rid then acked[rid] = true end
+        elseif ev == "give-up" then
+            -- M. give-up carries one of the known reasons
+            local reason = rec.reason
+            if reason ~= "max" and reason ~= "left" and reason ~= "no-authority" then
+                fail("give-up-reason", rec, "unknown give-up reason " .. tostring(reason))
+            end
+            local rid = rec.reqId
+            if rid then
+                if gaveUp[rid] then fail("give-up-terminal", rec, "duplicate give-up for " .. tostring(rid)) end
+                if rec.kind == "request" and not reqSeen[rid] then
+                    fail("request-opened", rec, "give-up(request) for " .. tostring(rid) .. " with no prior req")
+                end
+                gaveUp[rid] = true
+                reqOpen[rid] = nil
+            end
         end
+    end
+
+    -- N. a sync request still open at end of log never got a resync or a give-up. Soft: the run
+    -- may simply have ended mid-retry, so this is a note, not a failure.
+    for rid in pairs(reqOpen) do
+        note(nil, "sync request " .. tostring(rid) .. " unresolved at end of log (no resync or give-up)")
     end
 
     return #V == 0, V, notes
@@ -145,6 +203,7 @@ local INVARIANTS = {
     "monotonic-seq", "mint-before-use", "legal-transition",
     "awards-eq-count", "no-response-after-resolve", "deliver-needs-owed",
     "recv-contiguity", "gap-before-resync",
+    "resend-monotonic", "give-up-terminal", "ack-once", "request-opened", "give-up-reason",
 }
 
 local function report(label, records)
@@ -256,6 +315,15 @@ local function demoRecords()
     logger("recv-snap", { rev = 7, lots = 3 })
     logger("recv-lot", { id = "L:3", rev = 8 })
 
+    -- a clean reliability lifecycle. Raider side: a request, one backoff resend, then the resync
+    -- snapshot that resolves it. Authority side (would be a separate log; mixed here for the
+    -- self-test): an ack for one targeted send, and a roster-leave give-up for another.
+    logger("req", { reqId = "Raider:1", attempt = 1 })
+    logger("resend", { kind = "request", reqId = "Raider:1", attempt = 2 })
+    logger("recv-snap", { rev = 9, lots = 1 })                              -- resolves Raider:1
+    logger("ack", { reqId = "ML:3" })                                       -- targeted send confirmed
+    logger("give-up", { kind = "ack", reqId = "ML:4", reason = "left" })    -- target left the raid
+
     return recs
 end
 
@@ -274,6 +342,14 @@ local function brokenRecords()
         { seq = 10, ev = "recv-lot", id = "L:1", rev = 3 },     -- non-contiguous (skipped rev 2)
         { seq = 11, ev = "recv-gap", rev = 9, lastRev = 3 },
         { seq = 12, ev = "recv-lot", id = "L:1", rev = 10 },    -- applied while a gap is pending
+        -- reliability violations
+        { seq = 13, ev = "give-up", kind = "request", reqId = "B:1", reason = "max" },  -- give-up(request) with no prior req
+        { seq = 14, ev = "resend", kind = "request", reqId = "B:1", attempt = 3 },      -- resend after give-up (+ no prior req)
+        { seq = 15, ev = "give-up", kind = "ack", reqId = "B:2", reason = "bogus" },    -- unknown give-up reason
+        { seq = 16, ev = "resend", kind = "ack", reqId = "B:3", attempt = 2 },
+        { seq = 17, ev = "resend", kind = "ack", reqId = "B:3", attempt = 2 },          -- attempt not increasing
+        { seq = 18, ev = "ack", reqId = "B:3" },
+        { seq = 19, ev = "resend", kind = "ack", reqId = "B:3", attempt = 3 },          -- resend after ack
     }
 end
 
