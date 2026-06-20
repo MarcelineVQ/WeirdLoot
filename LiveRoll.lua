@@ -138,39 +138,45 @@ local function getCompactPopupHeight(f)
     return math.max(POPUP_INTEREST_EMPTY_H, 39 + nameHeight + subHeight)
 end
 
+local function showRollCountTooltip(self, f)
+    local roll = f and f.roll
+    if not f or not roll then
+        return
+    end
+
+    GameTooltip:SetOwner(f.countHover or f, "ANCHOR_NONE")
+    GameTooltip:ClearAllPoints()
+    GameTooltip:SetPoint("TOPRIGHT", f.countHover or f, "BOTTOMRIGHT", 0, -4)
+    GameTooltip:ClearLines()
+    GameTooltip:AddLine("Players Rolling", 1, 0.82, 0)
+
+    local entries = buildLiveRollEntries(self, roll)
+    if #entries == 0 then
+        GameTooltip:AddLine("No active rollers", 1, 1, 1)
+    else
+        for _, entry in ipairs(entries) do
+            local colorCode = util:GetClassColorCode(entry.className) or "|cffffffff"
+            GameTooltip:AddLine(string.format("%s%s|r - %d - %s", colorCode, entry.name or "Unknown", entry.roll or 0, RESPONSE_LABELS[entry.tier] or string.upper(entry.tier or "")), 1, 1, 1)
+        end
+    end
+
+    GameTooltip:Show()
+end
+
 local function refreshPopupRollLines(self, roll)
     local f = roll and roll.popup
     if not f or f.mode ~= "interest" then
         return
     end
 
-    local entries = buildLiveRollEntries(self, roll)
-    local maxVisible = math.min(#entries, ROLL_LINE_LIMIT)
-    local overflow = #entries - maxVisible
-    local lineCount = maxVisible + (overflow > 0 and 1 or 0)
-    ensureRollLinePool(f, math.max(lineCount, 1))
-
-    for index, line in ipairs(f.rollLines) do
-        if index <= maxVisible then
-            local entry = entries[index]
-            local colorCode = util:GetClassColorCode(entry.className) or "|cffffffff"
-            line:SetText(string.format("%s%s|r - %d - %s", colorCode, entry.name or "Unknown", entry.roll or 0, RESPONSE_LABELS[entry.tier] or string.upper(entry.tier or "")))
-            line:Show()
-        elseif overflow > 0 and index == maxVisible + 1 then
-            line:SetText(string.format("+%d more...", overflow))
-            line:Show()
-        else
+    if f.rollLines then
+        for _, line in ipairs(f.rollLines) do
             line:SetText("")
             line:Hide()
         end
     end
 
-    if lineCount == 0 then
-        setPopupHeight(f, getCompactPopupHeight(f))
-    else
-        local extraHeight = 8 + (lineCount * 14)
-        setPopupHeight(f, getCompactPopupHeight(f) + extraHeight)
-    end
+    setPopupHeight(f, getCompactPopupHeight(f))
     layoutPopups(self)
 end
 
@@ -400,6 +406,12 @@ local function makePopup()
 
     f.count = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     f.count:SetPoint("TOPRIGHT", f, "TOPRIGHT", -10, -30)
+    f.countHover = CreateFrame("Frame", nil, f)
+    f.countHover:SetPoint("TOPLEFT", f.count, "TOPLEFT", -2, 2)
+    f.countHover:SetPoint("BOTTOMRIGHT", f.count, "BOTTOMRIGHT", 2, -2)
+    f.countHover:EnableMouse(true)
+    f.countHover:SetScript("OnEnter", function() showRollCountTooltip(addon, f) end)
+    f.countHover:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     -- choice brackets (top button row): BiS > MS > MU > OS > TM > Pass
     f.bisBtn = makeButton(f, "BiS", 34)
@@ -579,12 +591,12 @@ function addon:ShowInterestPopup(roll, slot)
         f.cancelBtn:SetWidth(50)
         f.cancelBtn:SetText("Cancel")
         f.cancelBtn:SetScript("OnClick", function() self:CancelLiveRoll(roll.id) end)
-        f.count:Show()
     else
         f.rollBtn:Hide()
         f.cancelBtn:Hide()
-        f.count:Hide()
     end
+    f.count:Show()
+    f.countHover:Show()
 
     f:SetScript("OnEnter", nil)
     f:SetScript("OnLeave", nil)
@@ -631,6 +643,9 @@ function addon:RefreshInterestPopup(roll)
         if r.tier and r.tier ~= "pass" then total = total + 1 end
     end
     if roll.owner then
+        f.count:SetText(total > 0 and (total .. " rolling") or "")
+    end
+    if not roll.owner then
         f.count:SetText(total > 0 and (total .. " rolling") or "")
     end
     refreshPopupRollLines(self, roll)
@@ -703,6 +718,7 @@ function addon:ShowPendingPopup(item, slot)
     f.name:SetText(formatRollItemLabel(link, item.name, item.quantity))
     f.sub:SetText("|cffffffffPrio:|r " .. (self:GetLiveItemPrio(item) or "BiS > MS > MU > OS > TM"))
     f.count:Hide()
+    f.countHover:Hide()
     if f.rollLines then
         for _, line in ipairs(f.rollLines) do
             line:Hide()
@@ -749,6 +765,8 @@ function addon:ShowResultPopup(roll, winnerDetails, sections, slot)
     f.icon:SetTexture(roll.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
     f.itemLink = roll.link
     f.name:SetText(formatRollItemLabel(roll.link, roll.name, roll.quantity))
+    f.count:Hide()
+    f.countHover:Hide()
     if f.rollLines then
         for _, line in ipairs(f.rollLines) do
             line:Hide()
