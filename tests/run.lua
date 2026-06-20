@@ -12,6 +12,7 @@
 -- (FauxScrollFrame_*, templates) irrelevant to loot accounting. The projections the tests
 -- assert on (session.items / session.results) are built in Session, not UI.
 local ADDON_FILES = {
+    "Libs/WeirdSync-1.0/WeirdSync-1.0.lua",
     "TradeDeliver.lua", "Core.lua", "LootCore.lua", "Util.lua", "Config.lua",
     "Roster.lua", "Session.lua", "Comm.lua", "Resolver.lua", "Payout.lua",
     "LiveRoll.lua", "AutoLoot.lua",
@@ -257,12 +258,21 @@ local function owedCount(w)
     return n
 end
 
--- deliver the shared wire from one world to another (raider mirror)
+-- deliver the shared wire from one world to another (raider mirror). Sync-prefix traffic goes
+-- straight to the WeirdSync channel (as AceComm's prefix dispatch would in-game), honouring
+-- WHISPER targeting; live-roll traffic goes through OnCommReceived.
 local function flushWireTo(target, fromSender)
     local msgs = WIRE; WIRE = {}
     for _, m in ipairs(msgs) do
         if m.sender ~= target.player then
-            target.addon:OnCommReceived(m.prefix, m.msg, m.dist or "RAID", m.sender or fromSender or "Masterlooter")
+            local sender = m.sender or fromSender or "Masterlooter"
+            if m.prefix == target.addon.syncPrefix and target.addon.syncChannel then
+                if m.dist ~= "WHISPER" or m.target == target.player then
+                    target.addon.syncChannel:OnReceive(sender, m.msg)
+                end
+            else
+                target.addon:OnCommReceived(m.prefix, m.msg, m.dist or "RAID", sender)
+            end
         end
     end
 end
@@ -576,17 +586,18 @@ test("delta sync: a single change sends a LOTD delta, not a full snapshot", func
     flushWireTo(raider)
     check(raider.addon.lootCore:Get(lot.id) ~= nil, "raider has the lot after baseline snapshot")
 
-    -- a single state change must delta-sync (LOTD), never a full SNAP_BEGIN burst
+    -- a single state change must delta-sync (D), never a full snapshot (SB) burst
     clearWire()
     ml.addon:StartLiveRoll(lot.id)
+    local SEP = string.char(30)
     local snaps, deltas = 0, 0
     for _, m in ipairs(WIRE) do
-        local cmd = string.match(m.msg, "^[^|]+")
-        if cmd == "SNAP_BEGIN" then snaps = snaps + 1 end
-        if cmd == "LOTD" then deltas = deltas + 1 end
+        local cmd = string.match(m.msg, "^[^|" .. SEP .. "]+")
+        if cmd == "SB" then snaps = snaps + 1 end
+        if cmd == "D" then deltas = deltas + 1 end
     end
     eq(snaps, 0, "no full snapshot emitted for a single change")
-    check(deltas >= 1, "a LOTD delta was sent")
+    check(deltas >= 1, "a delta (D) was sent")
 
     flushWireTo(raider)
     eq(raider.addon.lootCore:Get(lot.id).state, "rolling", "raider mirrored the delta (now rolling)")
@@ -664,8 +675,8 @@ test("delta sync: a dropped delta is detected via rev gap and auto-resynced", fu
     ml.addon:SetPlayerResponse(lot.id, "Alice", "ms")     -- recorded locally (coalesced, not broadcast)
     ml.addon:ResolveLiveRoll(lot.id)                      -- a state change -> a delta with a rev gap
     flushWireTo(raider)                                   -- raider sees the gap, requests a full resync
-    check(raider.addon.comm.resyncPending == true, "raider flagged a resync after the gap")
-    flushWireTo(ml)                                       -- ML answers REQUEST_SESSION_SYNC with a snapshot
+    check(raider.addon.syncChannel.pendingRequest ~= nil, "raider flagged a resync after the gap")
+    flushWireTo(ml)                                       -- ML answers the sync request with a targeted snapshot
     flushWireTo(raider)                                   -- raider applies it
     eq(syncView(raider), syncView(ml), "raider converged to ML truth after gap + resync")
 end)
@@ -807,10 +818,13 @@ test("guard: reconcile retires an un-rolled copy before an owed one", function()
     eq(w.addon.lootCore:Get(lotId).awards[1].state, "owed", "the owed copy was preserved")
 end)
 
-test("guard: a stray LOT message without SNAP_BEGIN is ignored (no crash)", function()
+test("guard: a stray snapshot line without an SB is ignored (no crash)", function()
     local w = makeWorld("Raidertwo", false)
-    local ok = pcall(function() w.addon:HandleCommMessage("Masterlooter", "LOT|s|L:1|40005|pending|1|") end)
-    check(ok, "stray LOT handled without error")
+    local SEP = string.char(30)
+    -- an SE (snapshot entry) arriving with no preceding SB must be dropped, not staged.
+    local stray = table.concat({ "SE", "L", "s", "L:1", "40005", "pending", "1" }, SEP)
+    local ok = pcall(function() w.addon.syncChannel:OnReceive("Masterlooter", stray) end)
+    check(ok, "stray snapshot line handled without error")
     eq(#w.addon.lootCore:All(), 0, "nothing staged into the ledger")
 end)
 
@@ -853,7 +867,7 @@ local function loadReport()
         local byCmd, byPrio = {}, { ALERT = 0, BULK = 0 }
         local logical, chunks, bytes = 0, 0, 0
         for _, m in ipairs(WIRE) do
-            local cmd = string.match(m.msg, "^[^|]+") or "?"
+            local cmd = string.match(m.msg, "^[^|" .. string.char(30) .. "]+") or "?"
             byCmd[cmd] = (byCmd[cmd] or 0) + 1
             local prio = m.prio or "BULK"
             byPrio[prio] = (byPrio[prio] or 0) + 1

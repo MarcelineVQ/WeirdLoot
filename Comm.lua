@@ -1,23 +1,72 @@
 local addon = WeirdLoot
 local util = addon.util
 
-function addon:InitializeComm()
-    self.comm = {
-        -- comm.incoming holds snapshot staging during SNAP_BEGIN..SNAP_END.
-        rev = 0,        -- ML: monotonic broadcast revision stamped on every sync message
-        lastRev = nil,  -- raider: highest rev applied; a gap triggers an auto full-resync
-    }
+-- Is a player still in our group? Drives WeirdSync's roster-aware give-up: a targeted re-send
+-- stops the moment its recipient genuinely leaves (rather than retrying a phantom).
+local function isInRaid(name)
+    if not name or name == "" then return false end
+    local key = util:NormalizeKey(name)
+    if key == util:NormalizeKey((UnitName and UnitName("player")) or "") then return true end
+    local raid = (GetNumRaidMembers and GetNumRaidMembers()) or 0
+    for i = 1, raid do
+        local rn = GetRaidRosterInfo(i)
+        if rn and util:NormalizeKey(rn) == key then return true end
+    end
+    local party = (GetNumPartyMembers and GetNumPartyMembers()) or 0
+    for i = 1, party do
+        local pn = UnitName("party" .. i)
+        if pn and util:NormalizeKey(pn) == key then return true end
+    end
+    return false
+end
 
-    -- AceComm-3.0 owns chunking + reassembly and paces every send through
-    -- ChatThrottleLib, so a full session broadcast can't trip the server's
-    -- addon-message flood limit. It registers its own CHAT_MSG_ADDON frame and
-    -- fires OnCommReceived with the fully-reassembled logical message.
+-- A lot on the wire is the tag "L" followed by the structured EncodeLot array. The tag lets a
+-- mixed snapshot (meta / attendee / lot lines) be demultiplexed on apply; deltas reuse the same
+-- tagged shape so one decoder serves both paths. WeirdSync treats the whole line as opaque.
+local function lotLine(self, lot)
+    local f = { "L" }
+    for _, v in ipairs(self:EncodeLot(lot)) do f[#f + 1] = v end
+    return f
+end
+
+local function decodeLotLine(self, f)
+    -- strip the "L" tag -> the original EncodeLot array (field 1 sessionId, 2 id, ... 9 seq)
+    local lotFields = {}
+    for i = 2, #f do lotFields[#lotFields + 1] = f[i] end
+    return self:DecodeLot(lotFields), tonumber(lotFields[9]) or 0
+end
+
+function addon:InitializeComm()
+    self.comm = {}              -- live-roll comm scratch; all session-mirror state lives in the WeirdSync channel
+    self.syncPrefix = "WLSYNC"  -- WeirdSync owns this prefix; the live-roll lane stays on self.prefix
+
+    -- AceComm-3.0 owns chunking + reassembly and paces every send through ChatThrottleLib. We use
+    -- it directly for the live-roll lane (DROP/WIN/CANCEL/RSP/SELECTION/NAMED_ITEMS) on self.prefix.
     local AceComm = LibStub and LibStub("AceComm-3.0", true)
     if AceComm then
         AceComm:Embed(self)
         self:RegisterComm(self.prefix, "OnCommReceived")
     else
         self:Print("AceComm-3.0 not found; raid sync disabled.")
+    end
+
+    -- The reliable session mirror is delegated to WeirdSync: it owns the revision, snapshot/delta
+    -- framing, gap detection + resync, request retry, targeted-send ack, and give-up. We own only
+    -- payload semantics: a snapshot/delta line is { tag, fields... } that we encode/decode here.
+    local WeirdSync = LibStub and LibStub("WeirdSync-1.0", true)
+    if WeirdSync then
+        self.syncChannel = WeirdSync:NewChannel(self.syncPrefix, {
+            isAuthority    = function() return self:IsAuthorizedLootMaster() end,
+            authorityName  = function() return self:GetLootMasterName() end,
+            rosterContains = function(name) return isInRaid(name) end,
+            epoch          = function() return self:GetCurrentSession().id or "" end,
+            buildSnapshot  = function(emit) self:SyncBuildSnapshot(emit) end,
+            applySnapshot  = function(lines, ep) self:SyncApplySnapshot(lines, ep) end,
+            applyLine      = function(fields) self:SyncApplyLine(fields) end,
+            log            = function(ev, data) self:LogCoreEvent(ev, data) end,
+        })
+    else
+        self:Print("WeirdSync-1.0 not found; raid sync disabled.")
     end
 end
 
@@ -123,99 +172,95 @@ function addon:DecodeLot(fields)
     return lot
 end
 
--- One snapshot of the whole core ledger, replacing the old per-ITEM / per-LOCK / per-RESULT
--- message storm. Sent as SNAP_BEGIN -> LOT* -> SNAP_END; the raider stages the lots and
--- applies them atomically via core:ApplyRemote.
+-- Host snapshot builder for WeirdSync. Emits one line per piece of state: an "M" meta line
+-- (loot-master name + core seq), an "A" line per attendee, and an "L" line per live/resolved
+-- lot. WeirdSync frames these as SB -> lines -> SD and carries them reliably.
+function addon:SyncBuildSnapshot(emit)
+    local session = self:GetCurrentSession()
+    local core = self.lootCore
+    emit({ "M", self:GetLootMasterName() or "", tostring(core.seq or 0) })
+    for _, attendee in ipairs(session.attendees or {}) do
+        emit({ "A", attendee.name or "", attendee.className or "", attendee.specName or "", attendee.status or "nil" })
+    end
+    for _, lot in ipairs(core:All()) do
+        if lot.state == core.STATE.RESOLVED or core:LiveCount(lot.id) > 0 then
+            emit(lotLine(self, lot))
+        end
+    end
+end
+
+-- Host snapshot applier (raider). Rebuilds session context + attendees from the lines and
+-- applies the lots atomically via core:ApplyRemote (-> ledgerChanged -> projections + UI).
+function addon:SyncApplySnapshot(lines, epoch)
+    self.session.id = epoch
+    self.session.active = true
+    self.session.attendees = {}
+    if self.ui then self.ui.selectedResult = nil end
+
+    local lots, seq = {}, 0
+    for _, f in ipairs(lines) do
+        local tag = f[1]
+        if tag == "M" then
+            local mlName = f[2]
+            if mlName and mlName ~= "" then self.roster.lootMasterName = mlName end
+            seq = math.max(seq, tonumber(f[3]) or 0)
+        elseif tag == "A" then
+            self.session.attendees[#self.session.attendees + 1] = {
+                name = f[2], className = f[3], specName = f[4], status = f[5],
+            }
+        elseif tag == "L" then
+            local lot, lotSeq = decodeLotLine(self, f)
+            lots[#lots + 1] = lot
+            seq = math.max(seq, lotSeq)
+        end
+    end
+    self.lootCore:ApplyRemote({ seq = seq, lots = lots })
+end
+
+-- Host delta applier (raider): one lot upsert.
+function addon:SyncApplyLine(fields)
+    if fields[1] ~= "L" then return end
+    local lot, lotSeq = decodeLotLine(self, fields)
+    self.lootCore:ApplyRemoteLot(lot, lotSeq)
+end
+
+-- Full session snapshot to the raid. WeirdSync owns the framing/revision; we just hand it the
+-- snapshot and drop the core's pending deltas (the snapshot already carried everything).
 function addon:BroadcastSession()
     if not self:IsAuthorizedLootMaster() then
         self:Print("Only the loot master can broadcast the session.")
         return
     end
-
     local session = self:GetCurrentSession()
     if not session.active then
         self:Print("Start a loot session first.")
         return
     end
-
-    local core = self.lootCore
-
-    self.comm.rev = (self.comm.rev or 0) + 1
-    self:SendLargeMessage("SNAP_BEGIN", {
-        session.id or "",
-        self:GetLootMasterName() or "",
-        tostring(core.seq or 0),
-        tostring(self.comm.rev),          -- baseline revision; raider sets lastRev to this
-    }, "RAID")
-
-    for _, attendee in ipairs(session.attendees or {}) do
-        self:SendLargeMessage("ATTENDEE", {
-            session.id or "",
-            attendee.name or "",
-            attendee.className or "",
-            attendee.specName or "",
-            attendee.status or "nil",
-        }, "RAID")
-    end
-
-    for _, lot in ipairs(core:All()) do
-        if lot.state == core.STATE.RESOLVED or core:LiveCount(lot.id) > 0 then
-            self:SendLargeMessage("LOT", self:EncodeLot(lot), "RAID")
-        end
-    end
-
-    self:SendLargeMessage("SNAP_END", { session.id or "" }, "RAID")
-    self.lootCore:DrainDirty()   -- a full snapshot already carries everything; drop pending deltas
+    if not self.syncChannel then return end
+    self.syncChannel:Broadcast(true)
+    self.lootCore:DrainDirty()
 end
 
--- Delta sync: broadcast only the changed lots as standalone LOTD messages (one upsert each on
--- the raider). This replaces a full-ledger storm for the common case of a single state change.
-function addon:BroadcastDelta(ids)
-    if not self:IsAuthorizedLootMaster() then return end
-    local core = self.lootCore
-    for _, id in ipairs(ids or {}) do
-        local lot = core:Get(id)
-        if lot then
-            self.comm.rev = (self.comm.rev or 0) + 1
-            local f = self:EncodeLot(lot)
-            f[#f + 1] = tostring(self.comm.rev)   -- field 10: broadcast revision for gap detection
-            self:SendLargeMessage("LOTD", f, "RAID")
-        end
-    end
-end
-
--- More changed lots than this in one tick -> a single full snapshot is cheaper and safer than
--- N separate delta messages (and resyncs a raider that may have missed an earlier delta).
-local DELTA_MAX = 8
-
--- Called on every ledgerChanged (ML only). Sends just the changed lots as deltas, or a full
--- snapshot when forced (session start / joiner request / batch process) or the delta is large.
+-- Called on every ledgerChanged (ML only). Hands the changed lots to WeirdSync, which decides
+-- delta-vs-snapshot (its deltaMax) and sends reliably. force routes to a full snapshot.
 function addon:AutoBroadcastSession(force)
     local session = self:GetCurrentSession()
-    if not self:IsAuthorizedLootMaster() or not session.active then
-        return
-    end
-
-    local core = self.lootCore
-    local ids = core:DrainDirty()
-
+    if not self:IsAuthorizedLootMaster() or not session.active then return end
+    if not self.syncChannel then return end
     if force then
         self:BroadcastSession()
         return
     end
-
-    if #ids == 0 then
-        return
+    local core = self.lootCore
+    local ids = core:DrainDirty()
+    if #ids == 0 then return end
+    local lines = {}
+    for _, id in ipairs(ids) do
+        local lot = core:Get(id)
+        if lot then lines[#lines + 1] = lotLine(self, lot) end
     end
-
-    -- "too large a delta": N separate LOTD messages would cost more than one snapshot
-    -- (SNAP_BEGIN + attendees + lots + SNAP_END), so fall back to a full resync.
-    if #ids > DELTA_MAX then
-        self:BroadcastSession()
-        return
-    end
-
-    self:BroadcastDelta(ids)
+    self.syncChannel:NotifyChanged(lines)
+    self.syncChannel:Broadcast(false)
 end
 
 function addon:SendSelection(itemId, choice)
@@ -243,20 +288,16 @@ function addon:SendSelection(itemId, choice)
 end
 
 function addon:RequestSessionSync()
-    local lootMasterName = self:GetLootMasterName()
-    if not lootMasterName then
-        self:Print("No loot master detected for session sync.")
-        return
-    end
-
     if self:IsAuthorizedLootMaster() then
         self:BroadcastSession()
         return
     end
-
-    self:SendLargeMessage("REQUEST_SESSION_SYNC", {
-        util:GetPlayerName("player") or "",
-    }, "WHISPER", lootMasterName)
+    if not self.syncChannel then return end
+    if not self:GetLootMasterName() then
+        self:Print("No loot master detected for session sync.")
+        return
+    end
+    self.syncChannel:RequestSync()   -- reliable: retried with backoff until state arrives
     self:Print("Requested session sync from loot master.")
 end
 
@@ -274,9 +315,10 @@ function addon:BroadcastNamedItems()
     self:Print("Broadcast named items sent to raid.")
 end
 
--- AceComm receive callback: prefix-filtered and already reassembled. We still
--- never receive our own RAID/PARTY messages (the client drops them), but keep the
--- self-skip defensively in case of a self-WHISPER echo.
+-- AceComm receive callback for the live-roll lane (self.prefix). Session-mirror traffic rides
+-- the WeirdSync channel's own prefix and is dispatched straight to it, so it never reaches here.
+-- We never receive our own RAID/PARTY messages (the client drops them); keep the self-skip
+-- defensively in case of a self-WHISPER echo.
 function addon:OnCommReceived(prefix, message, distribution, sender)
     if prefix ~= self.prefix then
         return
@@ -293,64 +335,11 @@ function addon:HandleCommMessage(sender, logical)
     local fields = util:SplitEncoded(logical)
     local command = table.remove(fields, 1)
 
-    if command == "SNAP_BEGIN" then
-        local sessionId, lootMasterName, seq = fields[1], fields[2], tonumber(fields[3]) or 0
-        self.session.id = sessionId
-        self.session.active = true
-        self.session.attendees = {}
-        self.roster.lootMasterName = (lootMasterName ~= "" and lootMasterName) or self.roster.lootMasterName
-        if self.ui then self.ui.selectedResult = nil end
-        self.comm.incoming = { seq = seq, rev = tonumber(fields[4]) or 0, lots = {} } -- stage lots until SNAP_END
-    elseif command == "ATTENDEE" then
-        self.session.attendees[#self.session.attendees + 1] = {
-            name = fields[2],
-            className = fields[3],
-            specName = fields[4],
-            status = fields[5],
-        }
-        self:TriggerCallback("SESSION_UPDATED")
-    elseif command == "LOT" then
-        local inc = self.comm.incoming
-        if not inc then return end
-        inc.lots[#inc.lots + 1] = self:DecodeLot(fields)
-    elseif command == "SNAP_END" then
-        local inc = self.comm.incoming
-        if inc then
-            self.lootCore:ApplyRemote({ seq = inc.seq, lots = inc.lots }) -- -> projections + UI refresh
-            self.comm.lastRev = inc.rev      -- snapshot re-baselines the revision
-            self.comm.resyncPending = nil    -- drift healed
-            self.comm.incoming = nil
-            self:LogCoreEvent("recv-snap", { rev = inc.rev, lots = #inc.lots })
-        end
-    elseif command == "LOTD" then
-        -- one-lot delta. field 9 = core seq, field 10 = broadcast revision (gap detection).
-        local rev = tonumber(fields[10]) or 0
-        local last = self.comm.lastRev
-        if last == nil or rev > last + 1 then
-            -- never synced, or a gap (a delta was dropped): pull a fresh full snapshot. The
-            -- pending flag throttles the request to once until the snapshot re-baselines us.
-            self:LogCoreEvent("recv-gap", { rev = rev, lastRev = last })
-            if not self.comm.resyncPending then
-                self.comm.resyncPending = true
-                self:RequestSessionSync()
-            end
-            return
-        end
-        if rev <= last then return end       -- stale / duplicate
-        local lot = self:DecodeLot(fields)
-        self.lootCore:ApplyRemoteLot(lot, tonumber(fields[9]) or 0)
-        self.comm.lastRev = rev
-        self:LogCoreEvent("recv-lot", { id = lot.id, itemId = lot.itemId, state = lot.state, rev = rev })
-    elseif command == "SELECTION" then
+    if command == "SELECTION" then
         if not self:IsAuthorizedLootMaster() then
             return
         end
         self:SetPlayerResponse(fields[2], fields[3], fields[4]) -- ML core write; snapshot syncs back
-    elseif command == "REQUEST_SESSION_SYNC" then
-        if not self:IsAuthorizedLootMaster() then
-            return
-        end
-        self:BroadcastSession()
     elseif command == "NAMED_ITEMS_SYNC" then
         local expectedLootMaster = util:NormalizeKey(self:GetLootMasterName() or "")
         local senderKey = util:NormalizeKey(sender or "")
