@@ -123,23 +123,29 @@ function Channel:Broadcast(force)
     self._pending = {}
 end
 
--- Peer: ask the authority for the current full state (reliable; retried by Tick). The authority
--- calling this just broadcasts. A new request is suppressed while one is already pending.
-function Channel:RequestSync()
-    if self.cb.isAuthority() then
-        self:Broadcast(true)
-        return
-    end
-    local auth = self.cb.authorityName()
-    if not auth or auth == "" then
-        self.cb.log("give-up", { kind = "request", reason = "no-authority" })
-        return
-    end
+-- internal: mint and send a request to a known authority, marking it in-flight for Tick.
+function Channel:_sendRequest(auth)
     self.reqSeq = (self.reqSeq or 0) + 1
     local reqId = self.me .. ":" .. self.reqSeq
     self.pendingRequest = { reqId = reqId, attempts = 1, nextAttempt = now() + self:_backoff(1) }
     self:_send({ "RQ", self.me, reqId }, "WHISPER", auth, "NORMAL")
     self.cb.log("req", { reqId = reqId, attempt = 1 })
+end
+
+-- Peer: ask the authority for the current full state (reliable; retried by Tick). The authority
+-- calling this just broadcasts. Only one request is in flight at a time. If no authority is known
+-- yet, this is a no-op: the library does NOT poll the host's authority resolver (that timing is a
+-- host concern). The host re-calls RequestSync when its authority resolves; the in-flight guard
+-- then collapses repeat calls to a single request.
+function Channel:RequestSync()
+    if self.cb.isAuthority() then
+        self:Broadcast(true)
+        return
+    end
+    if self.pendingRequest then return end -- one request in flight at a time
+    local auth = self.cb.authorityName()
+    if not auth or auth == "" then return end -- no authority to ask; host re-requests when one resolves
+    self:_sendRequest(auth)
 end
 
 -- Peer: call on PLAYER_ENTERING_WORLD. A reload/zone-in pulls fresh state, covering a peer

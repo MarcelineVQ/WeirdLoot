@@ -107,11 +107,12 @@ local function makeHost(name, isML, opts)
         store = {},     -- id -> line
         log = {},       -- captured trace records
         roster = opts.roster or { [name] = true },
+        authority = opts.authority or "ML",  -- settable, so a test can model a late-resolving LM
     }
     local cb = {
         selfName = name,
         isAuthority = function() return isML end,
-        authorityName = function() return opts.authority or "ML" end,
+        authorityName = function() return host.authority or "" end,
         rosterContains = function(n) return host.roster[n] == true end,
         epoch = function() return opts.epoch or "S1" end,
         buildSnapshot = function(emit)
@@ -351,6 +352,25 @@ test("ack retry stops immediately when the target leaves the roster", function()
     CLOCK = 1002; ml.chan:Tick(CLOCK)
     eq(ml.chan.outstanding[reqId], nil, "stopped retrying a peer that left")
     check(countEv(ml, "give-up", function(d) return d.reason == "left" end) == 1, "logged a roster-leave give-up")
+end)
+
+test("request with no authority is a no-op and the lib never polls for one", function()
+    reset()
+    local ml = makeHost("ML", true)
+    local rd = makeHost("Raider", false)
+    rd.authority = ""                         -- host has not resolved the authority yet
+    rd.chan:RequestSync()
+    eq(countEv(rd, "req"), 0, "no request sent while the authority is unknown")
+    eq(rd.chan.pendingRequest, nil, "no pending state: the lib does not hold a deferred request")
+    CLOCK = 1002; rd.chan:Tick(CLOCK)
+    eq(countEv(rd, "req"), 0, "Tick does not poll the host's authority resolver")
+
+    -- the HOST owns the timing: it re-requests once it knows the authority
+    rd.authority = "ML"
+    rd.chan:RequestSync()
+    eq(countEv(rd, "req"), 1, "request fires when the host re-requests with an authority known")
+    deliver(); deliver()
+    eq(view(rd), view(ml), "peer converged")
 end)
 
 test("zone-in triggers a sync request", function()

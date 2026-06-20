@@ -536,12 +536,18 @@ end
 -- ML-on-login work the early PLAYER_ENTERING_WORLD check skipped.
 function addon:RecheckLootAuthority()
     local was = self.roster.isLootMaster
+    local hadML = self.roster.lootMasterName
     self:RefreshLootAuthority()
     if self.roster.isLootMaster and not was then
         self:AutoBroadcastSession(true)
         self:ResumePayoutMode()
         self:RestorePendingPopups()
         self:MaybePromptStartSession()
+    elseif not self.roster.isLootMaster and not hadML and self.roster.lootMasterName then
+        -- Raider: the loot master only just resolved (the client had no loot-method / roster data
+        -- at login). Now that we know who to ask, request the session. This is the post-load
+        -- authority timing the sync library deliberately does not own; we drive it from here.
+        self:RequestSessionSync()
     end
 end
 

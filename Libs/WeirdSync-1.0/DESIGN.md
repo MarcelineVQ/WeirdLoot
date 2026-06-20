@@ -195,6 +195,15 @@ triggers a `RequestSync`, which covers a peer that reloads or re-enters the worl
 deliberately do **not** run a periodic heartbeat; a mid-session dropped delta with no
 follow-up traffic is caught on the next delta or the next zone, which is acceptable for loot.
 
+`RequestSync` requires a known authority to send to. If `authorityName()` returns nothing
+(e.g. right after a reload, before the client has the loot-method / roster data), the call is
+a no-op: **the library never polls the host's authority resolver**, because *when* an
+authority becomes available is a host concern, not a sync concern. The host re-calls
+`RequestSync` once its authority resolves (in WeirdLoot, the loot-master recheck ticker that
+already runs over the first ~15s after load); the in-flight guard collapses repeat calls to a
+single request. Only a request the lib has actually *sent* is retried by `Tick` (that is the
+packet-loss reliability the lib does own).
+
 ### 7.6 Authority change
 
 `authorityName`/`isAuthority` are read fresh on every use, so a loot-master handoff is picked

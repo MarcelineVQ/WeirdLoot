@@ -660,6 +660,17 @@ test("delta fuzz: a delta-synced raider always equals the ML across random opera
     check(mismatch == nil, "raider matched ML at every step" .. (mismatch and ("\n" .. mismatch) or ""))
 end)
 
+test("a raider requesting sync from a session-less ML gets no phantom session", function()
+    clearWire()
+    local ml = makeWorld("Masterlooter", true)        -- authorized ML, but no session started
+    local raider = makeWorld("Raidertwo", false)
+    raider.addon:RequestSessionSync()                 -- raider asks
+    flushWireTo(ml)                                    -- ML answers with an empty snapshot (epoch "")
+    flushWireTo(raider)                                -- raider applies it
+    eq(raider.addon.session.active, false, "raider stays session-less (empty epoch -> not active)")
+    eq(#raider.addon.lootCore:All(), 0, "no lots fabricated")
+end)
+
 test("delta sync: a dropped delta is detected via rev gap and auto-resynced", function()
     clearWire()
     local ml = makeWorld("Masterlooter", true)

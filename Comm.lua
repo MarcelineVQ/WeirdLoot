@@ -192,8 +192,10 @@ end
 -- Host snapshot applier (raider). Rebuilds session context + attendees from the lines and
 -- applies the lots atomically via core:ApplyRemote (-> ledgerChanged -> projections + UI).
 function addon:SyncApplySnapshot(lines, epoch)
+    -- An empty epoch means the authority has no active session (it answered a request with an
+    -- empty snapshot). Don't fabricate a session: mark inactive rather than show a phantom one.
     self.session.id = epoch
-    self.session.active = true
+    self.session.active = epoch ~= nil and epoch ~= ""
     self.session.attendees = {}
     if self.ui then self.ui.selectedResult = nil end
 
@@ -293,12 +295,10 @@ function addon:RequestSessionSync()
         return
     end
     if not self.syncChannel then return end
-    if not self:GetLootMasterName() then
-        self:Print("No loot master detected for session sync.")
-        return
-    end
-    self.syncChannel:RequestSync()   -- reliable: retried with backoff until state arrives
-    self:Print("Requested session sync from loot master.")
+    -- WeirdSync defers the request if the loot master is not resolved yet (common right after a
+    -- reload, before loot-method/roster data settles) and fires it the moment it is, so a
+    -- reloading raider always ends up requesting a sync instead of silently giving up.
+    self.syncChannel:RequestSync()
 end
 
 function addon:BroadcastNamedItems()
