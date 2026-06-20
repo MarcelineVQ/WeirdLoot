@@ -138,39 +138,51 @@ local function getCompactPopupHeight(f)
     return math.max(POPUP_INTEREST_EMPTY_H, 39 + nameHeight + subHeight)
 end
 
+local function getCompactResultPopupHeight(f)
+    local nameHeight = math.ceil(f.name:GetStringHeight() or 0)
+    local subHeight = math.ceil(f.sub:GetStringHeight() or 0)
+    return math.max(62, 34 + nameHeight + subHeight)
+end
+
+local function showRollCountTooltip(self, f)
+    local roll = f and f.roll
+    if not f or not roll then
+        return
+    end
+
+    GameTooltip:SetOwner(f.countHover or f, "ANCHOR_NONE")
+    GameTooltip:ClearAllPoints()
+    GameTooltip:SetPoint("TOPLEFT", f, "TOPRIGHT", 8, 0)
+    GameTooltip:ClearLines()
+    GameTooltip:AddLine("Players Rolling", 1, 0.82, 0)
+
+    local entries = buildLiveRollEntries(self, roll)
+    if #entries == 0 then
+        GameTooltip:AddLine("No active rollers", 1, 1, 1)
+    else
+        for _, entry in ipairs(entries) do
+            local colorCode = util:GetClassColorCode(entry.className) or "|cffffffff"
+            GameTooltip:AddLine(string.format("%s%s|r - %d - %s", colorCode, entry.name or "Unknown", entry.roll or 0, RESPONSE_LABELS[entry.tier] or string.upper(entry.tier or "")), 1, 1, 1)
+        end
+    end
+
+    GameTooltip:Show()
+end
+
 local function refreshPopupRollLines(self, roll)
     local f = roll and roll.popup
     if not f or f.mode ~= "interest" then
         return
     end
 
-    local entries = buildLiveRollEntries(self, roll)
-    local maxVisible = math.min(#entries, ROLL_LINE_LIMIT)
-    local overflow = #entries - maxVisible
-    local lineCount = maxVisible + (overflow > 0 and 1 or 0)
-    ensureRollLinePool(f, math.max(lineCount, 1))
-
-    for index, line in ipairs(f.rollLines) do
-        if index <= maxVisible then
-            local entry = entries[index]
-            local colorCode = util:GetClassColorCode(entry.className) or "|cffffffff"
-            line:SetText(string.format("%s%s|r - %d - %s", colorCode, entry.name or "Unknown", entry.roll or 0, RESPONSE_LABELS[entry.tier] or string.upper(entry.tier or "")))
-            line:Show()
-        elseif overflow > 0 and index == maxVisible + 1 then
-            line:SetText(string.format("+%d more...", overflow))
-            line:Show()
-        else
+    if f.rollLines then
+        for _, line in ipairs(f.rollLines) do
             line:SetText("")
             line:Hide()
         end
     end
 
-    if lineCount == 0 then
-        setPopupHeight(f, getCompactPopupHeight(f))
-    else
-        local extraHeight = 8 + (lineCount * 14)
-        setPopupHeight(f, getCompactPopupHeight(f) + extraHeight)
-    end
+    setPopupHeight(f, getCompactPopupHeight(f))
     layoutPopups(self)
 end
 
@@ -181,11 +193,14 @@ local function interestButtons(f)
     return { bis = f.bisBtn, ms = f.msBtn, mu = f.muBtn, os = f.osBtn, tm = f.tmBtn, pass = f.passBtn }
 end
 -- chosen button: bold (outlined) green label; others: normal gold label
-local function styleButtonText(btn, chosen)
+local function styleButtonText(btn, chosen, disabled)
     local fs = btn:GetFontString()
     if not fs then return end
     local font, size = fs:GetFont()
-    if chosen then
+    if disabled then
+        fs:SetFont(font, size, "")
+        fs:SetTextColor(0.5, 0.5, 0.5)
+    elseif chosen then
         fs:SetFont(font, size, "OUTLINE")
         fs:SetTextColor(0.2, 1.0, 0.2)
     else
@@ -197,7 +212,7 @@ local function resetInterestButtons(f)
     for _, btn in pairs(interestButtons(f)) do
         if btn then
             btn:SetButtonState("NORMAL")
-            styleButtonText(btn, false)
+            styleButtonText(btn, false, false)
         end
     end
 end
@@ -217,13 +232,17 @@ local function applyInterestButtonAvailability(self, f, roll)
     local allowed = isPlayerAllowedForRoll(self, roll, playerName)
 
     for key, btn in pairs(interestButtons(f)) do
+        local disabled = false
         if key == "pass" then
             btn:Enable()
         elseif allowed then
             btn:Enable()
         else
             btn:Disable()
+            disabled = true
         end
+        btn:SetAlpha(disabled and 0.45 or 1)
+        styleButtonText(btn, false, disabled)
     end
 end
 
@@ -331,7 +350,7 @@ local function highlightInterestButton(f, tier)
             local chosen = key == tier
             -- lock the chosen button pushed; leave the rest in their normal (up) state
             btn:SetButtonState(chosen and "PUSHED" or "NORMAL", chosen)
-            styleButtonText(btn, chosen)
+            styleButtonText(btn, chosen, not btn:IsEnabled())
         end
     end
 end
@@ -393,6 +412,12 @@ local function makePopup()
 
     f.count = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     f.count:SetPoint("TOPRIGHT", f, "TOPRIGHT", -10, -30)
+    f.countHover = CreateFrame("Frame", nil, f)
+    f.countHover:SetPoint("TOPLEFT", f.count, "TOPLEFT", -2, 2)
+    f.countHover:SetPoint("BOTTOMRIGHT", f.count, "BOTTOMRIGHT", 2, -2)
+    f.countHover:EnableMouse(true)
+    f.countHover:SetScript("OnEnter", function() showRollCountTooltip(addon, f) end)
+    f.countHover:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     -- choice brackets (top button row): BiS > MS > MU > OS > TM > Pass
     f.bisBtn = makeButton(f, "BiS", 34)
@@ -540,6 +565,11 @@ function addon:ShowInterestPopup(roll, slot)
     f.roll = roll
     roll.popup = f
     f.mode = "interest"
+    if f.resultHover then
+        f.resultHover:Hide()
+        f.resultHover:SetScript("OnEnter", nil)
+        f.resultHover:SetScript("OnLeave", nil)
+    end
 
     local currentChoice = roll.choice
     f.icon:SetTexture(roll.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
@@ -572,12 +602,12 @@ function addon:ShowInterestPopup(roll, slot)
         f.cancelBtn:SetWidth(50)
         f.cancelBtn:SetText("Cancel")
         f.cancelBtn:SetScript("OnClick", function() self:CancelLiveRoll(roll.id) end)
-        f.count:Show()
     else
         f.rollBtn:Hide()
         f.cancelBtn:Hide()
-        f.count:Hide()
     end
+    f.count:Show()
+    f.countHover:Show()
 
     f:SetScript("OnEnter", nil)
     f:SetScript("OnLeave", nil)
@@ -626,6 +656,9 @@ function addon:RefreshInterestPopup(roll)
     if roll.owner then
         f.count:SetText(total > 0 and (total .. " rolling") or "")
     end
+    if not roll.owner then
+        f.count:SetText(total > 0 and (total .. " rolling") or "")
+    end
     refreshPopupRollLines(self, roll)
 end
 
@@ -656,7 +689,7 @@ function addon:ChooseInterest(roll, tier)
     local playerName = util:GetPlayerName("player")
     if tier ~= "pass" and not isPlayerAllowedForRoll(self, roll, playerName) then
         self:Print("Your class cannot use that token. You may only pass.")
-        tier = "pass"
+        return
     end
     self:SendInterest(roll.id, tier)
     roll.choice = tier
@@ -680,6 +713,11 @@ function addon:ShowPendingPopup(item, slot)
     local link = item.link
     local f = acquirePopup(self)
     f.mode = "pending"
+    if f.resultHover then
+        f.resultHover:Hide()
+        f.resultHover:SetScript("OnEnter", nil)
+        f.resultHover:SetScript("OnLeave", nil)
+    end
     f:SetScript("OnUpdate", nil)        -- no countdown until the roll actually starts
     f.timer:Hide()
     f.pendingLink = link
@@ -696,6 +734,7 @@ function addon:ShowPendingPopup(item, slot)
     f.name:SetText(formatRollItemLabel(link, item.name, item.quantity))
     f.sub:SetText("|cffffffffPrio:|r " .. (self:GetLiveItemPrio(item) or "BiS > MS > MU > OS > TM"))
     f.count:Hide()
+    f.countHover:Hide()
     if f.rollLines then
         for _, line in ipairs(f.rollLines) do
             line:Hide()
@@ -742,21 +781,16 @@ function addon:ShowResultPopup(roll, winnerDetails, sections, slot)
     f.icon:SetTexture(roll.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
     f.itemLink = roll.link
     f.name:SetText(formatRollItemLabel(roll.link, roll.name, roll.quantity))
+    f.count:Hide()
+    f.countHover:Hide()
     if f.rollLines then
         for _, line in ipairs(f.rollLines) do
             line:Hide()
         end
     end
-    setPopupHeight(f, POPUP_H)
+    setPopupHeight(f, getCompactResultPopupHeight(f))
 
     local myKey = util:NormalizeKey(util:GetPlayerName("player") or "")
-    local myRoll, mySection
-    for _, s in ipairs(sections or {}) do
-        for _, m in ipairs(s.members) do
-            local k = util:NormalizeKey(m.name)
-            if k == myKey then myRoll = m.roll; mySection = s.label end
-        end
-    end
 
     local winners = {}
     local winnerKeys = {}
@@ -781,72 +815,67 @@ function addon:ShowResultPopup(roll, winnerDetails, sections, slot)
         }
     end
 
-    local youWon = winnerKeys[myKey] == true
-
     local line
     if #winners == 0 then
-        line = "No rollers."
-    elseif youWon then
-        if #winners > 1 then
-            local mine = myRoll and string.format("your roll %s", tostring(myRoll)) or "your roll"
-            line = string.format("|cff40ff40You won!|r  (%s)", mine)
-        else
-            line = string.format("|cff40ff40You won!|r  (your roll %s)", tostring(myRoll or winners[1].roll))
-        end
+        line = "Winner: No rollers."
     else
-        local mine = myRoll and string.format("Your roll %d%s.  ", myRoll, mySection and (" ("..mySection..")") or "") or ""
         local winnerParts = {}
         for _, winner in ipairs(winners) do
-            winnerParts[#winnerParts + 1] = string.format("%s (%s%s)",
+            local className = getPlayerClassName(self, winner.key)
+            local colorCode = util:GetClassColorCode(className) or "|cffffffff"
+            winnerParts[#winnerParts + 1] = string.format("%s%s|r - %s - %s",
+                colorCode,
                 winner.name or "Unknown",
                 tostring(winner.roll or "-"),
-                winner.section and (", " .. winner.section) or "")
+                winner.section or "?")
         end
         local winnerLabel = #winnerParts > 1 and "Winners" or "Winner"
-        line = string.format("|cffff6060You lost.|r  %s%s: %s", mine, winnerLabel, table.concat(winnerParts, "; "))
+        line = string.format("%s: %s", winnerLabel, table.concat(winnerParts, "; "))
     end
     f.sub:SetText(line)
 
     f.bisBtn:Hide(); f.msBtn:Hide(); f.muBtn:Hide(); f.osBtn:Hide(); f.tmBtn:Hide(); f.passBtn:Hide(); f.rollBtn:Hide(); f.cancelBtn:Hide()
     f.count:Hide()
     f.okBtn:Show()
+    f.okBtn:ClearAllPoints()
+    f.okBtn:SetPoint("TOPRIGHT", f, "TOPRIGHT", -8, -8)
     f.okBtn:SetScript("OnClick", function() closePopup(self, f); compactPopups(self) end)
 
-    -- hover: full breakdown by priority section so a higher roll in a lower section is
-    -- clearly explained
     f.sections = sections
     f.winnerKeys = winnerKeys
     f.myKey = myKey
-    f:SetScript("OnEnter", function(selfFrame)
-        GameTooltip:SetOwner(selfFrame, "ANCHOR_RIGHT")
+    if not f.resultHover then
+        f.resultHover = CreateFrame("Frame", nil, f)
+        f.resultHover:EnableMouse(true)
+    end
+    f.resultHover:SetPoint("TOPLEFT", f.sub, "TOPLEFT", -2, 2)
+    f.resultHover:SetPoint("BOTTOMRIGHT", f.sub, "BOTTOMRIGHT", 2, -2)
+    f.resultHover:Show()
+    f.resultHover:SetScript("OnEnter", function(selfFrame)
+        GameTooltip:SetOwner(selfFrame, "ANCHOR_NONE")
+        GameTooltip:ClearAllPoints()
+        GameTooltip:SetPoint("TOPLEFT", f, "TOPRIGHT", 8, 0)
         GameTooltip:ClearLines()
-        GameTooltip:AddLine("Roll breakdown (priority order)", 1, 0.82, 0)
-        local awarded = false
-        for _, s in ipairs(selfFrame.sections or {}) do
+        GameTooltip:AddLine("Rolls", 1, 0.82, 0)
+        for _, s in ipairs(f.sections or {}) do
             if #s.members > 0 then
-                local marker = (not awarded) and "  |cff40ff40<- winning section|r" or ""
-                GameTooltip:AddLine("|cff88ccff" .. (s.label or "?") .. "|r" .. marker, 1, 1, 1)
                 local mem = {}
                 for _, m in ipairs(s.members) do mem[#mem + 1] = m end
                 table.sort(mem, function(a, b) return (a.roll or 0) > (b.roll or 0) end)
                 for _, m in ipairs(mem) do
                     local key = util:NormalizeKey(m.name)
-                    local isMe = selfFrame.myKey and key == selfFrame.myKey
-                    local won = selfFrame.winnerKeys and selfFrame.winnerKeys[key]
-                    local label = isMe and "You" or m.name
-                    if won then
-                        label = "|cff40ff40" .. label .. "|r"            -- winner: green
-                    elseif isMe then
-                        label = "|cff66ccff" .. label .. "|r"            -- your own row: blue
-                    end
-                    GameTooltip:AddDoubleLine("  " .. label, tostring(m.roll or "-"), 1, 1, 1, 1, 1, 1)
+                    local winnerType = s.label or "?"
+                    local className = getPlayerClassName(self, key)
+                    local colorCode = util:GetClassColorCode(className) or "|cffffffff"
+                    GameTooltip:AddLine(string.format("  %s%s|r - %s - %s", colorCode, m.name or "Unknown", tostring(m.roll or "-"), winnerType), 1, 1, 1)
                 end
-                awarded = true
             end
         end
         GameTooltip:Show()
     end)
-    f:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    f.resultHover:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    f:SetScript("OnEnter", nil)
+    f:SetScript("OnLeave", nil)
 
     addActivePopup(self, f, slot)        -- reuse the interest popup's slot so it stays put
     f:Show()
