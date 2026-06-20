@@ -377,6 +377,17 @@ function addon:PLAYER_LOGIN()
             namedRules = {},
             revision = 0,
         },
+        options = {
+            resultPopupAutoCloseEnabled = false,
+            resultPopupAutoCloseSeconds = 15,
+            rollDuration = 30,
+            whitelistEnabled = false,
+            whitelistText = "",
+            blacklistEnabled = false,
+            blacklistText = "",
+            minimapButtonHidden = false,
+            minimapButtonAngle = 200,
+        },
         ui = {
             selectedTab = "loot",
             lootSortMode = "name",

@@ -48,7 +48,53 @@ end
 -- popup frames (custom, stacking)
 -- ---------------------------------------------------------------------------
 local POPUP_W, POPUP_H = 340, 94
-local ROLL_DURATION = 20        -- seconds raiders have to roll before it auto-resolves
+local ROLL_DURATION = 30        -- seconds raiders have to roll before it auto-resolves (default; user may override via Options tab)
+
+local function getOptions()
+    addon.db = addon.db or {}
+    addon.db.options = addon.db.options or {}
+    return addon.db.options
+end
+
+local function getRollDuration()
+    local v = tonumber(getOptions().rollDuration)
+    if v and v > 0 then return v end
+    return ROLL_DURATION
+end
+
+local function parseItemList(text)
+    local set = {}
+    if type(text) ~= "string" or text == "" then return set end
+    for line in string.gmatch(text, "[^\r\n]+") do
+        local trimmed = string.match(line, "^%s*(.-)%s*$") or ""
+        if trimmed ~= "" then
+            set[string.lower(trimmed)] = true
+        end
+    end
+    return set
+end
+
+-- Returns true if the (non-loot-master) popup should be suppressed for this item name.
+local function shouldSuppressPopup(self, itemName)
+    if self:IsAuthorizedLootMaster() then return false end
+    local opt = getOptions()
+    local name = string.lower(itemName or "")
+    if name == "" then return false end
+
+    if opt.whitelistEnabled then
+        local set = parseItemList(opt.whitelistText)
+        if next(set) and not set[name] then
+            return true
+        end
+    end
+    if opt.blacklistEnabled then
+        local set = parseItemList(opt.blacklistText)
+        if set[name] then
+            return true
+        end
+    end
+    return false
+end
 local popupBasePoint, savePopupBasePoint, layoutPopups
 local RESPONSE_ORDER = { bis = 5, ms = 4, mu = 3, os = 2, tm = 1, pass = 0 }
 local RESPONSE_LABELS = { bis = "BiS", ms = "MS", mu = "MU", os = "OS", tm = "TM", pass = "Pass" }
@@ -561,6 +607,9 @@ end
 -- interest popup
 -- ---------------------------------------------------------------------------
 function addon:ShowInterestPopup(roll, slot)
+    if not roll.owner and shouldSuppressPopup(self, roll.name) then
+        return
+    end
     local f = acquirePopup(self)
     f.roll = roll
     roll.popup = f
@@ -774,6 +823,9 @@ end
 -- result popup
 -- ---------------------------------------------------------------------------
 function addon:ShowResultPopup(roll, winnerDetails, sections, slot)
+    if shouldSuppressPopup(self, roll.name) then
+        return
+    end
     local f = acquirePopup(self)
     f.mode = "result"
     f:SetScript("OnUpdate", nil)        -- no countdown on a result popup
@@ -881,6 +933,22 @@ function addon:ShowResultPopup(roll, winnerDetails, sections, slot)
     f.resultHover:SetScript("OnLeave", function() GameTooltip:Hide() end)
     f:SetScript("OnEnter", nil)
     f:SetScript("OnLeave", nil)
+
+    local opt = getOptions()
+    if opt.resultPopupAutoCloseEnabled then
+        local timeout = tonumber(opt.resultPopupAutoCloseSeconds) or 15
+        if timeout > 0 then
+            f.resultElapsed = 0
+            f:SetScript("OnUpdate", function(selfFrame, elapsed)
+                selfFrame.resultElapsed = (selfFrame.resultElapsed or 0) + (elapsed or 0)
+                if selfFrame.resultElapsed >= timeout then
+                    selfFrame:SetScript("OnUpdate", nil)
+                    closePopup(self, selfFrame)
+                    compactPopups(self)
+                end
+            end)
+        end
+    end
 
     addActivePopup(self, f, slot)        -- reuse the interest popup's slot so it stays put
     f:Show()
@@ -1095,10 +1163,11 @@ function addon:StartLiveRoll(item, slot)
 
     local rollId = nextRollId(self)
     local prio = self:GetLiveItemPrio(item)
+    local rollDuration = getRollDuration()
     local roll = {
         id = rollId, itemId = item.id, link = item.link, name = item.name or item.link,
         icon = item.icon, prio = prio, owner = true, registrants = {}, resolved = false,
-        duration = ROLL_DURATION, quantity = item.quantity or 1,
+        duration = rollDuration, quantity = item.quantity or 1,
     }
 
     if item.id then
@@ -1116,7 +1185,7 @@ function addon:StartLiveRoll(item, slot)
     self.live.rolls[rollId] = roll
 
     self:SendLargeMessage("DROP",
-        { rollId, item.link, item.name or "", item.icon or "", prio or "", tostring(ROLL_DURATION), tostring(item.quantity or 1), item.id or "" }, "RAID")
+        { rollId, item.link, item.name or "", item.icon or "", prio or "", tostring(rollDuration), tostring(item.quantity or 1), item.id or "" }, "RAID")
     for _, registrant in pairs(roll.registrants or {}) do
         if registrant.tier and registrant.tier ~= "pass" then
             self:BroadcastLiveRollState(rollId, registrant.name, registrant.className, registrant.tier, registrant.roll)
