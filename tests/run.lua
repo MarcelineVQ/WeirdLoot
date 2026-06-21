@@ -70,6 +70,16 @@ local function makeWorld(playerName, isML)
                 return function(_, st) return self.__scripts[st] end
             elseif k == "NumLines" then
                 return function() return 0 end
+            elseif k == "GetStringHeight" or k == "GetHeight" or k == "GetWidth" then
+                -- measurement methods feed arithmetic (e.g. math.ceil in the popup-height
+                -- helpers); return a number, not the chainable frame.
+                return function() return 0 end
+            elseif k == "Enable" then
+                return function(s) s.__disabled = false; return s end
+            elseif k == "Disable" then
+                return function(s) s.__disabled = true; return s end
+            elseif k == "IsEnabled" then
+                return function(s) return not s.__disabled end
             end
             -- WoW frame methods are CamelCase; the addon's data fields are lowercase. Return a
             -- chainable no-op for methods, but nil for an UNSET data field (e.g. frame.elapsed),
@@ -720,11 +730,11 @@ test("rejoin mid-roll: raider restores the roll popup with the ML's remaining ti
     startSession(ml)
     setBag(ml, 40005, 1); bagUpdate(ml)
     local lot = openLot(ml, 40005)
-    ml.addon:StartLiveRoll(lot.id)                 -- ML rolls; deadline = now + 20s
+    ml.addon:StartLiveRoll(lot.id)                 -- ML rolls; deadline = now + 30s (default duration)
     local mlRoll = ml.addon.live.rolls[lot.id]
     check(mlRoll and mlRoll.deadline, "ML recorded a roll deadline")
 
-    CLOCK = CLOCK + 6                              -- 6s elapse on the ML's roll (14s left)
+    CLOCK = CLOCK + 6                              -- 6s elapse on the ML's roll (24s left)
     clearWire()
     ml.addon:BroadcastSession()                   -- a freshly-reloaded raider pulls the full snapshot
     flushWireTo(raider)
@@ -733,8 +743,203 @@ test("rejoin mid-roll: raider restores the roll popup with the ML's remaining ti
     check(rr ~= nil, "raider restored a roll record for the rolling lot")
     check(raider.addon:HasOpenRollForLot(lot.id), "raider has an open roll popup")
     local remaining = rr and rr.deadline and (rr.deadline - CLOCK) or nil
-    check(remaining ~= nil and remaining >= 13.5 and remaining <= 14.5,
-        "restored countdown reflects the ML's remaining ~14s, not a fresh 20s (got " .. tostring(remaining) .. ")")
+    check(remaining ~= nil and remaining >= 23.5 and remaining <= 24.5,
+        "restored countdown reflects the ML's remaining ~24s, not a fresh 30s (got " .. tostring(remaining) .. ")")
+end)
+
+-- ---- live pick list (RSTATE): raiders see who is rolling, in real time ----
+local function countKeys(t) local n = 0 for _ in pairs(t or {}) do n = n + 1 end return n end
+local function countWire(pat) local n = 0 for _, m in ipairs(WIRE) do if m.msg:match(pat) then n = n + 1 end end return n end
+local function rollFor(w, lotId) return w.addon.live and w.addon.live.rolls and w.addon.live.rolls[lotId] end
+
+-- shared setup: ML opens a lot, starts a roll, raider receives the DROP -> open roll popup.
+local function rollWithRaider(itemId)
+    clearWire()
+    local ml = makeWorld("Masterlooter", true)
+    local raider = makeWorld("Raidertwo", false)
+    startSession(ml)
+    setBag(ml, itemId, 1); bagUpdate(ml)
+    local lot = openLot(ml, itemId)
+    ml.addon:BroadcastSession(); flushWireTo(raider)   -- raider mirrors the lot
+    ml.addon:StartLiveRoll(lot.id); flushWireTo(raider) -- DROP -> raider's interest popup
+    return ml, raider, lot
+end
+
+test("live pick list: a raider sees who is rolling via RSTATE", function()
+    local ml, raider, lot = rollWithRaider(40005)
+    check(rollFor(raider, lot.id), "raider has an open roll for the lot")
+
+    ml.addon:SetPlayerResponse(lot.id, "Alice", "bis")   -- as relayed SELECTIONs would record
+    ml.addon:SetPlayerResponse(lot.id, "Bob", "ms")
+    clearWire()
+    ml.addon:FlushRollState()                            -- throttled push -> one RSTATE
+    flushWireTo(raider)
+
+    local roll = rollFor(raider, lot.id)
+    local util = raider.addon.util
+    eq(countKeys(roll.registrants), 2, "raider's live roster has both pickers")
+    check(roll.registrants[util:NormalizeKey("Alice")] and
+          roll.registrants[util:NormalizeKey("Alice")].tier == "bis", "Alice present as BiS")
+    check(roll.registrants[util:NormalizeKey("Bob")] and
+          roll.registrants[util:NormalizeKey("Bob")].tier == "ms", "Bob present as MS")
+end)
+
+test("live pick list: a full-replace push drops a player who passes or leaves", function()
+    local ml, raider, lot = rollWithRaider(40005)
+    ml.addon:SetPlayerResponse(lot.id, "Alice", "bis")
+    ml.addon:SetPlayerResponse(lot.id, "Bob", "ms")
+    clearWire(); ml.addon:FlushRollState(); flushWireTo(raider)
+    eq(countKeys(rollFor(raider, lot.id).registrants), 2, "both present first")
+
+    ml.addon:SetPlayerResponse(lot.id, "Bob", "pass")    -- Bob backs out
+    clearWire(); ml.addon:FlushRollState(); flushWireTo(raider)
+
+    local roll = rollFor(raider, lot.id)
+    local util = raider.addon.util
+    check(roll.registrants[util:NormalizeKey("Bob")] == nil, "Bob dropped after passing")
+    check(roll.registrants[util:NormalizeKey("Alice")] ~= nil, "Alice still present")
+end)
+
+test("live pick list: a burst of picks coalesces to one RSTATE per flush", function()
+    local ml, raider, lot = rollWithRaider(40005)
+    ml.addon:SetPlayerResponse(lot.id, "Alice", "bis")
+    ml.addon:SetPlayerResponse(lot.id, "Bob", "ms")
+    ml.addon:SetPlayerResponse(lot.id, "Cara", "os")
+    clearWire()
+    ml.addon:FlushRollState()
+    eq(countWire("^RSTATE"), 1, "three picks collapse to a single RSTATE on flush")
+end)
+
+test("live pick list: RSTATE is display-only and never writes the raider's ledger", function()
+    local ml, raider, lot = rollWithRaider(40005)
+    local before = countKeys(raider.addon.lootCore:Get(lot.id) and raider.addon.lootCore:Get(lot.id).responses)
+    ml.addon:SetPlayerResponse(lot.id, "Alice", "bis")
+    clearWire(); ml.addon:FlushRollState(); flushWireTo(raider)
+
+    local lotR = raider.addon.lootCore:Get(lot.id)
+    eq(countKeys(lotR and lotR.responses), before, "raider's core lot.responses untouched by RSTATE")
+    check(next(rollFor(raider, lot.id).registrants) ~= nil, "but the display roster WAS updated")
+end)
+
+test("live pick list: the ML never broadcasts its own raider count (no self-apply)", function()
+    local ml, raider, lot = rollWithRaider(40005)
+    ml.addon:SetPlayerResponse(lot.id, "Alice", "bis")
+    clearWire(); ml.addon:FlushRollState()
+    flushWireTo(ml)   -- deliver the wire back to the ML; self-skip must drop its own RSTATE
+    -- the ML's roll is owner=true; OnRollStateMessage early-returns on owner rolls regardless
+    local mlRoll = rollFor(ml, lot.id)
+    check(mlRoll and mlRoll.owner, "ML's roll stays owner-driven, unaffected by RSTATE")
+end)
+
+test("roll result tooltip anchor: defaults to the right of the popup; modes map; cursor is nil", function()
+    local w = makeWorld("Raidertwo", false)
+    w.addon.db.options = {}
+    -- default (unset) docks the tooltip's TOPLEFT to the popup's TOPRIGHT == right of the popup
+    local p, rp, x = w.addon:RollTooltipAnchorPoints()
+    eq(p, "TOPLEFT", "default tooltip corner")
+    eq(rp, "TOPRIGHT", "default docks to the popup's RIGHT edge")
+    eq(x, 2, "default offset snug to the right")
+    local function corner(mode) w.addon.db.options.rollResultTooltipAnchor = mode; return (w.addon:RollTooltipAnchorPoints()) end
+    eq(corner("LEFT"), "TOPRIGHT", "LEFT mode: tooltip's TOPRIGHT meets the popup's left edge")
+    eq(corner("TOP"), "BOTTOMLEFT", "TOP mode")
+    eq(corner("BOTTOM"), "TOPLEFT", "BOTTOM mode")
+    eq(corner("CURSOR"), nil, "CURSOR mode returns nil (ANCHOR_CURSOR)")
+end)
+
+test("cold cache: the loot list warms uncached item names via the scan-tooltip machinery", function()
+    local w = makeWorld("Raidertwo", false)
+    -- simulate a cold cache: ItemRender returns nil for this item until it is "warmed"
+    local warmed = false
+    w.addon.util.ItemRender = function(_, id)
+        if id == 49623 and not warmed then return nil end
+        return "Shadowmourne", "|cffff8000|Hitem:49623|h[Shadowmourne]|h|r", "Interface\\Icons\\inv_axe"
+    end
+    local primed = {}
+    w.addon.PrimeItemInfo = function(_, id) primed[id] = true end
+
+    local items = { { id = "L:1", itemId = 49623 }, { id = "L:2", itemId = 40005 } }
+    local pending = w.addon:WarmLootItemNames(items)
+    check(pending, "list flagged pending while the name is uncached")
+    check(primed[49623], "the uncached item was primed through PrimeItemInfo (reused machinery)")
+    eq(w.addon._lootNamesPending, true, "_lootNamesPending set so the shared ticker re-renders")
+
+    warmed = true                                   -- client cached it
+    pending = w.addon:WarmLootItemNames(items)
+    check(not pending, "no longer pending once the name resolves")
+    eq(w.addon._lootNamesPending, false, "_lootNamesPending cleared -> ticker can stop")
+end)
+
+test("unreadable raid roster detection: flags the would-be ML, not raiders or healthy rosters", function()
+    local f = makeWorld("ML", true).addon
+    -- broken: master loot, GetLootMethod names us as ML (partyID 0), roster can't name the index
+    eq(f:RosterUnreadableForML("master", 0, 2, nil), true, "broken post-relog roster for the ML")
+    -- healthy: the ML index resolves to a name
+    eq(f:RosterUnreadableForML("master", 0, 2, "Masterlooter"), false, "roster loaded -> not flagged")
+    -- a raider (partyID != 0) is never flagged as the would-be ML
+    eq(f:RosterUnreadableForML("master", 1, 2, nil), false, "raider in ML's subgroup -> not flagged")
+    eq(f:RosterUnreadableForML("master", nil, 2, nil), false, "raider in another subgroup -> not flagged")
+    -- not master loot, or no raid ML index
+    eq(f:RosterUnreadableForML("group", 0, 0, nil), false, "not master loot -> not flagged")
+    eq(f:RosterUnreadableForML("master", 0, nil, nil), false, "no raid ML index -> not flagged")
+end)
+
+test("roll resolution hands the raider a result popup, not an instant vanish (sync race)", function()
+    local ml, raider, lot = rollWithRaider(40005)
+    local roll = rollFor(raider, lot.id)
+    check(roll and roll.popup and roll.popup.mode == "interest", "raider has an open interest popup")
+    ml.addon:ResolveLiveRoll(lot.id)
+    flushWireTo(raider)   -- delivers the RESOLVED sync delta (enqueued first) AND the WIN: the race
+    local hasResult, hasInterest = false, false
+    for _, f in ipairs(raider.addon.live.active) do
+        if f.mode == "result" then hasResult = true end
+        if f.mode == "interest" then hasInterest = true end
+    end
+    check(hasResult, "raider ends with a RESULT popup (resolution handed off, sync did not close it)")
+    check(not hasInterest, "the interest popup was converted, not left or vanished")
+end)
+
+test("ML cancel closes the raider's roll popup (the only sync-driven close)", function()
+    local ml, raider, lot = rollWithRaider(40005)
+    check(rollFor(raider, lot.id), "raider has a roll")
+    ml.addon:CancelLiveRoll(lot.id)
+    flushWireTo(raider)
+    check(not rollFor(raider, lot.id), "raider's roll cleared on cancel")
+    local hasInterest = false
+    for _, f in ipairs(raider.addon.live.active) do if f.mode == "interest" then hasInterest = true end end
+    check(not hasInterest, "no interest popup remains after cancel")
+end)
+
+test("ineligible class: roll brackets are DISABLED (not just message-guarded)", function()
+    clearWire()
+    local ml = makeWorld("Masterlooter", true)
+    local raider = makeWorld("Raidertwo", false)
+    raider.addon.IsPlayerAllowedForItem = function() return false end   -- class can't use this item
+    startSession(ml)
+    setBag(ml, 40004, 1); bagUpdate(ml)
+    local lot = openLot(ml, 40004)
+    ml.addon:StartLiveRoll(lot.id)
+    flushWireTo(raider)                       -- DROP -> ShowInterestPopup -> applyInterestButtonAvailability
+    local roll = raider.addon.live.rolls[lot.id]
+    local f = roll and roll.popup
+    check(f, "raider built an interest popup")
+    check(not f.bisBtn:IsEnabled(), "BiS button disabled for an item the class cannot use")
+    check(not f.msBtn:IsEnabled(),  "MS button disabled")
+    check(not f.tmBtn:IsEnabled(),  "TM button disabled")
+    check(f.passBtn:IsEnabled(),    "Pass remains enabled (anyone may pass)")
+end)
+
+test("eligible class: roll brackets stay enabled", function()
+    clearWire()
+    local ml = makeWorld("Masterlooter", true)
+    local raider = makeWorld("Raidertwo", false)
+    raider.addon.IsPlayerAllowedForItem = function() return true end
+    startSession(ml)
+    setBag(ml, 40004, 1); bagUpdate(ml)
+    local lot = openLot(ml, 40004)
+    ml.addon:StartLiveRoll(lot.id)
+    flushWireTo(raider)
+    local f = raider.addon.live.rolls[lot.id].popup
+    check(f.bisBtn:IsEnabled() and f.msBtn:IsEnabled(), "brackets enabled for an item the class can use")
 end)
 
 test("a raider requesting sync from a session-less ML gets no phantom session", function()
@@ -1038,6 +1243,68 @@ local function loadReport()
     print("")
 end
 if os.getenv("WLLOAD") then loadReport() end
+
+-- ===========================================================================
+-- Boss-drop latency: a 40-person raid that already has 30 items sitting in the
+-- drop list; a boss dies dropping 5 more, which the ML puts up for roll. How long
+-- until raiders SEE the 5 roll popups? Models ChatThrottleLib (MAX_CPS=800, 40B/msg
+-- overhead, 245B chunks). ALERT is sent ahead of BULK by CTL, so the popup latency
+-- is the ALERT lane's drain time, independent of the BULK ledger/roster traffic.
+-- ===========================================================================
+local function bossDropReport()
+    local PREFIX = "WeirdLoot"
+    local MAXLEN, CPS, OVERHEAD = 254 - #PREFIX, 800, 40
+    local function tally(filter)
+        local logical, chunks, bytes, byCmd = 0, 0, 0, {}
+        for _, m in ipairs(WIRE) do
+            local prio = m.prio or "BULK"
+            if (not filter) or prio == filter then
+                local cmd = string.match(m.msg, "^[^|" .. string.char(30) .. "]+") or "?"
+                byCmd[cmd] = (byCmd[cmd] or 0) + 1
+                local c = math.max(1, math.ceil(#m.msg / MAXLEN))
+                logical, chunks, bytes = logical + 1, chunks + c, bytes + #m.msg + c * OVERHEAD
+            end
+        end
+        local parts = {}; for k, v in pairs(byCmd) do parts[#parts + 1] = k .. ":" .. v end; table.sort(parts)
+        return logical, chunks, bytes, table.concat(parts, " ")
+    end
+
+    local ml = makeWorld("Masterlooter", true)
+    local raider = makeWorld("Raidertwo", false)
+    startSession(ml)
+    local attendees = {}
+    for i = 1, 39 do attendees[i] = { name = "Raider" .. i, className = "Warrior", specName = "Arms", status = "main" } end
+    ml.addon.session.attendees = attendees
+    ml.addon.GetAttendees = function() return attendees end
+
+    -- 30 items already dropped and listed (pending), fully synced to the raider
+    for i = 1, 30 do setBag(ml, 41000 + i, 1); bagUpdate(ml); openLot(ml, 41000 + i) end
+    ml.addon:BroadcastSession(); flushWireTo(raider)
+    clearWire()                                            -- baseline: wire is quiet, raider in sync
+
+    -- BOSS DIES: 5 new BoP items land; the ML puts each up for roll
+    for i = 1, 5 do setBag(ml, 42000 + i, 1); bagUpdate(ml) end   -- fresh-drop deltas (BULK)
+    local rollLots = {}
+    for i = 1, 5 do rollLots[i] = openLot(ml, 42000 + i) end
+    for i = 1, 5 do ml.addon:StartLiveRoll(rollLots[i].id) end    -- 5 DROP (ALERT) + state deltas
+
+    local aL, aC, aB, aCmd = tally("ALERT")
+    local bL, bC, bB, bCmd = tally("BULK")
+    local tL, tC, tB = tally(nil)
+
+    print("")
+    print("=== boss-drop latency: 40-raider, 30 items already listed, 5 new -> roll ===")
+    print(string.format("  ALERT (roll popups):  %2d msg  %2d chunks  %5dB  ->  all 5 popups delivered in %.2fs  [%s]", aL, aC, aB, aB / CPS, aCmd))
+    print(string.format("  BULK  (ledger deltas):%3d msg  %2d chunks  %5dB  ->  %.2fs background drain        [%s]", bL, bC, bB, bB / CPS, bCmd))
+    print(string.format("  first popup ~%.2fs, last (5th) popup ~%.2fs  (CTL sends ALERT before BULK)", (aB / 5) / CPS, aB / CPS))
+    print(string.format("  total on wire this tick: %d msg / %d chunks / %dB (%.2fs if drained serially)", tL, tC, tB, tB / CPS))
+
+    clearWire(); ml.addon:BroadcastSession()
+    local sL, sC, sB = tally(nil); WIRE = {}
+    print(string.format("  (worst case -- a raider ZONING IN right then pulls a full 35-lot snapshot: %d chunks / %dB -> %.2fs, BULK)", sC, sB, sB / CPS))
+    print("")
+end
+if os.getenv("WLBOSS") then bossDropReport() end
 
 -- ===========================================================================
 print("")

@@ -1,7 +1,85 @@
 local addon = WeirdLoot
 local util = addon.util
 
-local ROLL_DURATION = 20        -- seconds raiders have to roll before it auto-resolves
+local ROLL_DURATION = 30        -- seconds raiders have to roll before it auto-resolves (default; user may override via Options tab)
+
+-- Declared at file scope (not in the popup section below) so our early core-driven restore
+-- path (RestoreRollPopup) can honor the configured duration without a forward-reference.
+local function getOptions()
+    addon.db = addon.db or {}
+    addon.db.options = addon.db.options or {}
+    return addon.db.options
+end
+
+local function getRollDuration()
+    local v = tonumber(getOptions().rollDuration)
+    if v and v > 0 then return v end
+    return ROLL_DURATION
+end
+
+-- Where the roll-popup hover tooltips (result breakdown + rolling list) dock relative to the
+-- popup. Configurable in Options because "right of the popup" can land off-screen or over other
+-- UI depending on where the user parks the popup stack. Returns the SetPoint tuple (tooltip
+-- corner, popup corner, x, y); CURSOR returns nil to signal ANCHOR_CURSOR. Method (not local) so
+-- the mapping is unit-testable without a live GameTooltip.
+function addon:RollTooltipAnchorPoints(mode)
+    mode = mode or getOptions().rollResultTooltipAnchor or "RIGHT"
+    if mode == "CURSOR" then return nil end
+    if mode == "LEFT"   then return "TOPRIGHT", "TOPLEFT",     -2,  0 end
+    if mode == "TOP"    then return "BOTTOMLEFT", "TOPLEFT",    0,  2 end
+    if mode == "BOTTOM" then return "TOPLEFT", "BOTTOMLEFT",    0, -2 end
+    return "TOPLEFT", "TOPRIGHT", 2, 0   -- RIGHT (default): dock snug to the popup's right edge
+end
+
+local function anchorRollTooltip(f)
+    local point, relPoint, x, y = addon:RollTooltipAnchorPoints()
+    if not point then
+        GameTooltip:SetOwner(f, "ANCHOR_CURSOR")
+        return
+    end
+    GameTooltip:SetOwner(f, "ANCHOR_NONE")
+    GameTooltip:ClearAllPoints()
+    GameTooltip:SetPoint(point, f, relPoint, x, y)
+end
+
+-- Live pick-list throttle (ML side). A recorded pick marks its rolling lot dirty; this ticker
+-- flushes at most one RSTATE broadcast per lot per period, so a storm of picks collapses to one
+-- message per second instead of one per pick. It self-arms on the first dirty mark and self-hides
+-- once everything is flushed (a hidden frame fires no OnUpdate), so it costs nothing when idle.
+local ROLL_STATE_PERIOD = 1.0
+local rollStateTicker = CreateFrame("Frame")
+rollStateTicker:Hide()
+rollStateTicker.elapsed = 0
+rollStateTicker:SetScript("OnUpdate", function(frame, dt)
+    frame.elapsed = frame.elapsed + (dt or 0)
+    if frame.elapsed < ROLL_STATE_PERIOD then return end
+    frame.elapsed = 0
+    addon:FlushRollState()
+end)
+
+function addon:MarkRollStateDirty(lotId)
+    if not self:IsAuthorizedLootMaster() then return end
+    self._rollStateDirty = self._rollStateDirty or {}
+    self._rollStateDirty[lotId] = true
+    rollStateTicker.elapsed = 0
+    rollStateTicker:Show()
+end
+
+-- Broadcast the live pick list for every dirty lot that is still rolling, then clear and disarm.
+-- A lot that resolved before the flush is skipped (no stale send). Re-armed by the next pick.
+function addon:FlushRollState()
+    local core = self.lootCore
+    local dirty = self._rollStateDirty
+    if not core or not dirty or not next(dirty) then rollStateTicker:Hide(); return end
+    for lotId in pairs(dirty) do
+        dirty[lotId] = nil
+        local lot = core:Get(lotId)
+        if lot and lot.state == core.STATE.ROLLING then
+            self:BroadcastRollState(lotId, lot)
+        end
+    end
+    rollStateTicker:Hide()
+end
 
 -- Live rolling system, coexisting with the batch flow.
 --
@@ -97,7 +175,12 @@ function addon:SyncRollPopups()
     end
     for i = #self.live.active, 1, -1 do
         local f = self.live.active[i]
-        if f.mode == "interest" and f.rollId and core:State(f.rollId) ~= core.STATE.ROLLING then
+        -- Only a CANCEL (lot back to pending/idle) or a vanished lot closes a raider's roll popup
+        -- via sync. A RESOLUTION must NOT close it here: the WIN converts it to a result popup whose
+        -- lifetime is governed by the auto-close option. Closing on RESOLVED races the WIN (the
+        -- resolved-lot delta and the WIN arrive together) and makes the popup vanish instantly.
+        local st = f.rollId and core:State(f.rollId)
+        if f.mode == "interest" and f.rollId and st ~= core.STATE.ROLLING and st ~= core.STATE.RESOLVED then
             if self.live.rolls then self.live.rolls[f.rollId] = nil end
             self:ClosePendingFrame(f)
         end
@@ -109,13 +192,13 @@ end
 -- to the full duration. Existing picks (from lot.responses) are reflected so the popup is accurate.
 function addon:RestoreRollPopup(lot)
     local name, link, icon = util:ItemRender(lot.itemId)
-    local remaining = (self._rollRemaining and self._rollRemaining[lot.id]) or ROLL_DURATION
+    local remaining = (self._rollRemaining and self._rollRemaining[lot.id]) or getRollDuration()
     local roll = {
         id = lot.id, itemId = lot.itemId, link = link,
         name = name or link or ("item:" .. tostring(lot.itemId)),
         icon = icon, prio = "", owner = false, registrants = {}, resolved = false,
         quantity = lot.count or 1,
-        duration = ROLL_DURATION,
+        duration = getRollDuration(),
         deadline = GetTime() + remaining,
     }
     for playerKey, tier in pairs(lot.responses or {}) do
@@ -141,6 +224,44 @@ end
 -- popup frames (custom, stacking)
 -- ---------------------------------------------------------------------------
 local POPUP_W, POPUP_H = 340, 94
+local POPUP_INTEREST_EMPTY_H = 64       -- floor height for a compact popup with no roll lines
+local RESPONSE_ORDER = { bis = 5, ms = 4, mu = 3, os = 2, tm = 1, pass = 0 }
+local RESPONSE_LABELS = { bis = "BiS", ms = "MS", mu = "MU", os = "OS", tm = "TM", pass = "Pass" }
+-- ROLL_DURATION / getOptions / getRollDuration are declared at the top of the file so the
+-- core-driven restore path can reach them; the rest of the option helpers live here.
+local function parseItemList(text)
+    local set = {}
+    if type(text) ~= "string" or text == "" then return set end
+    for line in string.gmatch(text, "[^\r\n]+") do
+        local trimmed = string.match(line, "^%s*(.-)%s*$") or ""
+        if trimmed ~= "" then
+            set[string.lower(trimmed)] = true
+        end
+    end
+    return set
+end
+
+-- Returns true if the (non-loot-master) popup should be suppressed for this item name.
+local function shouldSuppressPopup(self, itemName)
+    if self:IsAuthorizedLootMaster() then return false end
+    local opt = getOptions()
+    local name = string.lower(itemName or "")
+    if name == "" then return false end
+
+    if opt.whitelistEnabled then
+        local set = parseItemList(opt.whitelistText)
+        if next(set) and not set[name] then
+            return true
+        end
+    end
+    if opt.blacklistEnabled then
+        local set = parseItemList(opt.blacklistText)
+        if set[name] then
+            return true
+        end
+    end
+    return false
+end
 local popupBasePoint, savePopupBasePoint, layoutPopups
 
 local function makeButton(parent, text, width)
@@ -151,6 +272,127 @@ local function makeButton(parent, text, width)
     return b
 end
 
+local function getPlayerDisplayName(self, playerKey)
+    local attendee = self:GetAttendee(playerKey) or self:GetRosterProfile(playerKey)
+    if attendee and attendee.name and attendee.name ~= "" then
+        return attendee.name
+    end
+    return playerKey
+end
+
+local function getPlayerClassName(self, playerKey)
+    local attendee = self:GetAttendee(playerKey) or self:GetRosterProfile(playerKey)
+    if attendee and attendee.className and attendee.className ~= "" then
+        return attendee.className
+    end
+    return ""
+end
+
+local function nextLiveRollValue()
+    return math.random(1, 100)
+end
+
+local function buildLiveRollEntries(self, roll)
+    local entries = {}
+    for playerKey, registrant in pairs(roll and roll.registrants or {}) do
+        local tier = registrant.tier or "pass"
+        if tier ~= "pass" then
+            entries[#entries + 1] = {
+                key = playerKey,
+                name = registrant.name or getPlayerDisplayName(self, playerKey),
+                className = registrant.className or getPlayerClassName(self, playerKey),
+                tier = tier,
+                roll = registrant.roll or 0,
+            }
+        end
+    end
+
+    table.sort(entries, function(left, right)
+        local leftRank = RESPONSE_ORDER[left.tier] or 0
+        local rightRank = RESPONSE_ORDER[right.tier] or 0
+        if leftRank ~= rightRank then
+            return leftRank > rightRank
+        end
+        if (left.roll or 0) ~= (right.roll or 0) then
+            return (left.roll or 0) > (right.roll or 0)
+        end
+        return string.lower(left.name or "") < string.lower(right.name or "")
+    end)
+
+    return entries
+end
+
+local function ensureRollLinePool(f, count)
+    f.rollLines = f.rollLines or {}
+    while #f.rollLines < count do
+        local line = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        line:SetJustifyH("LEFT")
+        line:SetWidth(POPUP_W - 20)
+        if #f.rollLines == 0 then
+            line:SetPoint("TOPLEFT", f.sub, "BOTTOMLEFT", 0, -6)
+        else
+            line:SetPoint("TOPLEFT", f.rollLines[#f.rollLines], "BOTTOMLEFT", 0, -2)
+        end
+        f.rollLines[#f.rollLines + 1] = line
+    end
+end
+
+local function setPopupHeight(f, height)
+    f:SetHeight(height)
+end
+
+local function getCompactPopupHeight(f)
+    local nameHeight = math.ceil(f.name:GetStringHeight() or 0)
+    local subHeight = math.ceil(f.sub:GetStringHeight() or 0)
+    return math.max(POPUP_INTEREST_EMPTY_H, 39 + nameHeight + subHeight)
+end
+
+local function getCompactResultPopupHeight(f)
+    local nameHeight = math.ceil(f.name:GetStringHeight() or 0)
+    local subHeight = math.ceil(f.sub:GetStringHeight() or 0)
+    return math.max(62, 34 + nameHeight + subHeight)
+end
+
+local function showRollCountTooltip(self, f)
+    local roll = f and f.roll
+    if not f or not roll then
+        return
+    end
+
+    anchorRollTooltip(f)
+    GameTooltip:ClearLines()
+    GameTooltip:AddLine("Players Rolling", 1, 0.82, 0)
+
+    local entries = buildLiveRollEntries(self, roll)
+    if #entries == 0 then
+        GameTooltip:AddLine("No active rollers", 1, 1, 1)
+    else
+        for _, entry in ipairs(entries) do
+            local colorCode = util:GetClassColorCode(entry.className) or "|cffffffff"
+            GameTooltip:AddLine(string.format("%s%s|r - %d - %s", colorCode, entry.name or "Unknown", entry.roll or 0, RESPONSE_LABELS[entry.tier] or string.upper(entry.tier or "")), 1, 1, 1)
+        end
+    end
+
+    GameTooltip:Show()
+end
+
+local function refreshPopupRollLines(self, roll)
+    local f = roll and roll.popup
+    if not f or f.mode ~= "interest" then
+        return
+    end
+
+    if f.rollLines then
+        for _, line in ipairs(f.rollLines) do
+            line:SetText("")
+            line:Hide()
+        end
+    end
+
+    setPopupHeight(f, getCompactPopupHeight(f))
+    layoutPopups(self)
+end
+
 -- roll-choice brackets, highest priority first: BiS > MS > MU > OS > TM (Pass
 -- declines). Use the button's natural pressed visual to show the pick: the chosen button
 -- locks in its down state; picking a different one pops the previous back up.
@@ -158,11 +400,14 @@ local function interestButtons(f)
     return { bis = f.bisBtn, ms = f.msBtn, mu = f.muBtn, os = f.osBtn, tm = f.tmBtn, pass = f.passBtn }
 end
 -- chosen button: bold (outlined) green label; others: normal gold label
-local function styleButtonText(btn, chosen)
+local function styleButtonText(btn, chosen, disabled)
     local fs = btn:GetFontString()
     if not fs then return end
     local font, size = fs:GetFont()
-    if chosen then
+    if disabled then
+        fs:SetFont(font, size, "")
+        fs:SetTextColor(0.5, 0.5, 0.5)
+    elseif chosen then
         fs:SetFont(font, size, "OUTLINE")
         fs:SetTextColor(0.2, 1.0, 0.2)
     else
@@ -174,7 +419,7 @@ local function resetInterestButtons(f)
     for _, btn in pairs(interestButtons(f)) do
         if btn then
             btn:SetButtonState("NORMAL")
-            styleButtonText(btn, false)
+            styleButtonText(btn, false, false)
         end
     end
 end
@@ -185,6 +430,45 @@ local function positionInterestButtons(f, isOwner)
         f.bisBtn:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 8, 32)
     else
         f.bisBtn:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 8, 10)
+    end
+end
+
+local function isPlayerAllowedForRoll(self, roll, playerName)
+    local itemName = (roll and roll.name) or ""
+    return self:IsPlayerAllowedForItem(itemName, playerName)
+end
+
+local function applyInterestButtonAvailability(self, f, roll)
+    local playerName = util:GetPlayerName("player")
+    local allowed = isPlayerAllowedForRoll(self, roll, playerName)
+
+    for key, btn in pairs(interestButtons(f)) do
+        local disabled = false
+        if key == "pass" then
+            btn:Enable()
+        elseif allowed then
+            btn:Enable()
+        else
+            btn:Disable()
+            disabled = true
+        end
+        btn:SetAlpha(disabled and 0.45 or 1)
+        styleButtonText(btn, false, disabled)
+        -- A disabled bracket button is genuinely unclickable; explain why on hover so the raider
+        -- knows it is a class restriction, not a bug. SetMotionScriptsWhileDisabled lets the
+        -- OnEnter/OnLeave fire while the button is disabled.
+        btn:SetMotionScriptsWhileDisabled(true)
+        if disabled then
+            btn:SetScript("OnEnter", function(b)
+                GameTooltip:SetOwner(b, "ANCHOR_RIGHT")
+                GameTooltip:SetText("Your class cannot use this item.", 1, 0.3, 0.3, true)
+                GameTooltip:Show()
+            end)
+            btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        else
+            btn:SetScript("OnEnter", nil)
+            btn:SetScript("OnLeave", nil)
+        end
     end
 end
 
@@ -292,7 +576,7 @@ local function highlightInterestButton(f, tier)
             local chosen = key == tier
             -- lock the chosen button pushed; leave the rest in their normal (up) state
             btn:SetButtonState(chosen and "PUSHED" or "NORMAL", chosen)
-            styleButtonText(btn, chosen)
+            styleButtonText(btn, chosen, not btn:IsEnabled())
         end
     end
 end
@@ -353,7 +637,13 @@ local function makePopup()
     f.sub:SetJustifyH("LEFT")
 
     f.count = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    f.count:SetPoint("TOPRIGHT", f, "TOPRIGHT", -10, -8)
+    f.count:SetPoint("TOPRIGHT", f, "TOPRIGHT", -10, -30)
+    f.countHover = CreateFrame("Frame", nil, f)
+    f.countHover:SetPoint("TOPLEFT", f.count, "TOPLEFT", -2, 2)
+    f.countHover:SetPoint("BOTTOMRIGHT", f.count, "BOTTOMRIGHT", 2, -2)
+    f.countHover:EnableMouse(true)
+    f.countHover:SetScript("OnEnter", function() showRollCountTooltip(addon, f) end)
+    f.countHover:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     -- choice brackets (top button row): BiS > MS > MU > OS > TM > Pass
     f.bisBtn = makeButton(f, "BiS", 34)
@@ -541,6 +831,13 @@ function addon:EnsureNameTicker()
                 end
             end
         end
+        -- the full loot list shares this resolve cycle: re-render it while any of its item names
+        -- are still uncached (RefreshLootTab re-warms and re-flags), then let it fall out.
+        if self._lootNamesPending then
+            self._lootNamesPending = false
+            if self.RefreshLootTab then self:RefreshLootTab() end
+            if self._lootNamesPending then pending = pending + 1 end
+        end
         if pending == 0 then
             anchor:SetScript("OnUpdate", nil)
             anchor.__nameTicker = nil
@@ -562,10 +859,28 @@ function addon:TrackPopupItem(f, itemId, quantity)
     end
 end
 
+-- Same cold-cache handling as the popups, but for the full loot list: prime every item whose
+-- name is not cached yet (via the shared scan tooltip) and flag the shared resolve ticker so the
+-- list re-renders once they arrive. Returns true while any name is still unresolved. Lives here
+-- (not UI) so it reuses PrimeItemInfo directly and stays unit-testable.
+function addon:WarmLootItemNames(items)
+    self._lootNamesPending = false
+    for _, it in ipairs(items or {}) do
+        if it.itemId and not util:ItemRender(it.itemId) then
+            self:PrimeItemInfo(it.itemId)
+            self._lootNamesPending = true
+        end
+    end
+    return self._lootNamesPending
+end
+
 -- ---------------------------------------------------------------------------
 -- interest popup
 -- ---------------------------------------------------------------------------
-function addon:ShowInterestPopup(roll)
+function addon:ShowInterestPopup(roll, slot)
+    if not roll.owner and shouldSuppressPopup(self, roll.name) then
+        return
+    end
     -- Idempotent per lot: replace any existing interest popup for this roll so a DROP and a
     -- restore (in either order) never stack two popups for the same item.
     for i = #self.live.active, 1, -1 do
@@ -578,6 +893,11 @@ function addon:ShowInterestPopup(roll)
     f.roll = roll
     roll.popup = f
     f.mode = "interest"
+    if f.resultHover then
+        f.resultHover:Hide()
+        f.resultHover:SetScript("OnEnter", nil)
+        f.resultHover:SetScript("OnLeave", nil)
+    end
 
     roll.choice = nil
     f.icon:SetTexture(roll.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
@@ -596,6 +916,7 @@ function addon:ShowInterestPopup(roll)
     f.passBtn:SetScript("OnClick", function() self:ChooseInterest(roll, "pass") end)
     resetInterestButtons(f)
     positionInterestButtons(f, roll.owner)
+    applyInterestButtonAvailability(self, f, roll)   -- disable brackets the player's class can't use
 
     if roll.owner then
         -- the ML keeps the popup to drive the roll: Cancel aborts, Roll! resolves
@@ -607,12 +928,12 @@ function addon:ShowInterestPopup(roll)
         f.cancelBtn:SetWidth(50)
         f.cancelBtn:SetText("Cancel")
         f.cancelBtn:SetScript("OnClick", function() self:CancelLiveRoll(roll.id) end)
-        f.count:Show()
     else
         f.rollBtn:Hide()
         f.cancelBtn:Hide()
-        f.count:Hide()
     end
+    f.count:Show()
+    f.countHover:Show()
 
     f:SetScript("OnEnter", nil)
     f:SetScript("OnLeave", nil)
@@ -648,17 +969,26 @@ end
 
 function addon:RefreshInterestPopup(roll)
     local f = roll and roll.popup
-    if not f or f.mode ~= "interest" or not roll.owner then return end
+    if not f or f.mode ~= "interest" then return end
 
-    -- count active responses from the core lot (the single source of truth)
-    local total = 0
-    local lot = self.lootCore:Get(roll.id)
-    if lot then
-        for _, choice in pairs(lot.responses) do
-            if self:IsResponseActive(choice) then total = total + 1 end
+    -- The ML counts the authoritative responses on the core lot; a raider counts the live pick
+    -- list the ML pushes via RSTATE (display-only registrants). Raiders do not carry the ledger's
+    -- responses mid-roll (picks are coalesced and only sync at resolve), so the count and the
+    -- hover roster both come from the pushed registrants on that side.
+    local total
+    if roll.owner then
+        total = 0
+        local lot = self.lootCore:Get(roll.id)
+        if lot then
+            for _, choice in pairs(lot.responses) do
+                if self:IsResponseActive(choice) then total = total + 1 end
+            end
         end
+    else
+        total = #buildLiveRollEntries(self, roll)
     end
     f.count:SetText(total > 0 and (total .. " rolling") or "")
+    refreshPopupRollLines(self, roll)
 end
 
 function addon:RefreshLiveRollCountForItem(lotId)
@@ -680,6 +1010,11 @@ end
 -- is Pass for a non-ML roller, which dismisses the loot immediately; the ML never
 -- auto-hides (it keeps the popup to drive the roll).
 function addon:ChooseInterest(roll, tier)
+    local playerName = util:GetPlayerName("player")
+    if tier ~= "pass" and not isPlayerAllowedForRoll(self, roll, playerName) then
+        self:Print("Your class cannot use that token. You may only pass.")
+        return
+    end
     self:SendInterest(roll.id, tier)
     roll.choice = tier
 
@@ -706,6 +1041,11 @@ function addon:ShowPendingPopup(lot, slot)
 
     local f = acquirePopup(self)
     f.mode = "pending"
+    if f.resultHover then
+        f.resultHover:Hide()
+        f.resultHover:SetScript("OnEnter", nil)
+        f.resultHover:SetScript("OnLeave", nil)
+    end
     f:SetScript("OnUpdate", nil)        -- no countdown until the roll actually starts
     f.timer:Hide()
     f.lotId = lotId
@@ -716,6 +1056,13 @@ function addon:ShowPendingPopup(lot, slot)
     self:TrackPopupItem(f, lot.itemId, quantity)
     f.sub:SetText("|cffffffffPrio:|r " .. (self:GetLiveItemPrio({ name = name }) or "BiS > MS > MU > OS > TM"))
     f.count:Hide()
+    f.countHover:Hide()
+    if f.rollLines then
+        for _, line in ipairs(f.rollLines) do
+            line:Hide()
+        end
+    end
+    setPopupHeight(f, getCompactPopupHeight(f))
 
     f.bisBtn:Hide(); f.msBtn:Hide(); f.muBtn:Hide(); f.osBtn:Hide(); f.tmBtn:Hide(); f.passBtn:Hide(); f.okBtn:Hide()
 
@@ -746,6 +1093,9 @@ end
 -- result popup
 -- ---------------------------------------------------------------------------
 function addon:ShowResultPopup(roll, winners, sections, slot)
+    if shouldSuppressPopup(self, roll.name) then
+        return
+    end
     local f = acquirePopup(self)
     f.mode = "result"
     f:SetScript("OnUpdate", nil)        -- no countdown on a result popup
@@ -754,69 +1104,125 @@ function addon:ShowResultPopup(roll, winners, sections, slot)
     f.itemLink = roll.link
     f.name:SetText(formatRollItemLabel(roll.link, roll.name, roll.quantity))
     self:TrackPopupItem(f, roll.itemId, roll.quantity)
-
-    winners = winners or {}
-    local myKey = util:NormalizeKey(util:GetPlayerName("player") or "")
-    local winnerKeys = {}
-    for _, w in ipairs(winners) do winnerKeys[util:NormalizeKey(w)] = true end
-    local myRoll, mySection
-    for _, s in ipairs(sections or {}) do
-        for _, m in ipairs(s.members) do
-            if util:NormalizeKey(m.name) == myKey then myRoll = m.roll; mySection = s.label end
+    f.count:Hide()
+    f.countHover:Hide()
+    if f.rollLines then
+        for _, line in ipairs(f.rollLines) do
+            line:Hide()
         end
+    end
+    setPopupHeight(f, getCompactResultPopupHeight(f))
+
+    local myKey = util:NormalizeKey(util:GetPlayerName("player") or "")
+
+    -- The core hands us `winners` as an ordered list of name strings; enrich each with its roll
+    -- and priority section from the breakdown so the popup can render upstream's class-colored
+    -- "Winner: Name - roll - section" line.
+    local winnerList = {}
+    local winnerKeys = {}
+    for _, winnerName in ipairs(winners or {}) do
+        local winnerKey = util:NormalizeKey(winnerName)
+        winnerKeys[winnerKey] = true
+        local winnerSection, winnerRoll
+        for _, s in ipairs(sections or {}) do
+            for _, m in ipairs(s.members) do
+                if util:NormalizeKey(m.name) == winnerKey then
+                    winnerSection = s.label
+                    winnerRoll = m.roll
+                    break
+                end
+            end
+            if winnerSection then break end
+        end
+        winnerList[#winnerList + 1] = {
+            name = winnerName,
+            roll = winnerRoll,
+            section = winnerSection,
+            key = winnerKey,
+        }
     end
 
     local line
-    if #winners == 0 then
-        line = "No rollers."
-    elseif winnerKeys[myKey] then
-        line = string.format("|cff40ff40You won!|r  (your roll %s)", tostring(myRoll or "?"))
+    if #winnerList == 0 then
+        local namedRule = roll.name and self:GetNamedRule(roll.name)
+        if namedRule and namedRule.raw and namedRule.raw ~= "" then
+            line = "Winner: Loot Council"
+        else
+            line = "Winner: No rollers."
+        end
     else
-        local mine = myRoll and string.format("Your roll %d%s.  ", myRoll, mySection and (" (" .. mySection .. ")") or "") or ""
-        line = string.format("|cffff6060You lost.|r  %sWinner%s: %s", mine, (#winners > 1 and "s" or ""), table.concat(winners, ", "))
+        local winnerParts = {}
+        for _, winner in ipairs(winnerList) do
+            local className = getPlayerClassName(self, winner.key)
+            local colorCode = util:GetClassColorCode(className) or "|cffffffff"
+            winnerParts[#winnerParts + 1] = string.format("%s%s|r - %s - %s",
+                colorCode,
+                winner.name or "Unknown",
+                tostring(winner.roll or "-"),
+                winner.section or "?")
+        end
+        local winnerLabel = #winnerParts > 1 and "Winners" or "Winner"
+        line = string.format("%s: %s", winnerLabel, table.concat(winnerParts, "; "))
     end
     f.sub:SetText(line)
 
     f.bisBtn:Hide(); f.msBtn:Hide(); f.muBtn:Hide(); f.osBtn:Hide(); f.tmBtn:Hide(); f.passBtn:Hide(); f.rollBtn:Hide(); f.cancelBtn:Hide()
     f.count:Hide()
     f.okBtn:Show()
+    f.okBtn:ClearAllPoints()
+    f.okBtn:SetPoint("TOPRIGHT", f, "TOPRIGHT", -8, -8)
     f.okBtn:SetScript("OnClick", function() closePopup(self, f); compactPopups(self) end)
 
-    -- hover: full breakdown by priority section so a higher roll in a lower section is
-    -- clearly explained
     f.sections = sections
     f.winnerKeys = winnerKeys
     f.myKey = myKey
-    f:SetScript("OnEnter", function(selfFrame)
-        GameTooltip:SetOwner(selfFrame, "ANCHOR_RIGHT")
+    if not f.resultHover then
+        f.resultHover = CreateFrame("Frame", nil, f)
+        f.resultHover:EnableMouse(true)
+    end
+    f.resultHover:SetPoint("TOPLEFT", f.sub, "TOPLEFT", -2, 2)
+    f.resultHover:SetPoint("BOTTOMRIGHT", f.sub, "BOTTOMRIGHT", 2, -2)
+    f.resultHover:Show()
+    f.resultHover:SetScript("OnEnter", function(selfFrame)
+        anchorRollTooltip(f)
         GameTooltip:ClearLines()
-        GameTooltip:AddLine("Roll breakdown (priority order)", 1, 0.82, 0)
-        local awarded = false
-        for _, s in ipairs(selfFrame.sections or {}) do
+        GameTooltip:AddLine("Rolls", 1, 0.82, 0)
+        for _, s in ipairs(f.sections or {}) do
             if #s.members > 0 then
-                local marker = (not awarded) and "  |cff40ff40<- winning section|r" or ""
-                GameTooltip:AddLine("|cff88ccff" .. (s.label or "?") .. "|r" .. marker, 1, 1, 1)
                 local mem = {}
                 for _, m in ipairs(s.members) do mem[#mem + 1] = m end
                 table.sort(mem, function(a, b) return (a.roll or 0) > (b.roll or 0) end)
                 for _, m in ipairs(mem) do
                     local key = util:NormalizeKey(m.name)
-                    local isMe = selfFrame.myKey and key == selfFrame.myKey
-                    local won = selfFrame.winnerKeys and selfFrame.winnerKeys[key]
-                    local label = isMe and "You" or m.name
-                    if won then
-                        label = "|cff40ff40" .. label .. "|r"            -- winner: green
-                    elseif isMe then
-                        label = "|cff66ccff" .. label .. "|r"            -- your own row: blue
-                    end
-                    GameTooltip:AddDoubleLine("  " .. label, tostring(m.roll or "-"), 1, 1, 1, 1, 1, 1)
+                    local winnerType = s.label or "?"
+                    local className = getPlayerClassName(self, key)
+                    local colorCode = util:GetClassColorCode(className) or "|cffffffff"
+                    GameTooltip:AddLine(string.format("  %s%s|r - %s - %s", colorCode, m.name or "Unknown", tostring(m.roll or "-"), winnerType), 1, 1, 1)
                 end
-                awarded = true
             end
         end
         GameTooltip:Show()
     end)
-    f:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    f.resultHover:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    f:SetScript("OnEnter", nil)
+    f:SetScript("OnLeave", nil)
+
+    -- Auto-close governs the result popup's lifetime: only auto-hide when enabled (a 0 duration
+    -- closes it immediately on the next frame; a positive duration after that many seconds). When
+    -- disabled, the popup stays until the player clicks OK.
+    local opt = getOptions()
+    if opt.resultPopupAutoCloseEnabled then
+        local timeout = tonumber(opt.resultPopupAutoCloseSeconds) or 0
+        f.resultElapsed = 0
+        f:SetScript("OnUpdate", function(selfFrame, elapsed)
+            selfFrame.resultElapsed = (selfFrame.resultElapsed or 0) + (elapsed or 0)
+            if selfFrame.resultElapsed >= timeout then
+                selfFrame:SetScript("OnUpdate", nil)
+                closePopup(self, selfFrame)
+                compactPopups(self)
+            end
+        end)
+    end
 
     addActivePopup(self, f, slot)        -- reuse the interest popup's slot so it stays put
     f:Show()
@@ -917,18 +1323,19 @@ function addon:StartLiveRoll(lotId)
 
     local prio = self:GetLiveItemPrio({ name = name })
     local quantity = core:LiveCount(lotId)
+    local rollDuration = getRollDuration()       -- honors the ML's configured Options-tab duration
     local roll = {
         id = lotId, itemId = lot.itemId, link = link, name = name,
         icon = icon, prio = prio, owner = true, registrants = {}, resolved = false,
-        duration = ROLL_DURATION, quantity = quantity,
-        deadline = GetTime() + ROLL_DURATION,   -- authoritative end; sync carries the remaining
+        duration = rollDuration, quantity = quantity,
+        deadline = GetTime() + rollDuration,   -- authoritative end; sync carries the remaining
     }
     self.live.rolls[lotId] = roll
 
     -- the wire carries the itemId (not a link): every client renders its own localized name.
     -- field 4 is the REMAINING seconds (full duration at start); a client sets deadline = now + it.
     self:SendLargeMessage("DROP",
-        { lotId, tostring(lot.itemId), prio or "", tostring(ROLL_DURATION), tostring(quantity) }, "RAID", nil, "ALERT")
+        { lotId, tostring(lot.itemId), prio or "", tostring(rollDuration), tostring(quantity) }, "RAID", nil, "ALERT")
     self:ShowInterestPopup(roll)
     self:Print("Put " .. name .. " up for roll. Press End Roll when ready.")
 end

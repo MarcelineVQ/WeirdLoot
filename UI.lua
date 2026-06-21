@@ -2,12 +2,13 @@ local addon = WeirdLoot
 local util = addon.util
 
 local ROW_HEIGHT = 22
-local TAB_KEYS = { "loot", "results", "raiders", "master" }
+local TAB_KEYS = { "loot", "results", "raiders", "master", "options" }
 local TAB_LABELS = {
     loot = "Loot",
     raiders = "Roster",
     results = "Loot Results",
     master = "Loot Master",
+    options = "Options",
 }
 local GROUP_LOOT_TEXTURES = {
     glow = "Interface\\Buttons\\UI-ActionButton-Border",
@@ -209,8 +210,19 @@ local function createLabel(parent, text, anchor, relativeTo, relativePoint, offs
     return fontString
 end
 
+local function elevateInteractiveFrame(frame, parent, extraLevel)
+    if not frame or not parent or type(parent.GetFrameLevel) ~= "function" then
+        return
+    end
+    if type(parent.GetFrameStrata) == "function" then
+        frame:SetFrameStrata(parent:GetFrameStrata())
+    end
+    frame:SetFrameLevel((parent:GetFrameLevel() or 0) + (extraLevel or 5))
+end
+
 local function createButton(parent, text, width, height)
     local button = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+    elevateInteractiveFrame(button, parent, 8)
     button:SetWidth(width)
     button:SetHeight(height)
     button:SetText(text)
@@ -231,6 +243,7 @@ end
 
 local function createLootChoiceButton(parent, label, width)
     local button = CreateFrame("Button", nil, parent)
+    elevateInteractiveFrame(button, parent, 8)
     button:SetWidth(width or 28)
     button:SetHeight(18)
     button:SetBackdrop({
@@ -324,6 +337,7 @@ end
 
 local function createBackdropFrame(name, parent)
     local frame = CreateFrame("Frame", name, parent)
+    elevateInteractiveFrame(frame, parent, 1)
     frame:SetBackdrop({
         bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
         edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
@@ -358,13 +372,16 @@ local function createTextWindow(name, width, height, titleText, options)
     title:SetFontObject(GameFontHighlightLarge)
 
     local closeButton = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
+    elevateInteractiveFrame(closeButton, frame, 10)
     closeButton:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -4, -4)
 
     local scroll = CreateFrame("ScrollFrame", name .. "Scroll", frame, "UIPanelScrollFrameTemplate")
+    elevateInteractiveFrame(scroll, frame, 6)
     scroll:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -42)
     scroll:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -34, options.showSaveButton and 44 or 12)
 
     local editBox = CreateFrame("EditBox", name .. "EditBox", scroll)
+    elevateInteractiveFrame(editBox, frame, 7)
     editBox:SetMultiLine(true)
     editBox:SetFontObject(ChatFontNormal)
     editBox:SetWidth(width - 56)
@@ -453,6 +470,7 @@ local function createScrollList(parent, name, rowCount, initializer)
     frame.rows = {}
     for index = 1, rowCount do
         local row = CreateFrame("Button", name .. "Row" .. index, frame)
+        elevateInteractiveFrame(row, frame, 4)
         row:SetHeight(ROW_HEIGHT)
         row:SetPoint("LEFT", 6, 0)
         row:SetPoint("RIGHT", -6, 0)
@@ -494,6 +512,9 @@ function addon:InitializeUI()
     frame:SetWidth(980)
     frame:SetHeight(640)
     frame:SetPoint("CENTER", UIParent, "CENTER", self.db.ui.frame.x or 0, self.db.ui.frame.y or 0)
+    frame:SetFrameStrata("FULLSCREEN_DIALOG")
+    frame:SetToplevel(true)
+    frame:SetFrameLevel(1000)
     frame:SetMovable(true)
     frame:EnableMouse(true)
     frame:RegisterForDrag("LeftButton")
@@ -506,18 +527,23 @@ function addon:InitializeUI()
         addon.db.ui.frame.x = x
         addon.db.ui.frame.y = y
     end)
+    frame:SetScript("OnShow", function(selfFrame)
+        selfFrame:Raise()
+    end)
     frame:Hide()
 
     local title = createLabel(frame, "WeirdLoot", "TOPLEFT", frame, "TOPLEFT", 16, -14)
     title:SetFontObject(GameFontHighlightLarge)
 
     local closeButton = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
+    elevateInteractiveFrame(closeButton, frame, 10)
     closeButton:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -4, -4)
 
     local status = createLabel(frame, "", "TOPLEFT", title, "BOTTOMLEFT", 0, -8)
     status:SetWidth(720)
 
     local content = CreateFrame("Frame", nil, frame)
+    elevateInteractiveFrame(content, frame, 4)
     content:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -64)
     content:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -12, 44)
 
@@ -532,7 +558,9 @@ function addon:InitializeUI()
     self:BuildRaidersTab()
     self:BuildResultsTab()
     self:BuildMasterTab()
+    self:BuildOptionsTab()
     self:BuildBottomTabs()
+    self:BuildMinimapButton()
 
     self:RegisterCallback("STATE_UPDATED", function()
         addon:RefreshUI()
@@ -848,6 +876,7 @@ end
 
 function addon:BuildLootTab()
     local panel = CreateFrame("Frame", nil, self.ui.content)
+    elevateInteractiveFrame(panel, self.ui.content, 2)
     panel:SetAllPoints(self.ui.content)
     self.ui.panels.loot = panel
 
@@ -1257,6 +1286,7 @@ end
 
 function addon:BuildRaidersTab()
     local panel = CreateFrame("Frame", nil, self.ui.content)
+    elevateInteractiveFrame(panel, self.ui.content, 2)
     panel:SetAllPoints(self.ui.content)
     self.ui.panels.raiders = panel
 
@@ -1317,6 +1347,7 @@ end
 
 function addon:BuildResultsTab()
     local panel = CreateFrame("Frame", nil, self.ui.content)
+    elevateInteractiveFrame(panel, self.ui.content, 2)
     panel:SetAllPoints(self.ui.content)
     self.ui.panels.results = panel
 
@@ -1386,6 +1417,7 @@ function addon:BuildResultsTab()
     detailFrame:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", 0, 0)
 
     local itemHeader = CreateFrame("Button", nil, detailFrame)
+    elevateInteractiveFrame(itemHeader, detailFrame, 6)
     itemHeader:SetPoint("TOPLEFT", detailFrame, "TOPLEFT", 8, -8)
     itemHeader:SetPoint("TOPRIGHT", detailFrame, "TOPRIGHT", -30, -8)
     itemHeader:SetHeight(20)
@@ -1426,10 +1458,12 @@ function addon:BuildResultsTab()
     end)
 
     local scroll = CreateFrame("ScrollFrame", "WeirdLootResultDetailScroll", detailFrame, "UIPanelScrollFrameTemplate")
+    elevateInteractiveFrame(scroll, detailFrame, 6)
     scroll:SetPoint("TOPLEFT", itemHeader, "BOTTOMLEFT", 0, -8)
     scroll:SetPoint("BOTTOMRIGHT", -30, 8)
 
     local editBox = CreateFrame("EditBox", "WeirdLootResultDetailText", scroll)
+    elevateInteractiveFrame(editBox, detailFrame, 7)
     editBox:SetMultiLine(true)
     editBox:SetFontObject(ChatFontNormal)
     editBox:SetWidth(380)
@@ -1439,12 +1473,27 @@ function addon:BuildResultsTab()
     editBox:SetScript("OnEscapePressed", function() editBox:ClearFocus() end)
     scroll:SetScrollChild(editBox)
 
-    local targetButton = CreateFrame("Button", "WeirdLootResultTargetButton", detailFrame, "SecureActionButtonTemplate,UIPanelButtonTemplate")
+    local targetButton = CreateFrame("Button", "WeirdLootResultTargetButton", detailFrame, "UIPanelButtonTemplate")
+    elevateInteractiveFrame(targetButton, detailFrame, 8)
     targetButton:SetWidth(110)
     targetButton:SetHeight(22)
     targetButton:SetPoint("BOTTOMLEFT", detailFrame, "BOTTOMLEFT", 8, 8)
     targetButton:SetText("Target + Whisper")
-    targetButton:SetAttribute("type", "macro")
+    targetButton:SetScript("OnClick", function()
+        local result = addon.ui and addon.ui.selectedResult
+        local whisperName = result and result.winner or nil
+        local itemName = result and (result.itemLink or result.itemName or "your item") or "your item"
+        if not whisperName or whisperName == "" or whisperName == "No winner" then
+            return
+        end
+
+        if type(TargetByName) == "function" then
+            TargetByName(whisperName, true)
+        end
+        if type(SendChatMessage) == "function" then
+            SendChatMessage("You won " .. itemName .. ". Please run to the loot master for trade.", "WHISPER", nil, whisperName)
+        end
+    end)
 
     local tradeButton = createButton(detailFrame, "Trade Winner", 110, 22)
     tradeButton:SetPoint("LEFT", targetButton, "RIGHT", 8, 0)
@@ -1473,6 +1522,7 @@ end
 
 function addon:BuildMasterTab()
     local panel = CreateFrame("Frame", nil, self.ui.content)
+    elevateInteractiveFrame(panel, self.ui.content, 2)
     panel:SetAllPoints(self.ui.content)
     self.ui.panels.master = panel
 
@@ -1527,8 +1577,14 @@ function addon:BuildMasterTab()
         addon:ImportRoster()
     end)
 
+    local broadcastRosterButton = createButton(panel, "Broadcast Roster", 130, 24)
+    broadcastRosterButton:SetPoint("LEFT", importRosterButton, "RIGHT", 8, 0)
+    broadcastRosterButton:SetScript("OnClick", function()
+        addon:BroadcastRoster()
+    end)
+
     local importNamedItemsButton = createButton(panel, "Import Named Items", 130, 24)
-    importNamedItemsButton:SetPoint("LEFT", importRosterButton, "RIGHT", 8, 0)
+    importNamedItemsButton:SetPoint("LEFT", broadcastRosterButton, "RIGHT", 8, 0)
     importNamedItemsButton:SetScript("OnClick", function()
         addon:ImportNamedItems()
     end)
@@ -1553,6 +1609,7 @@ function addon:BuildMasterTab()
     panel.exportWinnersButton = exportWinnersButton
     panel.exportLogButton = exportLogButton
     panel.importRosterButton = importRosterButton
+    panel.broadcastRosterButton = broadcastRosterButton
     panel.importNamedItemsButton = importNamedItemsButton
     panel.broadcastNamedItemsButton = broadcastNamedItemsButton
     panel.payoutButton = payoutButton
@@ -1577,6 +1634,307 @@ function addon:BuildMasterTab()
     panel.snapshot:SetJustifyV("TOP")
 
     self.ui.masterPanel = panel
+end
+
+local function getOptions(self)
+    self.db.options = self.db.options or {}
+    return self.db.options
+end
+
+local function createOptionsCheckbox(parent, label)
+    local cb = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
+    elevateInteractiveFrame(cb, parent, 8)
+    cb:SetWidth(24)
+    cb:SetHeight(24)
+    local fs = cb:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    fs:SetPoint("LEFT", cb, "RIGHT", 4, 0)
+    fs:SetText(label)
+    cb.label = fs
+    return cb
+end
+
+local function createNumberEditBox(parent, width)
+    local box = CreateFrame("EditBox", nil, parent, "InputBoxTemplate")
+    elevateInteractiveFrame(box, parent, 8)
+    box:SetWidth(width or 50)
+    box:SetHeight(20)
+    box:SetAutoFocus(false)
+    box:SetNumeric(true)
+    box:SetMaxLetters(4)
+    box:SetScript("OnEscapePressed", function(selfBox) selfBox:ClearFocus() end)
+    box:SetScript("OnEnterPressed", function(selfBox) selfBox:ClearFocus() end)
+    return box
+end
+
+local multilineScrollSeq = 0
+local function createMultilineEditScroll(parent, width, height)
+    multilineScrollSeq = multilineScrollSeq + 1
+    local baseName = "WeirdLootOptionsScroll" .. multilineScrollSeq
+
+    local container = CreateFrame("Frame", baseName .. "Container", parent)
+    elevateInteractiveFrame(container, parent, 6)
+    container:SetWidth(width)
+    container:SetHeight(height)
+    container:SetBackdrop({
+        bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 8, edgeSize = 8,
+        insets = { left = 3, right = 3, top = 3, bottom = 3 },
+    })
+    container:SetBackdropColor(0, 0, 0, 0.6)
+
+    local scroll = CreateFrame("ScrollFrame", baseName, container, "UIPanelScrollFrameTemplate")
+    elevateInteractiveFrame(scroll, container, 1)
+    scroll:SetPoint("TOPLEFT", container, "TOPLEFT", 6, -6)
+    scroll:SetPoint("BOTTOMRIGHT", container, "BOTTOMRIGHT", -26, 6)
+
+    local editBox = CreateFrame("EditBox", baseName .. "Edit", scroll)
+    elevateInteractiveFrame(editBox, container, 2)
+    editBox:SetMultiLine(true)
+    editBox:SetFontObject(ChatFontNormal)
+    editBox:SetWidth(width - 36)
+    editBox:SetHeight(height - 12)
+    editBox:SetAutoFocus(false)
+    editBox:EnableMouse(true)
+    editBox:SetScript("OnEscapePressed", function(selfBox) selfBox:ClearFocus() end)
+    scroll:SetScrollChild(editBox)
+
+    container.editBox = editBox
+    container.scroll = scroll
+    return container
+end
+
+function addon:BuildOptionsTab()
+    local panel = CreateFrame("Frame", nil, self.ui.content)
+    elevateInteractiveFrame(panel, self.ui.content, 2)
+    panel:SetAllPoints(self.ui.content)
+    self.ui.panels.options = panel
+
+    local opt = getOptions(self)
+
+    panel.title = createLabel(panel, "Options", "TOPLEFT", panel, "TOPLEFT", 12, -12)
+    panel.title:SetFontObject(GameFontHighlightLarge)
+
+    -- Result popup auto-close
+    local autoCloseCB = createOptionsCheckbox(panel, "Auto-close winner popup after")
+    autoCloseCB:SetPoint("TOPLEFT", panel.title, "BOTTOMLEFT", 0, -16)
+    autoCloseCB:SetChecked(opt.resultPopupAutoCloseEnabled and true or false)
+    autoCloseCB:SetScript("OnClick", function(selfCB)
+        getOptions(addon).resultPopupAutoCloseEnabled = selfCB:GetChecked() and true or false
+    end)
+
+    local autoCloseSeconds = createNumberEditBox(panel, 50)
+    autoCloseSeconds:SetPoint("LEFT", autoCloseCB.label or autoCloseCB, "RIGHT", 160, 0)
+    autoCloseSeconds:SetText(tostring(opt.resultPopupAutoCloseSeconds or 15))
+    autoCloseSeconds:SetScript("OnEditFocusLost", function(selfBox)
+        local v = tonumber(selfBox:GetText())
+        if v and v > 0 then
+            getOptions(addon).resultPopupAutoCloseSeconds = v
+        else
+            selfBox:SetText(tostring(getOptions(addon).resultPopupAutoCloseSeconds or 15))
+        end
+    end)
+    local autoCloseLabel = createLabel(panel, "seconds", "LEFT", autoCloseSeconds, "RIGHT", 6, 0)
+
+    -- Roll duration (loot master)
+    local rollDurLabel = createLabel(panel, "Roll duration (seconds, loot master only):",
+        "TOPLEFT", autoCloseCB, "BOTTOMLEFT", 0, -20)
+    local rollDurBox = createNumberEditBox(panel, 50)
+    rollDurBox:SetPoint("LEFT", rollDurLabel, "RIGHT", 12, 0)
+    rollDurBox:SetText(tostring(opt.rollDuration or 20))
+    rollDurBox:SetScript("OnEditFocusLost", function(selfBox)
+        local v = tonumber(selfBox:GetText())
+        if v and v > 0 then
+            getOptions(addon).rollDuration = v
+        else
+            selfBox:SetText(tostring(getOptions(addon).rollDuration or 20))
+        end
+    end)
+
+    -- Whitelist
+    local whitelistCB = createOptionsCheckbox(panel, "Enable whitelist (only show live loot popups for items on this list; non-loot-master only)")
+    whitelistCB:SetPoint("TOPLEFT", rollDurLabel, "BOTTOMLEFT", 0, -24)
+    whitelistCB:SetChecked(opt.whitelistEnabled and true or false)
+    whitelistCB:SetScript("OnClick", function(selfCB)
+        getOptions(addon).whitelistEnabled = selfCB:GetChecked() and true or false
+    end)
+
+    local whitelistBox = createMultilineEditScroll(panel, 420, 110)
+    whitelistBox:SetPoint("TOPLEFT", whitelistCB, "BOTTOMLEFT", 4, -6)
+    whitelistBox.editBox:SetText(opt.whitelistText or "")
+    whitelistBox.editBox:SetScript("OnEditFocusLost", function(selfBox)
+        getOptions(addon).whitelistText = selfBox:GetText() or ""
+    end)
+
+    -- Blacklist
+    local blacklistCB = createOptionsCheckbox(panel, "Enable blacklist (hide live loot popups for items on this list; non-loot-master only)")
+    blacklistCB:SetPoint("TOPLEFT", whitelistBox, "BOTTOMLEFT", -4, -16)
+    blacklistCB:SetChecked(opt.blacklistEnabled and true or false)
+    blacklistCB:SetScript("OnClick", function(selfCB)
+        getOptions(addon).blacklistEnabled = selfCB:GetChecked() and true or false
+    end)
+
+    local blacklistBox = createMultilineEditScroll(panel, 420, 110)
+    blacklistBox:SetPoint("TOPLEFT", blacklistCB, "BOTTOMLEFT", 4, -6)
+    blacklistBox.editBox:SetText(opt.blacklistText or "")
+    blacklistBox.editBox:SetScript("OnEditFocusLost", function(selfBox)
+        getOptions(addon).blacklistText = selfBox:GetText() or ""
+    end)
+
+    local hint = createLabel(panel, "Enter one item name per line. Names are matched case-insensitively.",
+        "TOPLEFT", blacklistBox, "BOTTOMLEFT", -4, -10)
+    hint:SetTextColor(0.75, 0.75, 0.75)
+
+    -- Minimap button visibility
+    local minimapCB = createOptionsCheckbox(panel, "Show minimap button")
+    minimapCB:SetPoint("TOPLEFT", hint, "BOTTOMLEFT", 0, -18)
+    minimapCB:SetChecked(not (opt.minimapButtonHidden and true or false))
+    minimapCB:SetScript("OnClick", function(selfCB)
+        local checked = selfCB:GetChecked() and true or false
+        getOptions(addon).minimapButtonHidden = not checked
+        addon:SetMinimapButtonShown(checked)
+    end)
+
+    -- Roll result tooltip docking: where the result/roller hover tooltips appear relative to the
+    -- popup. Defaults to the right of the popup; configurable since that can be wrong for some UIs.
+    local anchorLabel = createLabel(panel, "Roll result tooltip docking:", "TOPLEFT", minimapCB, "BOTTOMLEFT", 0, -22)
+    local ANCHOR_OPTIONS = {
+        { value = "RIGHT",  text = "Right of popup" },
+        { value = "LEFT",   text = "Left of popup" },
+        { value = "TOP",    text = "Above popup" },
+        { value = "BOTTOM", text = "Below popup" },
+        { value = "CURSOR", text = "At cursor" },
+    }
+    local function anchorText(v)
+        for _, o in ipairs(ANCHOR_OPTIONS) do if o.value == v then return o.text end end
+        return ANCHOR_OPTIONS[1].text
+    end
+    local anchorDrop = CreateFrame("Frame", "WeirdLootTooltipAnchorDropdown", panel, "UIDropDownMenuTemplate")
+    -- The dropdown (and its child Button) is created at the panel's BASE level, so on this elevated
+    -- panel it renders dimmed under the +8 widgets and its button never catches clicks. Raise the
+    -- frame AND the button child (raising the parent does not reliably cascade to children on 3.3.5a).
+    elevateInteractiveFrame(anchorDrop, panel, 8)
+    local anchorBtn = _G[anchorDrop:GetName() .. "Button"]
+    if anchorBtn then elevateInteractiveFrame(anchorBtn, anchorDrop, 2) end
+    anchorDrop:SetPoint("LEFT", anchorLabel, "RIGHT", -4, -2)
+    UIDropDownMenu_SetWidth(anchorDrop, 120)
+    UIDropDownMenu_Initialize(anchorDrop, function(_, level)
+        for _, o in ipairs(ANCHOR_OPTIONS) do
+            local info = UIDropDownMenu_CreateInfo()
+            info.text = o.text
+            info.value = o.value
+            info.checked = (getOptions(addon).rollResultTooltipAnchor or "RIGHT") == o.value
+            info.func = function()
+                getOptions(addon).rollResultTooltipAnchor = o.value
+                UIDropDownMenu_SetText(anchorDrop, o.text)
+                CloseDropDownMenus()
+            end
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+    UIDropDownMenu_SetText(anchorDrop, anchorText(opt.rollResultTooltipAnchor or "RIGHT"))
+
+    panel.autoCloseCB = autoCloseCB
+    panel.autoCloseSeconds = autoCloseSeconds
+    panel.rollDurBox = rollDurBox
+    panel.whitelistCB = whitelistCB
+    panel.whitelistBox = whitelistBox
+    panel.blacklistCB = blacklistCB
+    panel.blacklistBox = blacklistBox
+    panel.minimapCB = minimapCB
+    panel.anchorDrop = anchorDrop
+end
+
+local function positionMinimapButton(button)
+    local opt = getOptions(addon)
+    local angle = tonumber(opt.minimapButtonAngle) or 200
+    local rad = math.rad(angle)
+    local radius = 80
+    local x = math.cos(rad) * radius
+    local y = math.sin(rad) * radius
+    button:ClearAllPoints()
+    button:SetPoint("CENTER", Minimap, "CENTER", x, y)
+end
+
+function addon:BuildMinimapButton()
+    if self.ui.minimapButton then return end
+    if not Minimap then return end
+
+    local button = CreateFrame("Button", "WeirdLootMinimapButton", Minimap)
+    button:SetFrameStrata("MEDIUM")
+    button:SetFrameLevel((Minimap:GetFrameLevel() or 0) + 8)
+    button:SetWidth(31)
+    button:SetHeight(31)
+    button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    button:RegisterForDrag("LeftButton")
+    button:SetMovable(true)
+
+    local overlay = button:CreateTexture(nil, "OVERLAY")
+    overlay:SetWidth(53)
+    overlay:SetHeight(53)
+    overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    overlay:SetPoint("TOPLEFT", button, "TOPLEFT", 0, 0)
+
+    local icon = button:CreateTexture(nil, "ARTWORK")
+    icon:SetWidth(20)
+    icon:SetHeight(20)
+    icon:SetTexture("Interface\\AddOns\\WeirdLoot\\Textures\\weirdloot")
+    icon:SetPoint("TOPLEFT", button, "TOPLEFT", 7, -6)
+    icon:SetTexCoord(0, 1, 0, 1)
+
+    local highlight = button:CreateTexture(nil, "HIGHLIGHT")
+    highlight:SetTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+    highlight:SetBlendMode("ADD")
+    highlight:SetAllPoints(button)
+
+    button:SetScript("OnClick", function()
+        addon:ToggleMainFrame()
+    end)
+
+    button:SetScript("OnEnter", function(selfBtn)
+        GameTooltip:SetOwner(selfBtn, "ANCHOR_LEFT")
+        GameTooltip:AddLine("WeirdLoot", 1, 0.82, 0)
+        GameTooltip:AddLine("Click to toggle the main window.", 1, 1, 1)
+        GameTooltip:AddLine("Drag to reposition.", 0.8, 0.8, 0.8)
+        GameTooltip:Show()
+    end)
+    button:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    button:SetScript("OnDragStart", function(selfBtn)
+        selfBtn.isDragging = true
+        selfBtn:SetScript("OnUpdate", function(s)
+            local mx, my = GetCursorPosition()
+            local scale = Minimap:GetEffectiveScale()
+            local cx, cy = Minimap:GetCenter()
+            mx, my = mx / scale, my / scale
+            local angle = math.deg(math.atan2(my - cy, mx - cx))
+            getOptions(addon).minimapButtonAngle = angle
+            positionMinimapButton(s)
+        end)
+    end)
+    button:SetScript("OnDragStop", function(selfBtn)
+        selfBtn.isDragging = false
+        selfBtn:SetScript("OnUpdate", nil)
+    end)
+
+    self.ui.minimapButton = button
+    positionMinimapButton(button)
+
+    local opt = getOptions(self)
+    if opt.minimapButtonHidden then
+        button:Hide()
+    else
+        button:Show()
+    end
+end
+
+function addon:SetMinimapButtonShown(shown)
+    if not self.ui or not self.ui.minimapButton then return end
+    if shown then
+        self.ui.minimapButton:Show()
+    else
+        self.ui.minimapButton:Hide()
+    end
 end
 
 function addon:RefreshUI()
@@ -1607,6 +1965,9 @@ function addon:RefreshLootTab()
         local usabilityLabel = self.db.ui.lootUsabilitySort and "Usable: On" or "Usable: Off"
         self.ui.panels.loot.usabilityButton:SetText(usabilityLabel)
     end
+    -- Cold cache: warm any uncached item names via the same scan-tooltip primer the roll popups
+    -- use, so a freshly-dropped item does not sit in the list as a stale "item:<id>".
+    self:WarmLootItemNames(items)
     self.ui.lootList.update(#items, function(row, index)
         local item = items[index]
         row.item = item
@@ -1616,8 +1977,13 @@ function addon:RefreshLootTab()
         end
 
         row:Show()
-        row.icon:SetTexture(item.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
-        local itemText = item.link and item.link ~= "" and item.link or item.name or ""
+        -- Re-resolve from itemId so a name the client cached AFTER the projection was built shows
+        -- here instead of the stale fallback the cold-cache projection stored.
+        local rName, rLink, rIcon = util:ItemRender(item.itemId)
+        row.icon:SetTexture(rIcon or item.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
+        local itemText = (rLink and rLink ~= "" and rLink)
+            or (item.link and item.link ~= "" and item.link)
+            or rName or item.name or ""
         if (item.quantity or 1) > 1 then
             itemText = string.format("%s x%d", itemText, item.quantity)
         end
@@ -1643,6 +2009,9 @@ function addon:RefreshLootTab()
         end
         row.state:SetText(string.format("%d roller(s)", rollCount))
     end)
+    -- arm the shared resolve ticker if any name was still cold; it re-renders this list as the
+    -- client caches them, then self-stops (same machinery the popups use).
+    if self._lootNamesPending then self:EnsureNameTicker() end
 end
 
 function addon:RefreshRaidersTab()
@@ -1740,10 +2109,6 @@ function addon:RefreshResultsTab()
     if self.ui.resultTargetButton then
         if canAct then
             self.ui.resultTargetButton:Enable()
-            local itemName = selected.itemLink or selected.itemName or "your item"
-            local whisperName = selected.winner or ""
-            local macroText = string.format("/target %s\n/w %s You won %s. Please run to the loot master for trade.", string.lower(whisperName), whisperName, itemName)
-            self.ui.resultTargetButton:SetAttribute("macrotext", macroText)
             self.ui.resultTradeButton:Enable()
             self.ui.resultLoadItemButton:Enable()
             self.ui.resultTargetButton:Show()
@@ -1775,7 +2140,13 @@ end
 function addon:RefreshMasterTab()
     local panel = self.ui.masterPanel
     local authorized = self:IsAuthorizedLootMaster()
-    panel.warning:SetText(authorized and "" or "Loot master controls are locked until you are the loot master or leadership fallback.")
+    if not authorized and self.roster.mlRosterUnreadable then
+        -- We ARE the master looter (per GetLootMethod) but the raid roster did not load, so the
+        -- name-match can't confirm it. Only a reload recovers the roster.
+        panel.warning:SetText("|cffff4040The raid roster failed to load, so loot-master controls are disabled. Please /reload to fix it.|r")
+    else
+        panel.warning:SetText(authorized and "" or "Loot master controls are locked until you are the loot master or leadership fallback.")
+    end
 
     if authorized then
         panel.startButton:Enable()
@@ -1785,6 +2156,7 @@ function addon:RefreshMasterTab()
         panel.exportWinnersButton:Enable()
         panel.exportLogButton:Enable()
         panel.importRosterButton:Enable()
+        panel.broadcastRosterButton:Enable()
         panel.importNamedItemsButton:Enable()
         panel.broadcastNamedItemsButton:Enable()
         panel.payoutButton:Enable()
@@ -1796,6 +2168,7 @@ function addon:RefreshMasterTab()
         panel.exportWinnersButton:Disable()
         panel.exportLogButton:Disable()
         panel.importRosterButton:Disable()
+        panel.broadcastRosterButton:Disable()
         panel.importNamedItemsButton:Disable()
         panel.broadcastNamedItemsButton:Disable()
         panel.payoutButton:Disable()

@@ -76,6 +76,12 @@ function addon:InitializeComm()
             applySnapshot  = function(lines, ep) self:SyncApplySnapshot(lines, ep) end,
             applyLine      = function(fields) self:SyncApplyLine(fields) end,
             log            = function(ev, data) self:LogCoreEvent(ev, data) end,
+            -- Front-loaded retry pinned for WeirdLoot (matches the lib defaults): a fast 0.5s first
+            -- resend recovers a simple dropped message; the gentle 1.5x growth (0.5,0.75,1.1,1.7,
+            -- 2.5,3.8,5.7,8.5s) still gives a zoning/loading player a ~25s horizon before give-up.
+            backoffBase    = 0.5,
+            backoffMul     = 1.5,
+            maxAttempts    = 8,
         })
     else
         self:Print("WeirdSync-1.0 not found; raid sync disabled.")
@@ -340,6 +346,54 @@ function addon:BroadcastNamedItems()
     self:Print("Broadcast named items sent to raid.")
 end
 
+function addon:BroadcastRoster()
+    if not self:IsAuthorizedLootMaster() then
+        self:Print("Only the loot master can broadcast the roster.")
+        return
+    end
+
+    self:SendLargeMessage("ROSTER_SYNC", {
+        self:GetLootMasterName() or "",
+        self.config.rosterImportText or "",
+    }, "RAID")
+
+    self:Print("Broadcast roster sent to raid.")
+end
+
+-- Live pick list for a rolling lot, pushed ML -> raid as an EPHEMERAL, display-only signal so
+-- raiders can see who is rolling in real time. Picks are otherwise coalesced (they do not sync
+-- until the roll resolves), so without this a raider's popup would show a frozen ~0 count. This
+-- never touches the authoritative ledger: it is a best-effort, throttled (one per lot per second,
+-- see FlushRollState) snapshot of the lot's CURRENT active (non-pass) responders. A dropped one
+-- self-heals on the next tick. className is derived on the raider from its own roster, not sent.
+function addon:BroadcastRollState(lotId, lot)
+    if not self:IsAuthorizedLootMaster() then return end
+    local core = self.lootCore
+    lot = lot or (core and core:Get(lotId))
+    if not core or not lot or lot.state ~= core.STATE.ROLLING then return end
+    local active = {}
+    for key, choice in pairs(lot.responses or {}) do
+        if self:IsResponseActive(choice) then active[key] = choice end
+    end
+    self:SendLargeMessage("RSTATE", { tostring(lotId), encodeResponses(active) }, "RAID", nil, "BULK")
+end
+
+-- Raider side: apply a live pick list to the open roll popup. Display-only -- it rebuilds the
+-- roll's registrants (a full replace, so a MS->Pass change or a leaver just drops out) and never
+-- writes the ledger. The hover list reads registrants on mouseover; RefreshInterestPopup updates
+-- the count. Ignored if we have no (unresolved, non-owner) roll for this lot.
+function addon:OnRollStateMessage(fields)
+    local lotId = fields[1]
+    local roll = self.live and self.live.rolls and self.live.rolls[lotId]
+    if not roll or roll.resolved or roll.owner then return end
+    local registrants = {}
+    for key, tier in pairs(decodeResponses(fields[2] or "")) do
+        registrants[util:NormalizeKey(key)] = { tier = tier }
+    end
+    roll.registrants = registrants
+    self:RefreshInterestPopup(roll)
+end
+
 -- AceComm receive callback for the live-roll lane (self.prefix). Session-mirror traffic rides
 -- the WeirdSync channel's own prefix and is dispatched straight to it, so it never reaches here.
 -- We never receive our own RAID/PARTY messages (the client drops them); keep the self-skip
@@ -373,6 +427,14 @@ function addon:HandleCommMessage(sender, logical)
         end
         self:SaveNamedItemsText(fields[2] or "", true)
         self:Print("Named items updated from " .. ((fields[1] ~= "" and fields[1]) or sender or "loot master") .. ".")
+    elseif command == "ROSTER_SYNC" then
+        local expectedLootMaster = util:NormalizeKey(self:GetLootMasterName() or "")
+        local senderKey = util:NormalizeKey(sender or "")
+        if expectedLootMaster ~= "" and senderKey ~= expectedLootMaster then
+            return
+        end
+        self:SaveRosterText(fields[2] or "", true)
+        self:Print("Roster updated from " .. ((fields[1] ~= "" and fields[1]) or sender or "loot master") .. ".")
     elseif command == "DROP" then
         self:OnDropMessage(fields)
     elseif command == "RSP" then
@@ -381,5 +443,7 @@ function addon:HandleCommMessage(sender, logical)
         self:OnWinMessage(fields)
     elseif command == "CANCEL" then
         self:OnCancelMessage(fields)
+    elseif command == "RSTATE" then
+        self:OnRollStateMessage(fields)
     end
 end

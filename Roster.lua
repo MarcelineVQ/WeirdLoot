@@ -167,10 +167,35 @@ function addon:RefreshLootAuthority()
     self.roster.lootMasterName = lootMasterName
     self.roster.isLootMaster = isLootMaster
 
+    -- Roster-unreadable detection: GetLootMethod knows master loot is on with the ML at a raid
+    -- index, but GetRaidRosterInfo cannot name that index -- a post-relog state the client cannot
+    -- recover from without a reload (it is why we, the actual ML, are not recognized). partyMasterIndex
+    -- == 0 means the API still flags US as that master looter, so we warn the right person; we do NOT
+    -- grant authority from it (raid authority stays gated on the real roster-name match above).
+    local nameAtML = (raidMasterIndex and raidMasterIndex > 0) and GetRaidRosterInfo(raidMasterIndex) or nil
+    self.roster.mlRosterUnreadable = self:RosterUnreadableForML(method, partyMasterIndex, raidMasterIndex, nameAtML)
+    if self.roster.mlRosterUnreadable then
+        if not self._rosterReloadWarned then
+            self._rosterReloadWarned = true
+            self:Print("|cffff4040The raid roster failed to load; loot-master controls are disabled until you /reload.|r")
+        end
+    else
+        self._rosterReloadWarned = nil
+    end
+
     -- the core needs the ML identity to decide self-win (resolved) vs owed at resolve time
     if self.lootCore then self.lootCore:SetML(lootMasterName) end
 
     self:TriggerCallback("AUTHORITY_UPDATED")
+end
+
+-- Pure predicate (unit-testable): the loot method points at a raid master looter that the
+-- (unloaded, post-relog) raid roster cannot name, while the API still flags US as that ML.
+function addon:RosterUnreadableForML(method, partyMasterIndex, raidMasterIndex, nameAtRaidML)
+    return method == "master"
+        and raidMasterIndex ~= nil and raidMasterIndex > 0
+        and nameAtRaidML == nil
+        and partyMasterIndex == 0
 end
 
 function addon:IsAuthorizedLootMaster()

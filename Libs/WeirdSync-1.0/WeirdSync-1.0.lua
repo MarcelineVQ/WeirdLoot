@@ -9,10 +9,24 @@
 -- resync, reliable request/response, targeted-send acknowledgement, retry/backoff, give-up.
 -- The host owns ALL payload semantics: a snapshot or delta "line" is an opaque array of
 -- strings the library relays and stamps but never interprets. This keeps the lib data-agnostic
--- and reusable across addons. See DESIGN.md in this folder for the full contract.
+-- and reusable across addons.
 --
 -- Delivery semantics: at-least-once with eventual convergence. Not exactly-once, not ordered.
 -- Duplicate or reordered messages are harmless because the host's apply is idempotent.
+--
+-- Contract (the full design lives in these comments, not a separate doc):
+--   * Wire tags (field 1):  SB/SE/SD = snapshot begin/entry/done,  D = delta line,
+--     RQ = peer's sync request,  AK = peer's ack of a targeted snapshot. See OnReceive/Tick.
+--   * Revision: every broadcast carries a rev; a peer that sees a gap (rev > lastRev+1) requests
+--     a full resync rather than applying out of order. Targeted (whispered) snapshots carry the
+--     CURRENT rev and must NOT bump it, or other peers see a phantom gap.
+--   * Reliability: a peer's RQ and an authority's targeted snapshot are both retried on backoff
+--     (see _backoff) until acked/applied or maxAttempts; the authority abandons a target the
+--     instant rosterContains(target) is false (genuinely left, not a drop).
+--   * Self-skip: a channel ignores messages whose sender normalizes to its own name (echo guard).
+--   * reqId carries a per-instance nonce so ids stay unique across /reload.
+--   * Authority TIMING is the host's concern: RequestSync no-ops without a resolved authority;
+--     the host re-requests when its authority appears (the lib never polls for one).
 
 local MAJOR, MINOR = "WeirdSync-1.0", 1
 assert(LibStub, MAJOR .. " requires LibStub")
@@ -59,7 +73,8 @@ local function normName(name)
 end
 
 function Channel:_backoff(attempt)
-    -- exponential: base * mul^(attempt-1) -> 2, 4, 8, 16 with the defaults.
+    -- exponential: base * mul^(attempt-1) -> 0.5, 0.75, 1.1, 1.7, 2.5, 3.8, ... with the defaults.
+    -- Front-loaded (small base) so a dropped message is retried fast; gentle mul keeps growth slow.
     return self.cfg.backoffBase * (self.cfg.backoffMul ^ (attempt - 1))
 end
 
@@ -302,9 +317,9 @@ function WeirdSync:NewChannel(prefix, cb)
     }
     ch.cfg = {
         deltaMax = cb.deltaMax or 8,
-        backoffBase = cb.backoffBase or 2.0,
-        backoffMul = cb.backoffMul or 2.0,
-        maxAttempts = cb.maxAttempts or 4,
+        backoffBase = cb.backoffBase or 0.5,   -- seconds to first retry (fast: recover a drop quickly)
+        backoffMul = cb.backoffMul or 1.5,     -- gentle exponential factor (0.5,0.75,1.1,1.7,2.5,...)
+        maxAttempts = cb.maxAttempts or 8,     -- ~25s total horizon before give-up (covers a load screen)
     }
     ch.rev = 0
     ch.lastRev = nil

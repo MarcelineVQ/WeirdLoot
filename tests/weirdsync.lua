@@ -1,6 +1,7 @@
 -- Out-of-game battery for WeirdSync-1.0 (the reliable state-sync library), standalone.
 -- Loads the REAL Libs/WeirdSync-1.0/WeirdSync-1.0.lua into a mocked env and drives the sync +
--- reliability mechanics from DESIGN.md section 10. No WeirdLoot code is involved: the host is a
+-- reliability mechanics (the contract is documented in the lib's header). No WeirdLoot code is
+-- involved: the host is a
 -- tiny in-memory line store, so this proves the library on its own before Comm.lua is rewired.
 --
 -- Run from the addon dir:  luajit tests/weirdsync.lua
@@ -269,6 +270,17 @@ test("targeted snapshot does NOT bump the shared rev (no phantom gap for others)
     eq(r2.chan.lastRev, ml.chan.rev, "R2 stayed contiguous")
     eq(countEv(r2, "recv-gap"), 0, "R2 never saw a phantom gap")
     eq(view(r2), view(ml), "R2 applied the delta normally")
+end)
+
+test("default backoff is front-loaded (base 0.5, mul 1.5, 8 attempts)", function()
+    -- created with no backoff opts -> exercises the lib's own defaults (makeHost pins 2.0 for the
+    -- math tests, so assert the production defaults directly here).
+    local ch = WeirdSync:NewChannel("WSDEFAULT", { selfName = "X" })
+    eq(ch.cfg.backoffBase, 0.5, "default base is a fast 0.5s")
+    eq(ch.cfg.backoffMul, 1.5, "default mul is a gentle 1.5x")
+    eq(ch.cfg.maxAttempts, 8, "default maxAttempts is 8")
+    eq(ch:_backoff(1), 0.5, "first retry at 0.5s")
+    eq(ch:_backoff(2), 0.75, "second at 0.75s (gentle growth)")
 end)
 
 test("requester retry: a dropped request is re-sent on exponential backoff, then gives up", function()

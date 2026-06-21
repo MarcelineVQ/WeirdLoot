@@ -547,6 +547,9 @@ function addon:SetPlayerResponse(lotId, playerName, choice)
         if self.RefreshLiveRollCountForItem then
             self:RefreshLiveRollCountForItem(lotId)
         end
+        if self.MarkRollStateDirty then
+            self:MarkRollStateDirty(lotId)   -- throttled RSTATE -> raiders see the live pick list
+        end
         -- Coalesced: a pick is NOT broadcast on its own (per-pick sends flood the wire during a
         -- live roll). SetResponse marked the lot dirty in the core, so the pick rides the lot's
         -- next LOTD: its resolve, or any other ledger change that flushes the delta. N picks on a
