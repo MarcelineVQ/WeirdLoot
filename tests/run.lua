@@ -122,7 +122,13 @@ local function makeWorld(playerName, isML)
     env.MAX_TRADABLE_ITEMS = 6
     env.CloseTrade = function() env.__closeTrade = env.__closeTrade + 1 end
     env.AcceptTrade = function() end
-    env.GetTradePlayerItemLink = function() end
+    env.__tradePlaced = {}     -- slot -> { id, count }: what the ML hand-placed in the trade window
+    env.GetTradePlayerItemLink = function(slot) local it = env.__tradePlaced[slot]; return it and linkFor(it.id) or nil end
+    env.GetTradePlayerItemInfo = function(slot)
+        local it = env.__tradePlaced[slot]
+        if not it then return nil end
+        return "Item" .. it.id, "Interface\\Icons\\inv_test", it.count or 1
+    end
     env.GetItemInfo = function(idOrLink)
         local id = tonumber(idOrLink) or tonumber(string.match(tostring(idOrLink), "item:(%d+)"))
         if not id then return nil end
@@ -320,10 +326,10 @@ local function putBag(w, bag, slot, id, count) w.env.__bags[bag][slot] = { id = 
 local function fillBagsExcept(w)             -- occupy every empty slot so no split target exists
     for b = 0, 4 do local B = w.env.__bags[b]; for s = 1, B.size do if not B[s] then B[s] = { id = 99999, count = 1, link = linkFor(99999) } end end end
 end
-local function fireEvent(w, event, arg1)
+local function fireEvent(w, event, arg1, arg2)
     local fr = w.addon.payout and w.addon.payout.frame
     local fn = fr and fr.__scripts and fr.__scripts.OnEvent
-    if fn then fn(fr, event, arg1) end
+    if fn then fn(fr, event, arg1, arg2) end
 end
 local function pump(w, dt) for f, fn in pairs(w.env.__onUpdates) do fn(f, dt or 1.0) end end
 local function setPartner(w, name) w.env.__tradePartner = name; w.env.__tradeSlots = 0 end
@@ -336,6 +342,17 @@ local function runTrade(w, partner)
     for b = 0, 4 do fireEvent(w, "BAG_UPDATE", b) end   -- satisfy any split's wait
     pump(w, 1.0)                                         -- SETTLE/FALLBACK -> finalize + place
     fireEvent(w, "UI_INFO_MESSAGE", w.env.ERR_TRADE_COMPLETE)
+end
+
+-- a manual hand-trade: partner opens, the ML drags the item in itself (no auto-fill), both accept,
+-- the trade completes. Mirrors what happens when the ML trades an owed item by hand.
+local function runManualTrade(w, partner, itemId, count)
+    setPartner(w, partner)
+    fireEvent(w, "TRADE_SHOW")
+    w.env.__tradePlaced = { { id = itemId, count = count or 1 } }
+    fireEvent(w, "TRADE_ACCEPT_UPDATE", 1, 1)
+    fireEvent(w, "UI_INFO_MESSAGE", w.env.ERR_TRADE_COMPLETE)
+    w.env.__tradePlaced = {}
 end
 
 -- resolve a single-copy lot to a non-ML winner and return its lot id (commonly-needed setup)
@@ -731,6 +748,25 @@ test("trade engine: owed player trades -> item delivered, disposition recorded",
     eq(owedCount(w), 0, "owe cleared after the trade completes")
     eq(w.addon.lootCore:Get(lotId).awards[1].state, "delivered", "award delivered through the engine")
     eq(w.addon.lootCore:Get(lotId).awards[1].recipient, "Alice", "recipient recorded")
+end)
+
+test("manual hand-trade of an owed item records the delivery (not just auto-fill)", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    local lotId = resolveOwedTo(w, 40005, "Alice")     -- Alice owed 1x 40005 from a resolved roll
+    eq(owedCount(w), 1, "owed before the hand-trade")
+    runManualTrade(w, "Alice", 40005, 1)               -- ML drags the item in by hand (no StartPayout)
+    eq(owedCount(w), 0, "owe cleared by the hand-trade")
+    eq(w.addon.lootCore:Get(lotId).awards[1].state, "delivered", "core recorded the award delivered")
+    eq(w.addon.lootCore:Get(lotId).awards[1].recipient, "Alice", "recipient recorded")
+end)
+
+test("manual hand-trade of a NON-owed item delivers nothing (no phantom)", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    resolveOwedTo(w, 40005, "Alice")                   -- Alice owed 40005
+    runManualTrade(w, "Alice", 40004, 1)               -- but we hand her a different item
+    eq(owedCount(w), 1, "owe for 40005 untouched by trading an unrelated item")
 end)
 
 test("trade engine: short stock delivers what it can, rest stays owed", function()

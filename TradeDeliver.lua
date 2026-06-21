@@ -336,6 +336,7 @@ function TradeDeliver:New(config)
     e._print = config.print or function(s) DEFAULT_CHAT_FRAME:AddMessage(e.name .. ": " .. s) end
     e._dbg = config.debug or function() end
     e._onDelivered = config.onDelivered or function() end  -- (player, itemId, count) on trade complete
+    e._log = config.log or function() end                  -- (ev, data) trade-flow trace (optional)
     -- autoCancel is a runtime flag (default ON), not persisted: while payout is
     -- active, a trade from someone NOT on the owed list is declined + whispered.
     -- Kept off db on purpose so it always defaults on each session.
@@ -351,17 +352,23 @@ function TradeDeliver:New(config)
     e.frame = CreateFrame("Frame")
     e.frame:RegisterEvent("TRADE_SHOW")
     e.frame:RegisterEvent("TRADE_CLOSED")
+    e.frame:RegisterEvent("TRADE_ACCEPT_UPDATE")
     e.frame:RegisterEvent("BAG_UPDATE")
     e.frame:RegisterEvent("UI_INFO_MESSAGE")
     -- TRADE_CLOSED is watched ONLY to flip the tradeOpen flag. It must NOT touch `pending`,
     -- which a successful trade still needs in _onTradeComplete (TRADE_CLOSED fires around the
     -- same time as ERR_TRADE_COMPLETE); `pending` is cleared fresh on each TRADE_SHOW instead.
-    e.frame:SetScript("OnEvent", function(_, event, arg1)
+    e.frame:SetScript("OnEvent", function(_, event, arg1, arg2)
         if event == "TRADE_SHOW" then
             e.tradeOpen = true
+            e.placedSnapshot = nil      -- fresh per trade
             e:_onTradeShow()
         elseif event == "TRADE_CLOSED" then
             e.tradeOpen = false
+        elseif event == "TRADE_ACCEPT_UPDATE" then
+            -- both sides accepted: capture what WE placed before the window clears, so a manual
+            -- hand-trade (not auto-filled) can still be reconciled against the owed ledger.
+            if arg1 == 1 and arg2 == 1 then e:_snapshotPlacedItems() end
         elseif event == "BAG_UPDATE" then
             e:_onBagUpdate(arg1)
         elseif event == "UI_INFO_MESSAGE" and arg1 == ERR_TRADE_COMPLETE then
@@ -567,6 +574,7 @@ function Engine:_finalizeFill()
     self.fillState = nil
     if not s then return end
     local placed = self:_placePlan(s.plan)
+    self._log("td-fill", { placed = #placed, key = s.key })
     if #placed > 0 then
         self.pending = { key = s.key, placed = placed }
         self._print(("filled %d slot(s) for %s - click Trade to send."):format(#placed, s.name))
@@ -649,6 +657,7 @@ function Engine:_onTradeShow()
     local partner = baseName(UnitName("NPC"))
     if not partner then return end
     local entry, key = self:_owedFor(partner, false)
+    self._log("td-show", { partner = partner, payoutActive = self.payoutActive and true or false, owed = entry and #entry.items or 0 })
 
     if not self.payoutActive then
         if entry and #entry.items > 0 then
@@ -689,10 +698,68 @@ function Engine:FillOpenTrade()
     return true
 end
 
+-- Capture the items we have placed in the trade window (slots 1..6; slot 7 is "won't be traded").
+-- Read at accept time because the window may be cleared by the time the trade completes.
+local MAX_TRADE_SLOTS = 6
+function Engine:_snapshotPlacedItems()
+    local partner = baseName(UnitName("NPC"))
+    local items = {}
+    for slot = 1, MAX_TRADE_SLOTS do
+        local link = GetTradePlayerItemLink and GetTradePlayerItemLink(slot)
+        local id = link and tonumber(link:match("item:(%d+)"))
+        if id then
+            local count = 1
+            if GetTradePlayerItemInfo then
+                local _, _, qty = GetTradePlayerItemInfo(slot)
+                count = qty or 1
+            end
+            items[#items + 1] = { id = id, count = count }
+        end
+    end
+    self.placedSnapshot = { partner = partner, items = items }
+end
+
+-- A hand-trade the engine did not auto-fill: reconcile what we placed against the partner's owed
+-- ledger and report each match through the SAME _onDelivered path as auto-payout, so the loot core
+-- records the delivery and the owe clears.
+function Engine:_recordManualDelivery()
+    local snap = self.placedSnapshot
+    self.placedSnapshot = nil
+    if not snap or not snap.partner then return end
+    local entry, key = self:_owedFor(snap.partner, false)
+    if not entry then return end
+    local total = 0
+    for _, placed in ipairs(snap.items) do
+        local remaining = placed.count
+        for _, it in ipairs(entry.items) do
+            if remaining <= 0 then break end
+            if it.id == placed.id and (it.count or 0) > 0 then
+                local qty = math.min(remaining, it.count)
+                it.count = it.count - qty
+                remaining = remaining - qty
+                total = total + qty
+                self._onDelivered(entry.name, it.id, qty)
+            end
+        end
+    end
+    for i = #entry.items, 1, -1 do
+        if (entry.items[i].count or 0) <= 0 then table.remove(entry.items, i) end
+    end
+    if total > 0 then
+        self._print(("recorded %d hand-delivered item(s) to %s; %d entry(ies) still owed"):format(total, entry.name, #entry.items))
+    end
+    if #entry.items == 0 then self.db.owed[key] = nil end
+end
+
 function Engine:_onTradeComplete()
     local p = self.pending
     self.pending = nil
-    if not p then return end
+    self._log("td-complete", { pending = p and true or false, snapshot = self.placedSnapshot and true or false })
+    if not p then
+        -- no auto-fill in flight: this was a manual hand-trade. Record it from the snapshot.
+        self:_recordManualDelivery()
+        return
+    end
     local entry = self.db.owed[p.key]
     if not entry then return end
     local total = 0

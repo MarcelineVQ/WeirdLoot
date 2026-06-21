@@ -31,8 +31,12 @@ function addon:InitializePayout()
         end,
         -- a completed trade is the authoritative "where it went": record per-copy delivery.
         onDelivered = function(player, itemId)
-            if addon.lootCore then addon.lootCore:MarkDeliveredFor(player, itemId, time()) end
+            local ok = addon.lootCore and addon.lootCore:MarkDeliveredFor(player, itemId, time())
+            -- trace the seam: did the engine report a delivery, and did the core match an owed award?
+            addon:LogCoreEvent("deliver-cb", { player = player, itemId = itemId, ok = ok and true or false })
         end,
+        -- route the engine's own trade-flow trace to the same debug log as the core.
+        log = function(ev, data) addon:LogCoreEvent(ev, data) end,
     })
 
     -- Owes are derived from the core's per-copy awards. A resolve adds owes for that lot's
