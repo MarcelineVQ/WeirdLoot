@@ -869,6 +869,61 @@ test("cold cache: the loot list warms uncached item names via the scan-tooltip m
     eq(w.addon._lootNamesPending, false, "_lootNamesPending cleared -> ticker can stop")
 end)
 
+test("core persistence: the ledger snapshot carries owing (awards survive a reload)", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    resolveOwedTo(w, 40005, "Alice")
+    -- the ledgerChanged hook persisted the ledger under session.lootCore
+    local snap = w.addon.session.lootCore
+    check(snap and snap.lots and #snap.lots >= 1, "ledger persisted to session.lootCore")
+    local found = false
+    for _, lot in ipairs(snap.lots) do
+        for _, a in ipairs(lot.awards or {}) do
+            if a.state == "owed" and a.winner and string.find(string.lower(a.winner), "alice") then found = true end
+        end
+    end
+    check(found, "the persisted snapshot carries Alice's OWED award -> owing now survives a reload")
+end)
+
+test("payout stays in sync live: an owed copy leaving the bags forgives the owe (awardRemoved)", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    resolveOwedTo(w, 40005, "Alice")
+    eq(owedCount(w), 1, "owed while held")
+    setBag(w, 40005, 0); bagUpdate(w)               -- copy leaves bags, no trade -> core REMOVED -> awardRemoved
+    eq(owedCount(w), 0, "payout forgave the owe when the core retired the award (no drift)")
+end)
+
+test("payout reconcile is SAFE: a genuinely-owed copy still in bags is kept", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    resolveOwedTo(w, 40005, "Alice")                -- owed AND still held
+    w.addon._coreRestoredFromPersistence = true     -- a restored, authoritative core
+    eq(owedCount(w), 1, "owed before reconcile")
+    eq(w.addon:ReconcilePayoutOwed(), 0, "the core still owes it -> nothing forgiven")
+    eq(owedCount(w), 1, "the genuine owe survives (this is what the unsafe version broke)")
+end)
+
+test("payout reconcile forgives a phantom owe with no backing award, keeps the real one (sand-worn band)", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    resolveOwedTo(w, 40005, "Alice")                -- real owe: core lot + OWED award
+    w.addon.payout:Owe("Ghost", 49623, 1, "|cffffffff|Hitem:49623|h[Sand-worn Band]|h|r")  -- phantom: no core lot
+    w.addon._coreRestoredFromPersistence = true
+    eq(owedCount(w), 2, "real + phantom")
+    eq(w.addon:ReconcilePayoutOwed(), 1, "forgives only the phantom (no core award backs it)")
+    eq(owedCount(w), 1, "the real owe survives")
+end)
+
+test("payout reconcile is GATED: without a persisted-core restore it forgives nothing (no data loss)", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    w.addon.payout:Owe("Ghost", 49623, 1, "|cffffffff|Hitem:49623|h[Sand-worn Band]|h|r")
+    -- _coreRestoredFromPersistence is NOT set: the core's history may be lost, so do not forgive
+    eq(w.addon:ReconcilePayoutOwed(), 0, "gated off when the core was not restored")
+    eq(owedCount(w), 1, "the owe is preserved (safe default; the original unsafe wipe is prevented)")
+end)
+
 test("unreadable raid roster detection: flags the would-be ML, not raiders or healthy rosters", function()
     local f = makeWorld("ML", true).addon
     -- broken: master loot, GetLootMethod names us as ML (partyID 0), roster can't name the index

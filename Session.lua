@@ -162,12 +162,25 @@ function addon:InitializeSession()
     self.session.lockedItems = self.session.lockedItems or {}
     self.session.pendingLinks = self.session.pendingLinks or {}
 
+    -- Persistence: the core owns a `lootCore` snapshot under the
+    -- session so its accounting -- awards and their disposition (owed/delivered/removed) -- survives
+    -- a reload instead of being lost and rebuilt empty from the current bags. Restore it BEFORE
+    -- wiring the ledgerChanged handler so the apply is silent (no broadcast/re-persist during init).
+    -- The ML restores its authoritative ledger; a raider restores a mirror that sync then corrects.
+    if self.lootCore and self.lootCore:LoadFrom(self.session) then
+        -- the core's award history was preserved across this reload, so payout may safely reconcile
+        -- against it. Without a restore (e.g. the first login after this feature shipped) the core
+        -- starts empty and reconciling would wrongly forgive live owes -- so that stays gated off.
+        self._coreRestoredFromPersistence = true
+    end
+
     -- The LootCore owns loot truth; session.items/results are projections rebuilt from it.
-    -- Subscribe once: any ledger change re-projects, refreshes the UI, and (ML only) syncs.
+    -- Subscribe once: any ledger change re-projects, persists the ledger, refreshes the UI, syncs.
     if self.lootCore and not self._lootCoreWired then
         self._lootCoreWired = true
         self.lootCore:On("ledgerChanged", function()
             self:RebuildLootProjections()
+            self.lootCore:SaveTo(self.session)   -- keep the persisted ledger current
             self:TriggerCallback("SESSION_UPDATED")
             if self:IsAuthorizedLootMaster() then self:AutoBroadcastSession() end
         end)

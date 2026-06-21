@@ -1,3 +1,21 @@
+-- Core: the addon's bootstrap and event hub. It owns the event frame and fans WoW events out to
+-- the modules; loot accounting itself lives in LootCore (see LootCore.lua's header for the model).
+--
+-- Event entry points (this file registers and dispatches them):
+--   BAG_UPDATE                         -> OnBagUpdate (the single hinge: ALL loot enters the model
+--                                         only through the bag. AutoLoot routes master loot into the
+--                                         ML's bags and stops; the resulting BAG_UPDATE is what the
+--                                         scanner observes. Only the ML reconciles bag reality into
+--                                         the ledger; raiders mirror via the synced snapshot.)
+--   RAID_ROSTER_UPDATE / PARTY_*       -> RefreshRoster + RefreshLootAuthority (who is the ML)
+--   PLAYER_LOGIN / ENTERING_WORLD      -> init, restore the session, recheck authority once data settles
+--   CHAT_MSG_ADDON                     -> handled by AceComm (Comm.lua / the WeirdSync channel)
+--   LOOT_OPENED / LOOT_BIND_CONFIRM    -> AutoLoot;   TRADE_SHOW / bag deltas -> TradeDeliver
+--
+-- Authority: the ML owns the live ledger and runs all mutation (reconcile/resolve/payout); raiders
+-- hold a read-only mirror. RefreshLootAuthority resolves ML status from GetLootMethod + the raid
+-- roster; everything downstream gates on IsAuthorizedLootMaster.
+
 local addonName, addon = ...
 
 WeirdLoot = WeirdLoot or {}

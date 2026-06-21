@@ -46,7 +46,15 @@ function addon:InitializePayout()
         self._payoutWired = true
         self.lootCore:On("lotResolved", function(lot) addon:OnLotResolvedPayout(lot) end)
         self.lootCore:On("lotUnlocked", function(lot, winners) addon:OnLotUnlockedPayout(lot, winners) end)
+        -- core retired an owed copy (it left the bags): forgive it so payout never owes something
+        -- the core no longer backs. This keeps the two ledgers in sync during a live session.
+        self.lootCore:On("awardRemoved", function(itemId, winner) addon:OnAwardRemovedPayout(itemId, winner) end)
     end
+end
+
+function addon:OnAwardRemovedPayout(itemId, winner)
+    if not self.payout or not self:IsAuthorizedLootMaster() then return end
+    if winner then self.payout:Forgive(winner, itemId) end
 end
 
 function addon:OnLotResolvedPayout(lot)
@@ -84,6 +92,7 @@ function addon:StartPayout()
     end
     -- Pure toggle: turn payout mode on even with nothing owed yet. New winners auto-whisper
     -- as they're added, and trades auto-fill on TRADE_SHOW.
+    self:ReconcilePayoutOwed()      -- core is authoritative: never whisper an owe it no longer backs
     local sent = self.payout:StartPayout()
     if sent > 0 then
         self:Print("Payout ON: whispered " .. sent .. " winner(s). They open a trade; items auto-fill -- click Trade to send.")
@@ -102,6 +111,43 @@ function addon:StopPayout()
     end
 end
 
+-- Core is the single source of truth for what is owed. The persisted payout ledger is now
+-- reconciled against the persisted core ledger: drop any owe with no
+-- matching OWED award in the core. This is SAFE because the core ledger survives a reload too -- a
+-- copy retired to `removed` before logout stays `removed`, so reconciling forgives exactly the
+-- phantom owes while keeping every genuinely-OWED copy. Runs at the whisper boundaries. ML-only.
+function addon:ReconcilePayoutOwed()
+    if not self.payout or not self.lootCore then return 0 end
+    if not self:IsAuthorizedLootMaster() then return 0 end
+    -- Only reconcile when the core's award history is authoritative -- i.e. it was restored from the
+    -- persisted ledger. A core that started empty (no persisted ledger to restore) cannot tell
+    -- "nothing is owed" from "the history was lost", so forgiving against it would wipe live owes.
+    if not self._coreRestoredFromPersistence then return 0 end
+    local AWARD = self.lootCore.AWARD
+    local owedByCore = {}
+    for _, lot in ipairs(self.lootCore:All()) do
+        for _, a in ipairs(lot.awards or {}) do
+            if a.state == AWARD.OWED and a.winner then
+                owedByCore[addon.util:NormalizeKey(a.winner) .. "#" .. tostring(lot.itemId)] = true
+            end
+        end
+    end
+    -- collect-then-forgive: Forgive mutates db.owed, so do not remove while iterating it
+    local stale = {}
+    for _, entry in pairs(self.payout:GetOwed() or {}) do
+        for _, item in ipairs(entry.items or {}) do
+            if not owedByCore[addon.util:NormalizeKey(entry.name) .. "#" .. tostring(item.id)] then
+                stale[#stale + 1] = { player = entry.name, itemId = item.id }
+            end
+        end
+    end
+    for _, s in ipairs(stale) do
+        self.payout:Forgive(s.player, s.itemId)
+        self:LogCoreEvent("payout-reconcile", { player = s.player, itemId = s.itemId, reason = "no-core-owe" })
+    end
+    return #stale
+end
+
 -- Turn payout mode on whenever a session is active (fresh start OR restored at login).
 -- payoutActive is runtime-only and resets every login, so a restored session would
 -- otherwise sit with owes that never whisper or auto-fill. Re-whispers anyone still
@@ -110,6 +156,7 @@ function addon:ResumePayoutMode()
     if not self.payout then return end
     if not (self.session and self.session.active) then return end
     if not self:IsAuthorizedLootMaster() then return end   -- only the real ML re-arms/whispers
+    self:ReconcilePayoutOwed()                             -- core (now persisted) is authoritative: drop phantom owes before whispering
     local sent = self.payout:StartPayout()
     if sent and sent > 0 then
         self:Print("Payout mode ON: re-whispered " .. sent .. " owed winner(s).")

@@ -1,22 +1,82 @@
 -- LootCore: the single owner of loot identity, group-roll responses, top-N resolution, and
--- per-copy disposition. This module is intentionally
--- pure: no frames, no SendCommMessage, no GetContainerItemInfo. Consumers feed it counts and
--- read its projections by stable id. That boundary is the whole point.
+-- per-copy disposition. Loot accounting used to be smeared across Session/LiveRoll/Comm/Resolver
+-- with multiple representations of the same truth and three identity schemes that disagreed (that
+-- drift caused every accounting bug: stale rolls, cross-drop bleed, won-copy-blocks-new). This
+-- module is the fix: ONE owner of the loot model behind a small API; every other system is a
+-- consumer that reads or commands the truth through that one door, so nothing can independently
+-- drift.
 --
--- Identity is the numeric ITEM ID, never the link or name. Item links embed a localized name
--- and client-specific data, so the same item can present different links/names across clients.
--- The caller parses the itemId out of the bag link and feeds counts keyed by itemId; the core
--- stores only itemId. Consumers render name/link/icon on demand from itemId (GetItemInfo), and
--- sync carries itemId so every client renders its own localized name.
+-- PURE: no frames, no SendCommMessage, no GetContainerItemInfo, no roster. Winner-picking is
+-- delegated through an injected resolver. The core can be verified with a plain Lua interpreter
+-- (see RunSelfChecks). Consumers feed it counts and read its projections by stable id. That
+-- boundary is the whole point.
 --
--- Distribution model (decided): ONE roll per item, top-N winners (upstream's UX). A Lot is the
--- rollable unit (one per itemId group, holding the single group-level response set under a
--- stable id), and on Resolve the resolver's ordered winners are frozen onto per-copy AWARDS
--- that each track their own delivery.
+-- IDENTITY is the numeric ITEM ID, never the link or name. Item links embed a localized name and
+-- client-specific data, so the same item can present different links/names across clients (and
+-- random-suffix variants collapse to one lot). The caller parses the itemId out of the bag link
+-- and feeds counts keyed by itemId; the core stores only itemId. Consumers render name/link/icon
+-- on demand (GetItemInfo); sync carries itemId so every client renders its own localized name.
 --
--- Step 1 (this file): the standalone core plus self-checks. No consumer is wired in yet.
--- Winner-picking is delegated through an injected resolver so the core has zero dependency on
--- the rest of the addon and can be verified with a plain Lua interpreter.
+-- DATA MODEL. A Lot is the rollable unit -- one per itemId group, holding a single group-level
+-- response set under a stable id. ONE roll per item, top-N winners (a player wins at most one);
+-- on Resolve the resolver's ordered winners freeze onto per-copy AWARDS that each track their own
+-- delivery fate.
+--   Lot = { id="L:<seq>" (unique, NEVER reused), itemId, state, count,
+--           responses={ [playerKey]=tier },            -- one group roll
+--           awards=nil-until-resolve then array[count] of
+--                  { winner=playerKey|nil, state=owed|resolved|delivered|removed, recipient, deliveredAt },
+--           record }                                    -- resolver's full result, for UI/log
+--
+-- LOT STATE MACHINE: new -> idle -> pending -> rolling -> resolved, with skipped as a snooze that
+-- resurfaces on the next surface pass. Cancel sends rolling -> pending; Unlock sends resolved ->
+-- idle (drops awards + responses, to re-roll).
+--   new      fresh loot this session; auto-surfaced to the ML
+--   idle     present but not fresh (session-start / late-eligible); listed, not auto-surfaced
+--   pending  a Start Roll / Skip popup is up
+--   rolling  broadcast to the raid, collecting responses
+--   resolved roll finished (winner or all-pass); enters per-copy disposition below
+--   skipped  ML dismissed; resurfaces next pass (a snooze, not a decision)
+--
+-- PER-COPY DISPOSITION (award.state): where a copy actually went. The bag scan can see a copy
+-- vanish but never which one or where, so physical fate is a RECORDED transition, never inferred.
+--   owed      won by a non-ML player, awaiting delivery; still in the ledger and the ML's bags
+--   resolved  self-win or no-winner: the ML already holds it
+--   delivered TERMINAL: TradeDeliver completed the trade and reported it (the "where it went" audit)
+--   removed   TERMINAL: left the bags with NO delivery reported (vendored/banked/mailed/etc.)
+-- delivered/removed are the only true terminals; a resolved lot stays as the session loot log.
+--
+-- RECONCILIATION (bag reality -> ledger, ML only). Each pass takes eligible counts (itemId ->
+-- tradeable count, from the bag scanner) and the fresh set (itemIds that just increased). For each
+-- itemId: want>live mints (want-live) copies (state new if fresh else idle); want<live retires
+-- (live-want) copies OUT of the live set, choosing the LEAST-committed first and NEVER a rolling
+-- (or, with a trade open, an owed) copy -- order resolved-no-winner > owed(last). A retired copy is
+-- delivered (if a report arrived) or removed (otherwise). Terminal copies stay as the loot log.
+--
+-- RESOLUTION delegates winner-picking to the injected resolver (Resolver.lua: bracket -> named ->
+-- spec -> status -> roll, top-N by count). The core's only job is to hand the resolver exactly one
+-- lot's responses by stable id, then freeze the ordered winners onto per-copy awards (surplus
+-- copies get winner=nil, state resolved). Routing every resolve through ledger[id] is the
+-- stale-roll fix expressed at the model layer.
+--
+-- INVARIANTS (the rules that prevent the bugs):
+--   1. id is the only identity; no code matches loot by link.
+--   2. ids are never reused.
+--   3. a live copy's rolls live with the copy; on resolve they freeze onto the record.
+--   4. resolved ends the roll; skipped resurfaces; delivered/removed are the only true terminals.
+--   5. the ML owns the live ledger and runs all mutation; raiders hold a read-only mirror.
+--   6. identity is on the eligible count, not on UI/comm/popup timing.
+--   7. physical fate is a recorded transition (MarkDelivered or removed), never inferred from a drop.
+--
+-- INTERACTION (every consumer goes through this one door, by id):
+--   Session (ML) feeds bag counts in via Reconcile and rebuilds session.items/results projections
+--     on ledgerChanged; persists/restores the ledger via SaveTo/LoadFrom.
+--   LiveRoll drives Surface/Skip/StartRoll/Cancel/SetResponse/Resolve and reacts to lotAdded/
+--     ledgerChanged to show/close popups.
+--   Comm serializes out (ML) / ApplyRemote in (raider mirror); owns the wire, the core owns the shape.
+--   Payout/TradeDeliver listen to lotResolved (Owe) / lotUnlocked (Forgive) / awardRemoved
+--     (Forgive), and report delivery back via MarkDeliveredFor -- the one back-channel into the core.
+--   UI reads List/Resolved/State/Get and refreshes on ledgerChanged.
+-- Events: lotAdded, lotResolved, lotDelivered, lotUnlocked, awardRemoved, ledgerChanged.
 
 local addonName, addon = ...
 if type(addon) ~= "table" then addon = WeirdLoot or {} end
@@ -304,6 +364,11 @@ function LootCore:retireFromItem(itemId, n, protectOwed)
             entry.a.state = AWARD.REMOVED -- left bags, disposition unknown
             retired = retired + 1
             self:log("remove", { id = entry.id, itemId = itemId, winner = entry.a.winner, from = prev })
+            -- An OWED copy that left the bags is no longer deliverable; tell consumers (payout) so
+            -- their owe ledger does not drift from the core's accounting.
+            if prev == AWARD.OWED and entry.a.winner then
+                self:emit("awardRemoved", itemId, entry.a.winner, entry.id)
+            end
         end
     end
 
@@ -548,6 +613,21 @@ function LootCore:ApplyRemote(snapshot)
     self:emit("ledgerChanged")
 end
 
+-- Persistence: the core owns its on-disk shape under a `lootCore` key inside a host-provided db
+-- table (the session). The host just hands the core where to live; the snapshot format stays
+-- internal. SaveTo refreshes the snapshot; LoadFrom restores it and returns whether a ledger was
+-- actually present (so the host knows the award history was preserved across the reload).
+function LootCore:SaveTo(db)
+    if not db then return end
+    db.lootCore = self:Serialize()
+end
+
+function LootCore:LoadFrom(db)
+    if not db or not db.lootCore then return false end
+    self:ApplyRemote(db.lootCore)
+    return true
+end
+
 -- Apply one lot from a delta (raider mirror). Upserts by id, preserving mint order, and
 -- advances seq. Does not go through log()/markDirty -- inbound state is never re-broadcast.
 function LootCore:ApplyRemoteLot(lotData, seq)
@@ -561,7 +641,7 @@ function LootCore:ApplyRemoteLot(lotData, seq)
 end
 
 -- ---------------------------------------------------------------------------
--- self-checks: exercise the design doc's walkthroughs and invariants with a plain
+-- self-checks: exercise the core's identity/lifecycle/reconcile/resolve invariants with a plain
 -- interpreter (luajit, 5.1 semantics). Run from the addon dir with:
 --   luajit -e "local f=loadfile('LootCore.lua'); f('WeirdLoot', {}); WeirdLoot.LootCore.RunSelfChecks(true)"
 -- Item ids below are arbitrary numbers standing in for parsed link itemIds.
