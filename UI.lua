@@ -2,12 +2,13 @@ local addon = WeirdLoot
 local util = addon.util
 
 local ROW_HEIGHT = 22
-local TAB_KEYS = { "loot", "results", "raiders", "master" }
+local TAB_KEYS = { "loot", "results", "raiders", "master", "options" }
 local TAB_LABELS = {
     loot = "Loot",
     raiders = "Roster",
     results = "Loot Results",
     master = "Loot Master",
+    options = "Options",
 }
 local GROUP_LOOT_TEXTURES = {
     glow = "Interface\\Buttons\\UI-ActionButton-Border",
@@ -557,7 +558,9 @@ function addon:InitializeUI()
     self:BuildRaidersTab()
     self:BuildResultsTab()
     self:BuildMasterTab()
+    self:BuildOptionsTab()
     self:BuildBottomTabs()
+    self:BuildMinimapButton()
 
     self:RegisterCallback("STATE_UPDATED", function()
         addon:RefreshUI()
@@ -1562,8 +1565,14 @@ function addon:BuildMasterTab()
         addon:ImportRoster()
     end)
 
+    local broadcastRosterButton = createButton(panel, "Broadcast Roster", 130, 24)
+    broadcastRosterButton:SetPoint("LEFT", importRosterButton, "RIGHT", 8, 0)
+    broadcastRosterButton:SetScript("OnClick", function()
+        addon:BroadcastRoster()
+    end)
+
     local importNamedItemsButton = createButton(panel, "Import Named Items", 130, 24)
-    importNamedItemsButton:SetPoint("LEFT", importRosterButton, "RIGHT", 8, 0)
+    importNamedItemsButton:SetPoint("LEFT", broadcastRosterButton, "RIGHT", 8, 0)
     importNamedItemsButton:SetScript("OnClick", function()
         addon:ImportNamedItems()
     end)
@@ -1588,6 +1597,7 @@ function addon:BuildMasterTab()
     panel.exportWinnersButton = exportWinnersButton
     panel.exportLogButton = exportLogButton
     panel.importRosterButton = importRosterButton
+    panel.broadcastRosterButton = broadcastRosterButton
     panel.importNamedItemsButton = importNamedItemsButton
     panel.broadcastNamedItemsButton = broadcastNamedItemsButton
     panel.payoutButton = payoutButton
@@ -1612,6 +1622,267 @@ function addon:BuildMasterTab()
     panel.snapshot:SetJustifyV("TOP")
 
     self.ui.masterPanel = panel
+end
+
+local function getOptions(self)
+    self.db.options = self.db.options or {}
+    return self.db.options
+end
+
+local function createOptionsCheckbox(parent, label)
+    local cb = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
+    elevateInteractiveFrame(cb, parent, 8)
+    cb:SetWidth(24)
+    cb:SetHeight(24)
+    local fs = cb:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    fs:SetPoint("LEFT", cb, "RIGHT", 4, 0)
+    fs:SetText(label)
+    cb.label = fs
+    return cb
+end
+
+local function createNumberEditBox(parent, width)
+    local box = CreateFrame("EditBox", nil, parent, "InputBoxTemplate")
+    elevateInteractiveFrame(box, parent, 8)
+    box:SetWidth(width or 50)
+    box:SetHeight(20)
+    box:SetAutoFocus(false)
+    box:SetNumeric(true)
+    box:SetMaxLetters(4)
+    box:SetScript("OnEscapePressed", function(selfBox) selfBox:ClearFocus() end)
+    box:SetScript("OnEnterPressed", function(selfBox) selfBox:ClearFocus() end)
+    return box
+end
+
+local multilineScrollSeq = 0
+local function createMultilineEditScroll(parent, width, height)
+    multilineScrollSeq = multilineScrollSeq + 1
+    local baseName = "WeirdLootOptionsScroll" .. multilineScrollSeq
+
+    local container = CreateFrame("Frame", baseName .. "Container", parent)
+    elevateInteractiveFrame(container, parent, 6)
+    container:SetWidth(width)
+    container:SetHeight(height)
+    container:SetBackdrop({
+        bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 8, edgeSize = 8,
+        insets = { left = 3, right = 3, top = 3, bottom = 3 },
+    })
+    container:SetBackdropColor(0, 0, 0, 0.6)
+
+    local scroll = CreateFrame("ScrollFrame", baseName, container, "UIPanelScrollFrameTemplate")
+    elevateInteractiveFrame(scroll, container, 1)
+    scroll:SetPoint("TOPLEFT", container, "TOPLEFT", 6, -6)
+    scroll:SetPoint("BOTTOMRIGHT", container, "BOTTOMRIGHT", -26, 6)
+
+    local editBox = CreateFrame("EditBox", baseName .. "Edit", scroll)
+    elevateInteractiveFrame(editBox, container, 2)
+    editBox:SetMultiLine(true)
+    editBox:SetFontObject(ChatFontNormal)
+    editBox:SetWidth(width - 36)
+    editBox:SetHeight(height - 12)
+    editBox:SetAutoFocus(false)
+    editBox:EnableMouse(true)
+    editBox:SetScript("OnEscapePressed", function(selfBox) selfBox:ClearFocus() end)
+    scroll:SetScrollChild(editBox)
+
+    container.editBox = editBox
+    container.scroll = scroll
+    return container
+end
+
+function addon:BuildOptionsTab()
+    local panel = CreateFrame("Frame", nil, self.ui.content)
+    elevateInteractiveFrame(panel, self.ui.content, 2)
+    panel:SetAllPoints(self.ui.content)
+    self.ui.panels.options = panel
+
+    local opt = getOptions(self)
+
+    panel.title = createLabel(panel, "Options", "TOPLEFT", panel, "TOPLEFT", 12, -12)
+    panel.title:SetFontObject(GameFontHighlightLarge)
+
+    -- Result popup auto-close
+    local autoCloseCB = createOptionsCheckbox(panel, "Auto-close winner popup after")
+    autoCloseCB:SetPoint("TOPLEFT", panel.title, "BOTTOMLEFT", 0, -16)
+    autoCloseCB:SetChecked(opt.resultPopupAutoCloseEnabled and true or false)
+    autoCloseCB:SetScript("OnClick", function(selfCB)
+        getOptions(addon).resultPopupAutoCloseEnabled = selfCB:GetChecked() and true or false
+    end)
+
+    local autoCloseSeconds = createNumberEditBox(panel, 50)
+    autoCloseSeconds:SetPoint("LEFT", autoCloseCB.label or autoCloseCB, "RIGHT", 160, 0)
+    autoCloseSeconds:SetText(tostring(opt.resultPopupAutoCloseSeconds or 15))
+    autoCloseSeconds:SetScript("OnEditFocusLost", function(selfBox)
+        local v = tonumber(selfBox:GetText())
+        if v and v > 0 then
+            getOptions(addon).resultPopupAutoCloseSeconds = v
+        else
+            selfBox:SetText(tostring(getOptions(addon).resultPopupAutoCloseSeconds or 15))
+        end
+    end)
+    local autoCloseLabel = createLabel(panel, "seconds", "LEFT", autoCloseSeconds, "RIGHT", 6, 0)
+
+    -- Roll duration (loot master)
+    local rollDurLabel = createLabel(panel, "Roll duration (seconds, loot master only):",
+        "TOPLEFT", autoCloseCB, "BOTTOMLEFT", 0, -20)
+    local rollDurBox = createNumberEditBox(panel, 50)
+    rollDurBox:SetPoint("LEFT", rollDurLabel, "RIGHT", 12, 0)
+    rollDurBox:SetText(tostring(opt.rollDuration or 20))
+    rollDurBox:SetScript("OnEditFocusLost", function(selfBox)
+        local v = tonumber(selfBox:GetText())
+        if v and v > 0 then
+            getOptions(addon).rollDuration = v
+        else
+            selfBox:SetText(tostring(getOptions(addon).rollDuration or 20))
+        end
+    end)
+
+    -- Whitelist
+    local whitelistCB = createOptionsCheckbox(panel, "Enable whitelist (only show live loot popups for items on this list; non-loot-master only)")
+    whitelistCB:SetPoint("TOPLEFT", rollDurLabel, "BOTTOMLEFT", 0, -24)
+    whitelistCB:SetChecked(opt.whitelistEnabled and true or false)
+    whitelistCB:SetScript("OnClick", function(selfCB)
+        getOptions(addon).whitelistEnabled = selfCB:GetChecked() and true or false
+    end)
+
+    local whitelistBox = createMultilineEditScroll(panel, 420, 110)
+    whitelistBox:SetPoint("TOPLEFT", whitelistCB, "BOTTOMLEFT", 4, -6)
+    whitelistBox.editBox:SetText(opt.whitelistText or "")
+    whitelistBox.editBox:SetScript("OnEditFocusLost", function(selfBox)
+        getOptions(addon).whitelistText = selfBox:GetText() or ""
+    end)
+
+    -- Blacklist
+    local blacklistCB = createOptionsCheckbox(panel, "Enable blacklist (hide live loot popups for items on this list; non-loot-master only)")
+    blacklistCB:SetPoint("TOPLEFT", whitelistBox, "BOTTOMLEFT", -4, -16)
+    blacklistCB:SetChecked(opt.blacklistEnabled and true or false)
+    blacklistCB:SetScript("OnClick", function(selfCB)
+        getOptions(addon).blacklistEnabled = selfCB:GetChecked() and true or false
+    end)
+
+    local blacklistBox = createMultilineEditScroll(panel, 420, 110)
+    blacklistBox:SetPoint("TOPLEFT", blacklistCB, "BOTTOMLEFT", 4, -6)
+    blacklistBox.editBox:SetText(opt.blacklistText or "")
+    blacklistBox.editBox:SetScript("OnEditFocusLost", function(selfBox)
+        getOptions(addon).blacklistText = selfBox:GetText() or ""
+    end)
+
+    local hint = createLabel(panel, "Enter one item name per line. Names are matched case-insensitively.",
+        "TOPLEFT", blacklistBox, "BOTTOMLEFT", -4, -10)
+    hint:SetTextColor(0.75, 0.75, 0.75)
+
+    -- Minimap button visibility
+    local minimapCB = createOptionsCheckbox(panel, "Show minimap button")
+    minimapCB:SetPoint("TOPLEFT", hint, "BOTTOMLEFT", 0, -18)
+    minimapCB:SetChecked(not (opt.minimapButtonHidden and true or false))
+    minimapCB:SetScript("OnClick", function(selfCB)
+        local checked = selfCB:GetChecked() and true or false
+        getOptions(addon).minimapButtonHidden = not checked
+        addon:SetMinimapButtonShown(checked)
+    end)
+
+    panel.autoCloseCB = autoCloseCB
+    panel.autoCloseSeconds = autoCloseSeconds
+    panel.rollDurBox = rollDurBox
+    panel.whitelistCB = whitelistCB
+    panel.whitelistBox = whitelistBox
+    panel.blacklistCB = blacklistCB
+    panel.blacklistBox = blacklistBox
+    panel.minimapCB = minimapCB
+end
+
+local function positionMinimapButton(button)
+    local opt = getOptions(addon)
+    local angle = tonumber(opt.minimapButtonAngle) or 200
+    local rad = math.rad(angle)
+    local radius = 80
+    local x = math.cos(rad) * radius
+    local y = math.sin(rad) * radius
+    button:ClearAllPoints()
+    button:SetPoint("CENTER", Minimap, "CENTER", x, y)
+end
+
+function addon:BuildMinimapButton()
+    if self.ui.minimapButton then return end
+    if not Minimap then return end
+
+    local button = CreateFrame("Button", "WeirdLootMinimapButton", Minimap)
+    button:SetFrameStrata("MEDIUM")
+    button:SetFrameLevel((Minimap:GetFrameLevel() or 0) + 8)
+    button:SetWidth(31)
+    button:SetHeight(31)
+    button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    button:RegisterForDrag("LeftButton")
+    button:SetMovable(true)
+
+    local overlay = button:CreateTexture(nil, "OVERLAY")
+    overlay:SetWidth(53)
+    overlay:SetHeight(53)
+    overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    overlay:SetPoint("TOPLEFT", button, "TOPLEFT", 0, 0)
+
+    local icon = button:CreateTexture(nil, "ARTWORK")
+    icon:SetWidth(20)
+    icon:SetHeight(20)
+    icon:SetTexture("Interface\\AddOns\\WeirdLoot\\Textures\\weirdloot")
+    icon:SetPoint("TOPLEFT", button, "TOPLEFT", 7, -6)
+    icon:SetTexCoord(0, 1, 0, 1)
+
+    local highlight = button:CreateTexture(nil, "HIGHLIGHT")
+    highlight:SetTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+    highlight:SetBlendMode("ADD")
+    highlight:SetAllPoints(button)
+
+    button:SetScript("OnClick", function()
+        addon:ToggleMainFrame()
+    end)
+
+    button:SetScript("OnEnter", function(selfBtn)
+        GameTooltip:SetOwner(selfBtn, "ANCHOR_LEFT")
+        GameTooltip:AddLine("WeirdLoot", 1, 0.82, 0)
+        GameTooltip:AddLine("Click to toggle the main window.", 1, 1, 1)
+        GameTooltip:AddLine("Drag to reposition.", 0.8, 0.8, 0.8)
+        GameTooltip:Show()
+    end)
+    button:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    button:SetScript("OnDragStart", function(selfBtn)
+        selfBtn.isDragging = true
+        selfBtn:SetScript("OnUpdate", function(s)
+            local mx, my = GetCursorPosition()
+            local scale = Minimap:GetEffectiveScale()
+            local cx, cy = Minimap:GetCenter()
+            mx, my = mx / scale, my / scale
+            local angle = math.deg(math.atan2(my - cy, mx - cx))
+            getOptions(addon).minimapButtonAngle = angle
+            positionMinimapButton(s)
+        end)
+    end)
+    button:SetScript("OnDragStop", function(selfBtn)
+        selfBtn.isDragging = false
+        selfBtn:SetScript("OnUpdate", nil)
+    end)
+
+    self.ui.minimapButton = button
+    positionMinimapButton(button)
+
+    local opt = getOptions(self)
+    if opt.minimapButtonHidden then
+        button:Hide()
+    else
+        button:Show()
+    end
+end
+
+function addon:SetMinimapButtonShown(shown)
+    if not self.ui or not self.ui.minimapButton then return end
+    if shown then
+        self.ui.minimapButton:Show()
+    else
+        self.ui.minimapButton:Hide()
+    end
 end
 
 function addon:RefreshUI()
@@ -1811,6 +2082,7 @@ function addon:RefreshMasterTab()
         panel.exportWinnersButton:Enable()
         panel.exportLogButton:Enable()
         panel.importRosterButton:Enable()
+        panel.broadcastRosterButton:Enable()
         panel.importNamedItemsButton:Enable()
         panel.broadcastNamedItemsButton:Enable()
         panel.payoutButton:Enable()
@@ -1822,6 +2094,7 @@ function addon:RefreshMasterTab()
         panel.exportWinnersButton:Disable()
         panel.exportLogButton:Disable()
         panel.importRosterButton:Disable()
+        panel.broadcastRosterButton:Disable()
         panel.importNamedItemsButton:Disable()
         panel.broadcastNamedItemsButton:Disable()
         panel.payoutButton:Disable()
