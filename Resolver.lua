@@ -752,30 +752,75 @@ function addon:ResolveSessionItem(lot)
     return record
 end
 
+-- ProcessLoot (the "Start Rolls" button): kick off live rolls in batches. The first
+-- N lots from the loot list go up for roll in parallel; as each batch finishes (every
+-- roll resolved or cancelled), the next N start. This replaces the old instant
+-- bulk-resolve behavior so the raid actually gets to roll on each item.
 function addon:ProcessLoot()
     if not self:IsAuthorizedLootMaster() then
         self:Print("Only the loot master can process loot.")
         return
     end
 
-    local session = self:GetCurrentSession()
     local core = self.lootCore
-    local resolvedAny = false
-
-    -- Resolve every open lot (idle/new/pending/skipped). Rolling lots belong to an in-flight
-    -- live roll and are left alone; resolved lots are already done. Each Resolve fires
-    -- lotResolved (payout owes) and ledgerChanged (projection + snapshot broadcast).
+    local queue = {}
     for _, lot in ipairs(core:List()) do
         if lot.state ~= core.STATE.ROLLING and lot.state ~= core.STATE.RESOLVED then
-            core:Resolve(lot.id)
-            resolvedAny = true
+            queue[#queue + 1] = lot.id
         end
     end
 
-    if not resolvedAny then
-        self:Print("No unrolled loot to process. Unlock a result to reroll it.")
+    if #queue == 0 then
+        self:Print("No unrolled loot to start. Unlock a result to reroll it.")
         return
     end
+
+    local batchSize = tonumber(self.db and self.db.options and self.db.options.rollBatchSize) or 5
+    if batchSize < 1 then batchSize = 1 end
+
+    self._rollBatch = { queue = queue, batchSize = batchSize, active = {} }
+    self:Print(string.format("Starting rolls in batches of %d (%d items queued).", batchSize, #queue))
+    self:AdvanceRollBatch()
+end
+
+-- Pull the next slice from the queue and StartLiveRoll on each. Called once by ProcessLoot
+-- and again every time the active set drains.
+function addon:AdvanceRollBatch()
+    local batch = self._rollBatch
+    if not batch then return end
+    while #batch.queue > 0 and self:CountActiveRollBatch() < batch.batchSize do
+        local lotId = table.remove(batch.queue, 1)
+        local lot = self.lootCore:Get(lotId)
+        if lot and lot.state ~= self.lootCore.STATE.ROLLING and lot.state ~= self.lootCore.STATE.RESOLVED then
+            batch.active[lotId] = true
+            self:StartLiveRoll(lotId)
+        end
+    end
+    if #batch.queue == 0 and self:CountActiveRollBatch() == 0 then
+        self:FinishRollBatch()
+    end
+end
+
+function addon:CountActiveRollBatch()
+    local batch = self._rollBatch
+    if not batch then return 0 end
+    local n = 0
+    for _ in pairs(batch.active) do n = n + 1 end
+    return n
+end
+
+-- Called from ResolveLiveRoll / CancelLiveRoll: drop the lot from the active set and,
+-- if the batch has fully drained, advance to the next slice.
+function addon:NotifyRollBatchFinished(lotId)
+    local batch = self._rollBatch
+    if not batch or not batch.active[lotId] then return end
+    batch.active[lotId] = nil
+    self:AdvanceRollBatch()
+end
+
+function addon:FinishRollBatch()
+    local session = self:GetCurrentSession()
+    self._rollBatch = nil
 
     self.sessionDb.history = self.sessionDb.history or {}
     self.sessionDb.history[#self.sessionDb.history + 1] = {
@@ -784,7 +829,7 @@ function addon:ProcessLoot()
         results = util:CloneTable(self.lootView.results or {}),
     }
 
-    local text = "Loot has been rolled on, check the Results tab."
+    local text = "All loot rolls finished, check the Results tab."
     local ctl = _G.ChatThrottleLib
     if ctl then
         ctl:SendChatMessage("ALERT", self.prefix, text, "RAID_WARNING")
@@ -792,7 +837,7 @@ function addon:ProcessLoot()
         SendChatMessage(text, "RAID_WARNING")
     end
 
-    self:BroadcastSession()        -- snapshot the resolved ledger to the raid
+    self:BroadcastSession()
     self:TriggerCallback("RESULTS_UPDATED")
-    self:Print("Loot processed.")
+    self:Print("Rolls complete.")
 end

@@ -1562,7 +1562,7 @@ function addon:BuildMasterTab()
         addon:RefreshSessionItems(true)
     end)
 
-    local processButton = createButton(panel, "Roll Out the Loot", 120, 24)
+    local processButton = createButton(panel, "Start Rolls", 120, 24)
     processButton:SetPoint("LEFT", scanButton, "RIGHT", 8, 0)
     processButton:SetScript("OnClick", function()
         addon:ProcessLoot()
@@ -1823,9 +1823,24 @@ function addon:BuildOptionsTab()
         end
     end)
 
+    -- Start Rolls batch size (loot master)
+    local batchLabel = createLabel(panel, "Start Rolls batch size (items rolled at once, loot master only):",
+        "TOPLEFT", rollDurLabel, "BOTTOMLEFT", 0, -20)
+    local batchBox = createNumberEditBox(panel, 50)
+    batchBox:SetPoint("LEFT", batchLabel, "RIGHT", 12, 0)
+    batchBox:SetText(tostring(opt.rollBatchSize or 5))
+    batchBox:SetScript("OnEditFocusLost", function(selfBox)
+        local v = tonumber(selfBox:GetText())
+        if v and v > 0 then
+            getOptions(addon).rollBatchSize = v
+        else
+            selfBox:SetText(tostring(getOptions(addon).rollBatchSize or 5))
+        end
+    end)
+
     -- Explanation tooltips (e.g. roll-bracket descriptions on the popup + loot tab)
     local explanationTipsCB = createOptionsCheckbox(panel, "Show explanation tooltips (spell out the roll brackets, etc.)")
-    explanationTipsCB:SetPoint("TOPLEFT", rollDurLabel, "BOTTOMLEFT", 0, -20)
+    explanationTipsCB:SetPoint("TOPLEFT", batchLabel, "BOTTOMLEFT", 0, -20)
     explanationTipsCB:SetChecked(opt.explanationTooltipsEnabled ~= false)
     explanationTipsCB:SetScript("OnClick", function(selfCB)
         getOptions(addon).explanationTooltipsEnabled = selfCB:GetChecked() and true or false
@@ -2075,6 +2090,7 @@ function addon:BuildOptionsTab()
     panel.autoCloseCB = autoCloseCB
     panel.autoCloseSeconds = autoCloseSeconds
     panel.rollDurBox = rollDurBox
+    panel.rollBatchBox = batchBox
     panel.whitelistCB = whitelistCB
     panel.whitelistBox = whitelistBox
     panel.whitelistPresetDropdown = wlPresetDropdown
@@ -2450,7 +2466,7 @@ function addon:RefreshMasterTab()
     panel.summary:SetText(table.concat({
         "Start Session: Establishes the active loot session.",
         "Scan Bags: Searches bags for current epic items from the loot master's bags.",
-        "Roll Out the Loot: Resolves winners, records results, and enables the safety lock.",
+        "Start Rolls: Starts live rolls in batches (size configurable in Options). The next batch starts when the current one finishes.",
         "Unlock Roll: Clears the rollout lock so the current session's loot can be rerolled intentionally.",
         "Pause Payout: Toggles payout mode so owed winners can trade for auto-filled loot, or pauses that flow without clearing the ledger.",
         "Export Winners: Opens a simple item-to-winner export list for sharing or cleanup.",
