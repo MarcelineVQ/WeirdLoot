@@ -3513,6 +3513,8 @@ function addon:PLAYER_LOGIN()
             resultPopupAutoCloseSeconds = 15,
             rollDuration = 30,
             rollBatchSize = 5,
+            autoSkipRoll = false,   -- LM only; mutually exclusive with db.autoRoll. When ON, new loot
+                                    -- moves straight to SKIPPED (auto-resurfaces on the next scan).
             whitelistEnabled = false,
             whitelistText = "",
             blacklistEnabled = false,
@@ -3871,6 +3873,9 @@ function addon:HandleSlashCommand(msg)
         self:HandleDebugCommand(rest)
     elseif command == "autoroll" then
         self.db.autoRoll = not self.db.autoRoll
+        if self.db.autoRoll and self.db.options then
+            self.db.options.autoSkipRoll = false   -- mutex with auto-skip
+        end
         self:Print("Auto-roll on new loot " .. (self.db.autoRoll and "ON." or "OFF (right-click an item to roll manually)."))
     elseif command == "deer" or string.sub(command, 1, 5) == "deer " then
         local name = string.match(string.trim(msg or ""), "^%S+%s+(.+)$")
