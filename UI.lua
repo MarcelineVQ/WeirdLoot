@@ -1043,7 +1043,7 @@ function addon:BuildLootTab()
         row.info:SetWidth(188)
 
         row.state = createLabel(row, "", "LEFT", row, "LEFT", 804, 0)
-        row.state:SetWidth(80)
+        row.state:SetWidth(50)
         row.state:SetJustifyH("LEFT")
         row.stateHitbox = CreateFrame("Frame", nil, row)
         elevateInteractiveFrame(row.stateHitbox, row, 10)
@@ -1079,6 +1079,24 @@ function addon:BuildLootTab()
         end)
         row.stateHitbox:SetScript("OnLeave", function()
             GameTooltip:Hide()
+        end)
+
+        -- Reroll button (loot master only, shown when the lot is locked/resolved). Sits at the
+        -- right edge of the row, to the right of "N rolling". Opens a confirmation popup that
+        -- previews the item's tooltip; YES routes through addon:UnlockSessionRoll.
+        row.rerollButton = createLootChoiceButton(row, "Reroll", 52)
+        elevateInteractiveFrame(row.rerollButton, row, 10)
+        -- Right-anchored to the row so the button sits flush against the right edge regardless of
+        -- the state column width. Leaves a small margin for the scrollbar gutter.
+        row.rerollButton:SetPoint("RIGHT", row, "RIGHT", -6, 0)
+        row.rerollButton:Hide()
+        row.rerollButton:SetScript("OnClick", function()
+            local item = row.item
+            if not item or not item.id then return end
+            local dialog = StaticPopup_Show("WEIRDLOOT_REROLL_ITEM", item.link or item.name or "this item")
+            if dialog then
+                dialog.data = { lotId = item.id, itemLink = item.link }
+            end
         end)
 
         -- The item tooltip and item-link clicks (ctrl preview, shift link-insert, ML right-click to
@@ -2459,6 +2477,14 @@ function addon:RefreshLootTab()
         -- ActiveRollers is the one roller source (shared with the hover tooltip and both popup
         -- displays), so the count never disagrees across surfaces.
         row.state:SetText(string.format("%d rolling", #self:ActiveRollers(item.id)))
+
+        if row.rerollButton then
+            if locked and self:IsAuthorizedLootMaster() then
+                row.rerollButton:Show()
+            else
+                row.rerollButton:Hide()
+            end
+        end
     end)
     -- arm the shared resolve ticker if any name was still cold; it re-renders this list as the
     -- client caches them, then self-stops (same machinery the popups use).
