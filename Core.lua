@@ -528,6 +528,10 @@ local authRetry = CreateFrame("Frame")
 authRetry:Hide()
 authRetry:SetScript("OnUpdate", function(frame, dt)
     frame.elapsed = (frame.elapsed or 0) + dt
+    -- Fire a payout resume that deferred because bags were still loading; ResumePayoutMode no-ops
+    -- until bags settle, then runs once (reconcile owes against bags, re-whisper). Cheap: a boolean
+    -- in the common case, and this frame only runs in the ~15s login/zone window before it hides.
+    if addon._payoutResumePending then addon:ResumePayoutMode() end
     local target = AUTH_RETRY_TIMES[frame.index or 1]
     if not target then frame:Hide(); return end
     if frame.elapsed >= target then

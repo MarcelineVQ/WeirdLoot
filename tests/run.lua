@@ -10,7 +10,7 @@
 
 -- UI.lua is intentionally omitted: it is pure presentation and pulls in heavy FrameXML
 -- (FauxScrollFrame_*, templates) irrelevant to loot accounting. The projections the tests
--- assert on (session.items / session.results) are built in Session, not UI.
+-- assert on (lootView.items / lootView.results) are built in Session, not UI.
 local ADDON_FILES = {
     "Libs/WeirdSync-1.0/WeirdSync-1.0.lua",
     "TradeDeliver.lua", "Core.lua", "LootCore.lua", "Util.lua", "Config.lua",
@@ -402,8 +402,8 @@ test("fresh drop mints a NEW lot and auto-surfaces (pending)", function()
     local lot = openLot(w, 40002)
     check(lot ~= nil, "fresh lot minted")
     eq(lot and lot.state, "pending", "fresh drop auto-surfaced to pending")
-    eq(#w.addon.session.items, 1, "projection has one item")
-    eq(w.addon.session.items[1].itemId, 40002, "projection itemId from link")
+    eq(#w.addon.lootView.items, 1, "projection has one item")
+    eq(w.addon.lootView.items[1].itemId, 40002, "projection itemId from link")
 end)
 
 test("pre-roll duplicate grows the open lot (one row, quantity 2)", function()
@@ -413,7 +413,7 @@ test("pre-roll duplicate grows the open lot (one row, quantity 2)", function()
     setBag(w, 40002, 2); bagUpdate(w)
     eq(#lotsFor(w, 40002), 1, "still a single lot")
     eq(openLot(w, 40002).count, 2, "lot count grew to 2")
-    eq(w.addon.session.items[1].quantity, 2, "projection quantity 2")
+    eq(w.addon.lootView.items[1].quantity, 2, "projection quantity 2")
 end)
 
 test("live roll: single copy, two rollers -> one owed winner + payout", function()
@@ -615,9 +615,9 @@ test("comm sync: ML snapshot mirrors onto a raider", function()
     check(rl ~= nil, "raider mirrored the lot by id")
     eq(rl and rl.itemId, 40004, "raider lot itemId matches")
     eq(rl and rl.state, "resolved", "raider sees it resolved")
-    eq(#raider.addon.session.results, 1, "raider results projection has the lot")
-    local mlRes = ml.addon.session.results[1]
-    local rRes = raider.addon.session.results[1]
+    eq(#raider.addon.lootView.results, 1, "raider results projection has the lot")
+    local mlRes = ml.addon.lootView.results[1]
+    local rRes = raider.addon.lootView.results[1]
     eq(rRes.winnersText, mlRes.winnersText, "raider winners match the ML's")
 end)
 
@@ -894,34 +894,57 @@ test("payout stays in sync live: an owed copy leaving the bags forgives the owe 
     eq(owedCount(w), 0, "payout forgave the owe when the core retired the award (no drift)")
 end)
 
-test("payout reconcile is SAFE: a genuinely-owed copy still in bags is kept", function()
+test("payout vs bags: an owe we still hold is kept", function()
     local w = makeWorld("Masterlooter", true)
     startSession(w)
-    resolveOwedTo(w, 40005, "Alice")                -- owed AND still held
-    w.addon._coreRestoredFromPersistence = true     -- a restored, authoritative core
+    w.addon.payout:Owe("Alice", 40005, 1, "|cffffffff|Hitem:40005|h[Blade]|h|r")
     eq(owedCount(w), 1, "owed before reconcile")
-    eq(w.addon:ReconcilePayoutOwed(), 0, "the core still owes it -> nothing forgiven")
-    eq(owedCount(w), 1, "the genuine owe survives (this is what the unsafe version broke)")
+    eq(w.addon:ReconcilePayoutAgainstBags({ [40005] = 1 }), 0, "held -> nothing forgiven")
+    eq(owedCount(w), 1, "the deliverable owe survives")
 end)
 
-test("payout reconcile forgives a phantom owe with no backing award, keeps the real one (sand-worn band)", function()
+test("payout vs bags: an owe we no longer hold is forgiven (nothing to owe)", function()
     local w = makeWorld("Masterlooter", true)
     startSession(w)
-    resolveOwedTo(w, 40005, "Alice")                -- real owe: core lot + OWED award
-    w.addon.payout:Owe("Ghost", 49623, 1, "|cffffffff|Hitem:49623|h[Sand-worn Band]|h|r")  -- phantom: no core lot
-    w.addon._coreRestoredFromPersistence = true
-    eq(owedCount(w), 2, "real + phantom")
-    eq(w.addon:ReconcilePayoutOwed(), 1, "forgives only the phantom (no core award backs it)")
-    eq(owedCount(w), 1, "the real owe survives")
+    w.addon.payout:Owe("Alice", 40005, 1, "|cffffffff|Hitem:40005|h[Blade]|h|r")  -- held
+    w.addon.payout:Owe("Ghost", 49623, 1, "|cffffffff|Hitem:49623|h[Sand-worn Band]|h|r")  -- not held
+    eq(owedCount(w), 2, "two owes")
+    eq(w.addon:ReconcilePayoutAgainstBags({ [40005] = 1 }), 1, "only the unheld one is forgiven")
+    eq(owedCount(w), 1, "the held owe survives, the phantom is gone")
 end)
 
-test("payout reconcile is GATED: without a persisted-core restore it forgives nothing (no data loss)", function()
+test("payout vs bags: a stale owe for an unheld item is cleared by the bag scan once settled", function()
     local w = makeWorld("Masterlooter", true)
     startSession(w)
-    w.addon.payout:Owe("Ghost", 49623, 1, "|cffffffff|Hitem:49623|h[Sand-worn Band]|h|r")
-    -- _coreRestoredFromPersistence is NOT set: the core's history may be lost, so do not forgive
-    eq(w.addon:ReconcilePayoutOwed(), 0, "gated off when the core was not restored")
-    eq(owedCount(w), 1, "the owe is preserved (safe default; the original unsafe wipe is prevented)")
+    w.addon.payout:Owe("Ghost", 49623, 1, "|cffffffff|Hitem:49623|h[Sand-worn Band]|h|r")  -- no core lot, not in bags
+    eq(owedCount(w), 1, "stale owe present")
+    w.addon.bagSettleAt = 0          -- bags settled
+    w.addon:OnBagUpdate()            -- the scan reconciles owes against (empty) bag truth
+    eq(owedCount(w), 0, "the bag scan forgave the unheld owe -- no core history needed")
+end)
+
+test("trade-expiry timer arms 5s after the soonest window, clears when nothing is windowed", function()
+    local w = makeWorld("Masterlooter", true)
+    w.addon:ArmTradeExpiryTimer(120)
+    eq(w.addon._tradeExpiryAt, CLOCK + 125, "armed for 5s after the 120s window lapses")
+    w.addon:ArmTradeExpiryTimer(nil)
+    eq(w.addon._tradeExpiryAt, nil, "cleared when no windowed items remain")
+end)
+
+test("payout resume defers until bags settle, then reconciles owes before whispering", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    w.addon.payout:Owe("Ghost", 49623, 1, "|cffffffff|Hitem:49623|h[Sand-worn Band]|h|r")  -- stale, not held
+    -- bags NOT settled yet: a half-loaded bag could look empty, so resume DEFERS (no whisper, no forgive)
+    w.addon.bagSettleAt = CLOCK + 100
+    w.addon:ResumePayoutMode()
+    eq(w.addon._payoutResumePending, true, "deferred while bags load")
+    eq(owedCount(w), 1, "not forgiven yet -- never act on an unsettled bag")
+    -- bags settle: resume reconciles owes against bag truth (forgives the unheld one) THEN whispers
+    w.addon.bagSettleAt = CLOCK - 1
+    w.addon:ResumePayoutMode()
+    eq(w.addon._payoutResumePending, false, "no longer pending once settled")
+    eq(owedCount(w), 0, "the unheld owe was reconciled away before the login whisper went out")
 end)
 
 test("unreadable raid roster detection: flags the would-be ML, not raiders or healthy rosters", function()

@@ -672,7 +672,7 @@ end
 function addon:BuildWinnersExportText()
     local lines = {}
 
-    for _, result in ipairs(self.session.results or {}) do
+    for _, result in ipairs(self.lootView.results or {}) do
         local itemName = result.itemName or ""
         if result.winners and #result.winners > 0 then
             for _, winnerName in ipairs(result.winners) do
@@ -702,7 +702,7 @@ function addon:BuildDetailedExportLogText()
         { key = "tm", label = "TM Rollers:" },
     }
 
-    for _, result in ipairs(self.session.results or {}) do
+    for _, result in ipairs(self.lootView.results or {}) do
         local groupedRollers = {
             bis = {},
             ms = {},
@@ -883,15 +883,8 @@ function addon:BuildLootTab()
     local header = createLabel(panel, "Session items", "TOPLEFT", panel, "TOPLEFT", 4, -4)
     header:SetFontObject(GameFontHighlight)
 
-    local syncButton = createButton(panel, "Request Sync", 110, 22)
-    syncButton:SetPoint("LEFT", header, "RIGHT", 12, 0)
-    syncButton:SetScript("OnClick", function()
-        addon:RequestSessionSync()
-    end)
-    panel.syncButton = syncButton
-
     local usabilityButton = createButton(panel, "Usable: Off", 110, 22)
-    usabilityButton:SetPoint("LEFT", syncButton, "RIGHT", 8, 0)
+    usabilityButton:SetPoint("LEFT", header, "RIGHT", 12, 0)
     usabilityButton:SetScript("OnClick", function()
         addon:ToggleLootUsabilitySort()
     end)
@@ -1064,7 +1057,7 @@ function addon:BuildLootTab()
                 for _, roller in ipairs(rollers) do
                     local classSpec = string.trim((roller.className or "") .. " " .. (roller.specName or ""))
                     local colorCode = util:GetClassColorCode(roller.className)
-                    local line = colorCode .. (roller.name or "") .. "|r"
+                    local line = util:ColorPlayerName(roller.name, roller.className)
                     local responseLabel = string.upper(roller.responseType or "pass")
                     if classSpec ~= "" then
                         line = line .. " " .. colorCode .. "- " .. classSpec .. " - " .. responseLabel .. "|r"
@@ -1153,7 +1146,7 @@ end
 
 function addon:GetSortedLootItems()
     local items = {}
-    for _, item in ipairs(self.session.items or {}) do
+    for _, item in ipairs(self.lootView.items or {}) do
         items[#items + 1] = item
     end
 
@@ -1541,14 +1534,8 @@ function addon:BuildMasterTab()
         addon:RefreshSessionItems(true)
     end)
 
-    local broadcastButton = createButton(panel, "Broadcast", 120, 24)
-    broadcastButton:SetPoint("LEFT", scanButton, "RIGHT", 8, 0)
-    broadcastButton:SetScript("OnClick", function()
-        addon:BroadcastSession()
-    end)
-
     local processButton = createButton(panel, "Roll Out the Loot", 120, 24)
-    processButton:SetPoint("LEFT", broadcastButton, "RIGHT", 8, 0)
+    processButton:SetPoint("LEFT", scanButton, "RIGHT", 8, 0)
     processButton:SetScript("OnClick", function()
         addon:ProcessLoot()
     end)
@@ -1603,7 +1590,6 @@ function addon:BuildMasterTab()
 
     panel.startButton = startButton
     panel.scanButton = scanButton
-    panel.broadcastButton = broadcastButton
     panel.processButton = processButton
     panel.unlockButton = unlockButton
     panel.exportWinnersButton = exportWinnersButton
@@ -1957,10 +1943,6 @@ end
 function addon:RefreshLootTab()
     local items = self:GetSortedLootItems()
     local playerName = util:GetPlayerName("player")
-    if self.ui.panels and self.ui.panels.loot and self.ui.panels.loot.syncButton then
-        local label = self:IsAuthorizedLootMaster() and "Rebroadcast" or "Request Sync"
-        self.ui.panels.loot.syncButton:SetText(label)
-    end
     if self.ui.panels and self.ui.panels.loot and self.ui.panels.loot.usabilityButton then
         local usabilityLabel = self.db.ui.lootUsabilitySort and "Usable: On" or "Usable: Off"
         self.ui.panels.loot.usabilityButton:SetText(usabilityLabel)
@@ -2057,7 +2039,7 @@ function addon:RefreshRaidersTab()
 end
 
 function addon:RefreshResultsTab()
-    local results = self.session.results or {}
+    local results = self.lootView.results or {}
     self.ui.resultsList.update(#results, function(row, index)
         local result = results[index]
         row.result = result
@@ -2076,8 +2058,7 @@ function addon:RefreshResultsTab()
             local winnerParts = {}
             for winnerIndex, winnerName in ipairs(result.winners) do
                 local detail = result.winnerDetails[winnerIndex] or {}
-                local colorCode = util:GetClassColorCode(detail.className)
-                winnerParts[#winnerParts + 1] = (colorCode or "|cffffffff") .. winnerName .. "|r"
+                winnerParts[#winnerParts + 1] = util:ColorPlayerName(winnerName, detail.className)
             end
             row.winner:SetText(table.concat(winnerParts, ", "))
         else
@@ -2151,7 +2132,6 @@ function addon:RefreshMasterTab()
     if authorized then
         panel.startButton:Enable()
         panel.scanButton:Enable()
-        panel.broadcastButton:Enable()
         panel.processButton:Enable()
         panel.exportWinnersButton:Enable()
         panel.exportLogButton:Enable()
@@ -2163,7 +2143,6 @@ function addon:RefreshMasterTab()
     else
         panel.startButton:Disable()
         panel.scanButton:Disable()
-        panel.broadcastButton:Disable()
         panel.processButton:Disable()
         panel.exportWinnersButton:Disable()
         panel.exportLogButton:Disable()
@@ -2190,12 +2169,11 @@ function addon:RefreshMasterTab()
     local payoutActive = self.payout and self.payout:IsPayoutActive()
     panel.payoutButton:SetText(payoutActive and "Pause Payout" or "Start Payout")
 
-    local session = self:GetCurrentSession()
     local attendeeCount = #(self:GetAttendees() or {})
-    local itemCount = #(session.items or {})
-    local resultCount = #(session.results or {})
+    local itemCount = #(self.lootView.items or {})
+    local resultCount = #(self.lootView.results or {})
     local lockedCount = 0
-    for _, item in ipairs(session.items or {}) do
+    for _, item in ipairs(self.lootView.items or {}) do
         if self:IsItemLocked(item.id) then
             lockedCount = lockedCount + 1
         end
@@ -2203,7 +2181,6 @@ function addon:RefreshMasterTab()
     panel.summary:SetText(table.concat({
         "Start Session: Establishes the active loot session.",
         "Scan Bags: Searches bags for current epic items from the loot master's bags.",
-        "Broadcast: Manually syncs items and current roll status to the raid.",
         "Roll Out the Loot: Resolves winners, records results, and enables the safety lock.",
         "Unlock Roll: Clears the rollout lock so the current session's loot can be rerolled intentionally.",
         "Pause Payout: Toggles payout mode so owed winners can trade for auto-filled loot, or pauses that flow without clearing the ledger.",

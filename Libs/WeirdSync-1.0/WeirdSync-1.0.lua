@@ -209,6 +209,7 @@ function Channel:OnReceive(sender, message)
         if not inc then return end
         self.cb.applySnapshot(inc.lines, inc.epoch)
         self.lastRev = inc.rev      -- a snapshot re-baselines the revision
+        self.appliedEpoch = inc.epoch
         self.pendingRequest = nil   -- our outstanding request (if any) is satisfied
         self._incoming = nil
         self.cb.log("recv-snap", { rev = inc.rev, lines = #inc.lines })
@@ -243,6 +244,20 @@ function Channel:OnReceive(sender, message)
             self.outstanding[reqId] = nil
             self.cb.log("ack", { reqId = reqId })
         end
+    elseif t == "H" then
+        -- Heartbeat: the authority's current epoch + rev. A peer that is behind (missed the last
+        -- delta, never synced, or is on a different epoch) requests a snapshot. In-sync peers ignore
+        -- it. This is the only thing that heals a peer when the ledger has gone quiet, since gap
+        -- detection otherwise needs a future delta to notice the miss.
+        if self.cb.isAuthority() then return end
+        local epoch = f[2]
+        local rev = tonumber(f[3]) or 0
+        local behind = self.lastRev == nil or rev > self.lastRev
+            or (epoch and epoch ~= "" and epoch ~= self.appliedEpoch)
+        if behind and not self.pendingRequest then
+            self.cb.log("recv-hb-gap", { rev = rev, lastRev = self.lastRev, epoch = epoch })
+            self:RequestSync()
+        end
     end
 end
 
@@ -250,6 +265,17 @@ end
 -- directly with an explicit clock value.
 function Channel:Tick(t)
     t = t or now()
+
+    -- authority: heartbeat the current epoch + rev to the raid every cfg.heartbeat seconds, so a
+    -- peer that missed the last delta heals itself even when the ledger has gone quiet (no future
+    -- delta to trip gap detection). Only fires with an active epoch; in-sync peers ignore it.
+    if self.cfg.heartbeat > 0 and self.cb.isAuthority() then
+        local epoch = self.cb.epoch()
+        if epoch and epoch ~= "" and t >= (self._nextHeartbeat or 0) then
+            self:_send({ "H", epoch, tostring(self.rev) }, "RAID")
+            self._nextHeartbeat = t + self.cfg.heartbeat
+        end
+    end
 
     -- authority: re-send targeted snapshots that have not been acked.
     for reqId, o in pairs(self.outstanding) do
@@ -298,7 +324,7 @@ end
 --   applyLine(fields)        peer upserts one delta line
 --   log(ev, data)            trace sink (defaults to no-op)
 --   selfName                 OPTIONAL explicit player name (else UnitName("player"))
---   deltaMax/backoffBase/backoffMul/maxAttempts  OPTIONAL tuning
+--   deltaMax/backoffBase/backoffMul/maxAttempts/heartbeat  OPTIONAL tuning
 function WeirdSync:NewChannel(prefix, cb)
     assert(type(prefix) == "string" and prefix ~= "", "WeirdSync:NewChannel requires a prefix")
     cb = cb or {}
@@ -320,6 +346,7 @@ function WeirdSync:NewChannel(prefix, cb)
         backoffBase = cb.backoffBase or 0.5,   -- seconds to first retry (fast: recover a drop quickly)
         backoffMul = cb.backoffMul or 1.5,     -- gentle exponential factor (0.5,0.75,1.1,1.7,2.5,...)
         maxAttempts = cb.maxAttempts or 8,     -- ~25s total horizon before give-up (covers a load screen)
+        heartbeat = cb.heartbeat or 30,        -- authority re-announces rev every N seconds; 0 disables
     }
     ch.rev = 0
     ch.lastRev = nil

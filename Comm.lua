@@ -82,6 +82,9 @@ function addon:InitializeComm()
             backoffBase    = 0.5,
             backoffMul     = 1.5,
             maxAttempts    = 8,
+            -- Authority re-announces its rev every 30s so a raider that missed the last delta of a
+            -- now-quiet session heals itself (no manual resync button needed).
+            heartbeat      = 30,
         })
     else
         self:Print("WeirdSync-1.0 not found; raid sync disabled.")
@@ -332,6 +335,16 @@ function addon:RequestSessionSync()
     self.syncChannel:RequestSync()
 end
 
+-- Push the ML's named-item priority list (named-player reservations, e.g. "Item, A > B / C > LC")
+-- to the raid. Gated both ways: only the loot master sends, and raiders accept it only from the ML.
+--
+-- It is unclear who this push actually serves. Roll prio already rides the DROP wire (the ML computes
+-- GetLiveItemPrio and sends the rendered string), so raiders never consult these rules for a roll; the
+-- only raider-side use of the saved rules is the "Loot Council" label on a no-winner result. So today
+-- this is near-vestigial. The intended future direction may be the inverse: let leadership/officers
+-- push updated rosters and named priorities TO the ML for it to adopt, which would need the opposite
+-- gating (an authorized officer sends, the ML accepts and uses it). Until that exists, this is just the
+-- ML mirroring its own config outward.
 function addon:BroadcastNamedItems()
     if not self:IsAuthorizedLootMaster() then
         self:Print("Only the loot master can broadcast named items.")

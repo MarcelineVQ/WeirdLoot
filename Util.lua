@@ -250,6 +250,28 @@ function util:GetClassColorCode(className)
     return string.format("|cff%02x%02x%02x", color.r * 255, color.g * 255, color.b * 255)
 end
 
+-- "You" rendering. Any name that resolves to the local player is shown as a special-colored
+-- "You" instead of the literal character name, so you instantly spot your own line in roll
+-- tooltips, the result popup, and Loot Results. Export text deliberately keeps literal names
+-- (it is shared with others, for whom "You" is meaningless).
+local YOU_COLOR = "|cff00ffcc"   -- aqua: distinct from every class color
+
+function util:IsSelfName(name)
+    if not name or name == "" then
+        return false
+    end
+    return self:NormalizeKey(name) == self:NormalizeKey(self:GetPlayerName("player") or "")
+end
+
+-- Color-coded display string for a player name: special "You" for the local player, otherwise the
+-- name in its class color. className is only used for the non-self color.
+function util:ColorPlayerName(name, className)
+    if self:IsSelfName(name) then
+        return YOU_COLOR .. "You|r"
+    end
+    return (self:GetClassColorCode(className) or "|cffffffff") .. tostring(name or "Unknown") .. "|r"
+end
+
 function util:FindBagItemByLink(itemLink)
     if not itemLink or itemLink == "" then
         return nil

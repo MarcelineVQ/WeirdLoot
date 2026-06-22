@@ -1,10 +1,9 @@
 -- LootCore: the single owner of loot identity, group-roll responses, top-N resolution, and
--- per-copy disposition. Loot accounting used to be smeared across Session/LiveRoll/Comm/Resolver
--- with multiple representations of the same truth and three identity schemes that disagreed (that
--- drift caused every accounting bug: stale rolls, cross-drop bleed, won-copy-blocks-new). This
--- module is the fix: ONE owner of the loot model behind a small API; every other system is a
--- consumer that reads or commands the truth through that one door, so nothing can independently
--- drift.
+-- per-copy disposition. The loot model has exactly ONE owner behind a small API so no other system
+-- holds its own representation or identity scheme: Session/LiveRoll/Comm/Resolver are consumers that
+-- read or command the truth through that one door. Multiple representations with disagreeing identity
+-- are what produce accounting bugs (stale rolls, cross-drop bleed, won-copy-blocks-new); a single
+-- owner makes that drift structurally impossible.
 --
 -- PURE: no frames, no SendCommMessage, no GetContainerItemInfo, no roster. Winner-picking is
 -- delegated through an injected resolver. The core can be verified with a plain Lua interpreter
@@ -68,7 +67,7 @@
 --   7. physical fate is a recorded transition (MarkDelivered or removed), never inferred from a drop.
 --
 -- INTERACTION (every consumer goes through this one door, by id):
---   Session (ML) feeds bag counts in via Reconcile and rebuilds session.items/results projections
+--   Session (ML) feeds bag counts in via Reconcile and rebuilds the loot projection (addon.lootView)
 --     on ledgerChanged; persists/restores the ledger via SaveTo/LoadFrom.
 --   LiveRoll drives Surface/Skip/StartRoll/Cancel/SetResponse/Resolve and reacts to lotAdded/
 --     ledgerChanged to show/close popups.

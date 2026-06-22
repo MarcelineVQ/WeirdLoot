@@ -465,6 +465,44 @@ test("two peers, one drops a delta, both converge", function()
     eq(view(r2), view(ml), "R2 converged after gap-triggered resync")
 end)
 
+test("heartbeat heals a peer that missed the last delta in a quiet session", function()
+    reset()
+    local ml = makeHost("ML", true)
+    local rd = makeHost("Raider", false)
+    ml.roster = { ML = true, Raider = true }
+    ml.chan:Broadcast(true); deliver()           -- synced at baseline
+    eq(view(rd), view(ml), "synced at baseline")
+
+    -- DROP the only delta and let the session go quiet: gap detection can never trigger because no
+    -- future delta arrives to reveal the miss.
+    deltaChange(ml, "L9", "resolved")
+    clearWire()
+    check(rd.chan.lastRev < ml.chan.rev, "peer is behind the authority's rev")
+
+    -- the authority's heartbeat announces the current rev; the behind peer resyncs off it.
+    CLOCK = CLOCK + 31
+    ml.chan:Tick()
+    deliver()
+    check(countEv(rd, "recv-hb-gap") >= 1, "peer detected it was behind from the heartbeat")
+    settle()
+    eq(view(rd), view(ml), "peer converged via heartbeat-triggered resync")
+end)
+
+test("an in-sync peer ignores the heartbeat", function()
+    reset()
+    local ml = makeHost("ML", true)
+    local rd = makeHost("Raider", false)
+    ml.roster = { ML = true, Raider = true }
+    ml.chan:Broadcast(true); deliver()
+    eq(rd.chan.lastRev, ml.chan.rev, "peer at authority's rev")
+
+    CLOCK = CLOCK + 31
+    ml.chan:Tick()
+    deliver()
+    eq(rd.chan.pendingRequest, nil, "in-sync peer did not request a resync")
+    eq(countEv(rd, "recv-hb-gap"), 0, "in-sync peer logged no heartbeat gap")
+end)
+
 -- ===========================================================================
 print("")
 print(string.format("=== WeirdSync battery: %d passed, %d failed ===", pass, fail))

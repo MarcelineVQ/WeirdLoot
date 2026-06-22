@@ -781,7 +781,7 @@ function addon:ProcessLoot()
     self.sessionDb.history[#self.sessionDb.history + 1] = {
         sessionId = session.id,
         timestamp = time(),
-        results = util:CloneTable(session.results or {}),
+        results = util:CloneTable(self.lootView.results or {}),
     }
 
     local text = "Loot has been rolled on, check the Results tab."

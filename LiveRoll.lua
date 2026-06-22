@@ -224,7 +224,10 @@ end
 -- popup frames (custom, stacking)
 -- ---------------------------------------------------------------------------
 local POPUP_W, POPUP_H = 340, 94
-local POPUP_INTEREST_EMPTY_H = 64       -- floor height for a compact popup with no roll lines
+local POPUP_INTEREST_EMPTY_H = 64       -- floor height for a compact raider popup (one button row)
+local POPUP_INTEREST_OWNER_H = 92       -- floor for the ML popup: its End Roll/Cancel row sits BELOW
+                                        -- the brackets, so the brackets push up; this keeps them clear
+                                        -- of the item icon/name instead of overlapping (mis-clicks).
 local RESPONSE_ORDER = { bis = 5, ms = 4, mu = 3, os = 2, tm = 1, pass = 0 }
 local RESPONSE_LABELS = { bis = "BiS", ms = "MS", mu = "MU", os = "OS", tm = "TM", pass = "Pass" }
 -- ROLL_DURATION / getOptions / getRollDuration are declared at the top of the file so the
@@ -344,7 +347,8 @@ end
 local function getCompactPopupHeight(f)
     local nameHeight = math.ceil(f.name:GetStringHeight() or 0)
     local subHeight = math.ceil(f.sub:GetStringHeight() or 0)
-    return math.max(POPUP_INTEREST_EMPTY_H, 39 + nameHeight + subHeight)
+    local floor = f.isOwner and POPUP_INTEREST_OWNER_H or POPUP_INTEREST_EMPTY_H
+    return math.max(floor, 39 + nameHeight + subHeight)
 end
 
 local function getCompactResultPopupHeight(f)
@@ -368,8 +372,7 @@ local function showRollCountTooltip(self, f)
         GameTooltip:AddLine("No active rollers", 1, 1, 1)
     else
         for _, entry in ipairs(entries) do
-            local colorCode = util:GetClassColorCode(entry.className) or "|cffffffff"
-            GameTooltip:AddLine(string.format("%s%s|r - %d - %s", colorCode, entry.name or "Unknown", entry.roll or 0, RESPONSE_LABELS[entry.tier] or string.upper(entry.tier or "")), 1, 1, 1)
+            GameTooltip:AddLine(string.format("%s - %d - %s", util:ColorPlayerName(entry.name, entry.className), entry.roll or 0, RESPONSE_LABELS[entry.tier] or string.upper(entry.tier or "")), 1, 1, 1)
         end
     end
 
@@ -709,11 +712,18 @@ end
 -- its timer expires the others DON'T slide up to fill the gap (that shifting was
 -- confusing). A closing popup frees its slot; the next new popup reuses the lowest free
 -- one.
+local POPUP_GAP = 3
 layoutPopups = function(self)
-    for _, f in ipairs(self.live.active) do
-        local slot = f.slot or 0
+    -- Stack by each popup's ACTUAL (compact) height in slot order, not a fixed POPUP_H pitch, so
+    -- there is no dead space between the now-compact cards. Slot order keeps positions stable.
+    local ordered = {}
+    for _, f in ipairs(self.live.active) do ordered[#ordered + 1] = f end
+    table.sort(ordered, function(a, b) return (a.slot or 0) < (b.slot or 0) end)
+    local y = 0
+    for _, f in ipairs(ordered) do
         f:ClearAllPoints()
-        f:SetPoint("TOP", self.live.anchor or UIParent, "TOP", 0, -slot * (POPUP_H + 8))
+        f:SetPoint("TOP", self.live.anchor or UIParent, "TOP", 0, y)
+        y = y - ((f:GetHeight() or POPUP_H) + POPUP_GAP)
     end
 end
 
@@ -1049,6 +1059,8 @@ function addon:ShowPendingPopup(lot, slot)
     f:SetScript("OnUpdate", nil)        -- no countdown until the roll actually starts
     f.timer:Hide()
     f.lotId = lotId
+    f.isOwner = true                    -- pending popups are ML-only; size to the owner floor now so
+                                        -- starting the roll (interest popup, same floor) doesn't grow/shift
 
     f.icon:SetTexture(icon or "Interface\\Icons\\INV_Misc_QuestionMark")
     f.itemLink = link
@@ -1116,7 +1128,7 @@ function addon:ShowResultPopup(roll, winners, sections, slot)
     local myKey = util:NormalizeKey(util:GetPlayerName("player") or "")
 
     -- The core hands us `winners` as an ordered list of name strings; enrich each with its roll
-    -- and priority section from the breakdown so the popup can render upstream's class-colored
+    -- and priority section from the breakdown so the popup can render the class-colored
     -- "Winner: Name - roll - section" line.
     local winnerList = {}
     local winnerKeys = {}
@@ -1154,10 +1166,8 @@ function addon:ShowResultPopup(roll, winners, sections, slot)
         local winnerParts = {}
         for _, winner in ipairs(winnerList) do
             local className = getPlayerClassName(self, winner.key)
-            local colorCode = util:GetClassColorCode(className) or "|cffffffff"
-            winnerParts[#winnerParts + 1] = string.format("%s%s|r - %s - %s",
-                colorCode,
-                winner.name or "Unknown",
+            winnerParts[#winnerParts + 1] = string.format("%s - %s - %s",
+                util:ColorPlayerName(winner.name, className),
                 tostring(winner.roll or "-"),
                 winner.section or "?")
         end
@@ -1196,8 +1206,7 @@ function addon:ShowResultPopup(roll, winners, sections, slot)
                     local key = util:NormalizeKey(m.name)
                     local winnerType = s.label or "?"
                     local className = getPlayerClassName(self, key)
-                    local colorCode = util:GetClassColorCode(className) or "|cffffffff"
-                    GameTooltip:AddLine(string.format("  %s%s|r - %s - %s", colorCode, m.name or "Unknown", tostring(m.roll or "-"), winnerType), 1, 1, 1)
+                    GameTooltip:AddLine(string.format("  %s - %s - %s", util:ColorPlayerName(m.name, className), tostring(m.roll or "-"), winnerType), 1, 1, 1)
                 end
             end
         end
@@ -1341,9 +1350,9 @@ function addon:StartLiveRoll(lotId)
 end
 
 -- ---------------------------------------------------------------------------
--- loot-tab roll buttons (upstream UI) routed through the core. Rolls are keyed by lot id
+-- loot-tab roll buttons routed through the core. Rolls are keyed by lot id
 -- (roll.id == lot.id == item.id), so identity is the lot, never a link, and start/skip go
--- through the core's lifecycle commands rather than the old link-based popup bookkeeping.
+-- through the core's lifecycle commands. A link can't uniquely name a copy; the lot id can.
 -- ---------------------------------------------------------------------------
 
 -- The active (unresolved) live roll for a loot row, by lot id. No link fallback or scan: the
@@ -1490,10 +1499,30 @@ end
 function addon:OnDropMessage(fields)
     -- wire: { lotId, itemId, prio, duration, quantity }. Render display from itemId so each
     -- client shows its OWN localized name/link/icon.
+    local lotId = fields[1]
     local itemId = tonumber(fields[2])
+
+    -- Receive-side trace: when a roll-start reaches THIS raider and what the reliably-synced ledger
+    -- already says about the lot. With the send-side `send` trace, the t timestamps tell us whether a
+    -- DROP arrived inside its roll window or late (e.g. a batch flushed after a loading screen), which
+    -- distinguishes a transport delay from the client never processing events during the roll.
+    local core = self.lootCore
+    local lot = core and core:Get(lotId)
+    local coreState = lot and lot.state or "none"
+    self:LogCoreEvent("recv-drop", { id = lotId, item = itemId, state = coreState, rem = tonumber(fields[4]) })
+
+    -- A roll-start carries only RELATIVE remaining seconds, so a late one (lost DROP recovered slowly,
+    -- or the client buffering messages through a loading screen) would open a "fresh" full-duration
+    -- popup for a roll that is already over. Defer to the authoritative ledger: if the lot has already
+    -- left ROLLING (resolved/removed), this DROP is stale, so ignore it: showing it would be a dead,
+    -- un-rollable popup. A still-unknown or still-rolling lot shows normally.
+    if lot and (lot.removed or coreState == core.STATE.RESOLVED) then
+        return
+    end
+
     local name, link, icon = util:ItemRender(itemId)
     local roll = {
-        id = fields[1],
+        id = lotId,
         itemId = itemId,
         link = link,
         name = name or link or ("item:" .. tostring(itemId)),
@@ -1517,6 +1546,7 @@ function addon:OnWinMessage(fields)
     -- wire: { lotId, itemId, winnersText, "roll", "0", sectionsText }
     local rollId, itemId, winnersText, sectionsText = fields[1], tonumber(fields[2]), fields[3], fields[6]
     local roll = self.live.rolls[rollId]
+    self:LogCoreEvent("recv-win", { id = rollId, item = itemId, hasPopup = (roll and roll.popup) ~= nil })
     if not roll then
         local name, link, icon = util:ItemRender(itemId)
         roll = { id = rollId, itemId = itemId, link = link, name = name or link, icon = icon }
