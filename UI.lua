@@ -1556,8 +1556,14 @@ function addon:BuildMasterTab()
         addon:StartLootSession()
     end)
 
+    local endSessionButton = createButton(panel, "End Session", 120, 24)
+    endSessionButton:SetPoint("LEFT", startButton, "RIGHT", 8, 0)
+    endSessionButton:SetScript("OnClick", function()
+        StaticPopup_Show("WEIRDLOOT_END_SESSION")
+    end)
+
     local scanButton = createButton(panel, "Scan Bags", 120, 24)
-    scanButton:SetPoint("LEFT", startButton, "RIGHT", 8, 0)
+    scanButton:SetPoint("LEFT", endSessionButton, "RIGHT", 8, 0)
     scanButton:SetScript("OnClick", function()
         addon:RefreshSessionItems(true)
     end)
@@ -1617,6 +1623,7 @@ function addon:BuildMasterTab()
     end)
 
     panel.startButton = startButton
+    panel.endSessionButton = endSessionButton
     panel.scanButton = scanButton
     panel.processButton = processButton
     panel.unlockButton = unlockButton
@@ -1902,7 +1909,7 @@ function addon:BuildOptionsTab()
     -- Auto-roll new loot (loot master). Mirrors /wl autoroll. Mutually exclusive with auto-skip.
     local autoRollCB = createOptionsCheckbox(panel, "Auto-start a live roll when new loot lands in bags")
     autoRollCB:SetPoint("TOPLEFT", batchLabel, "BOTTOMLEFT", 0, -16)
-    autoRollCB:SetChecked(self.db.autoRoll ~= false and not (opt.autoSkipRoll and true or false))
+    autoRollCB:SetChecked(self.db.autoRoll == true and not (opt.autoSkipRoll and true or false))
 
     -- Auto-skip live rolls (loot master). Mutually exclusive with auto-roll: turning one on
     -- forces the other off. Both off => the ML drives every roll manually from the loot tab.
@@ -1956,7 +1963,7 @@ function addon:BuildOptionsTab()
     end)
 
     -- Whitelist
-    local whitelistCB = createOptionsCheckbox(panel, "Enable White List (Warning: You will ONLY see loot popups for items on this list)")
+    local whitelistCB = createOptionsCheckbox(panel, "Enable White List |cffff3030(Warning: You will ONLY see loot popups for items on this list)|r")
     whitelistCB:SetPoint("TOPLEFT", explanationTipsCB, "BOTTOMLEFT", 0, -24)
     whitelistCB:SetChecked(opt.whitelistEnabled and true or false)
     whitelistCB:SetScript("OnClick", function(selfCB)
@@ -2051,7 +2058,7 @@ function addon:BuildOptionsTab()
     end
 
     -- Blacklist
-    local blacklistCB = createOptionsCheckbox(panel, "Enable Black List (Warning: you will ONLY see loot popups for items NOT on this list)")
+    local blacklistCB = createOptionsCheckbox(panel, "Enable Black List |cffff3030(Warning: you will ONLY see loot popups for items NOT on this list)|r")
     blacklistCB:SetPoint("TOP", whitelistBox, "BOTTOM", 0, -16)
     blacklistCB:SetPoint("LEFT", panel, "LEFT", 12, 0)
     blacklistCB:SetChecked(opt.blacklistEnabled and true or false)
@@ -2240,6 +2247,7 @@ function addon:BuildOptionsTab()
     panel.rollBatchBox = batchBox
     panel.autoRollCB = autoRollCB
     panel.autoSkipCB = autoSkipCB
+    panel.deerEditBox = deerBox
     panel.whitelistCB = whitelistCB
     panel.whitelistBox = whitelistBox
     panel.whitelistPresetDropdown = wlPresetDropdown
@@ -2252,6 +2260,23 @@ function addon:BuildOptionsTab()
     panel.blacklistDeleteBtn = deleteBtn
     panel.minimapCB = minimapCB
     panel.anchorDrop = anchorDrop
+end
+
+-- Re-sync the options-tab widgets from db state. Called from the slash-command handlers so a
+-- toggle made on the command line is reflected in the open Options tab without a reload.
+function addon:RefreshOptionsTab()
+    local inner = self.ui and self.ui.optionsPanel
+    if not inner then return end
+    local opt = (self.db and self.db.options) or {}
+    if inner.autoRollCB then
+        inner.autoRollCB:SetChecked(self.db.autoRoll == true and not (opt.autoSkipRoll and true or false))
+    end
+    if inner.autoSkipCB then
+        inner.autoSkipCB:SetChecked(opt.autoSkipRoll and true or false)
+    end
+    if inner.deerEditBox and inner.deerEditBox.editBox then
+        inner.deerEditBox.editBox:SetText(self.db.deer or "")
+    end
 end
 
 local function positionMinimapButton(button)
@@ -2565,6 +2590,7 @@ function addon:RefreshMasterTab()
 
     if authorized then
         panel.startButton:Enable()
+        panel.endSessionButton:Enable()
         panel.scanButton:Enable()
         panel.processButton:Enable()
         panel.exportWinnersButton:Enable()
@@ -2576,6 +2602,7 @@ function addon:RefreshMasterTab()
         panel.payoutButton:Enable()
     else
         panel.startButton:Disable()
+        panel.endSessionButton:Disable()
         panel.scanButton:Disable()
         panel.processButton:Disable()
         panel.exportWinnersButton:Disable()
