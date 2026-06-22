@@ -233,7 +233,7 @@ end
 -- ---------------------------------------------------------------------------
 local POPUP_W, POPUP_H = 340, 94
 local POPUP_INTEREST_EMPTY_H = 64       -- floor height for a compact raider popup (one button row)
-local POPUP_INTEREST_OWNER_H = 92       -- floor for the ML popup: its End Roll/Cancel row sits BELOW
+local POPUP_INTEREST_OWNER_H = 64       -- floor for the ML popup: End/Cancel live in the TOP-RIGHT corner, so the popup matches the raider's height
                                         -- the brackets, so the brackets push up; this keeps them clear
                                         -- of the item icon/name instead of overlapping (mis-clicks).
 local RESPONSE_ORDER = { bis = 5, ms = 4, mu = 3, os = 2, tm = 1, pass = 0 }
@@ -475,12 +475,11 @@ local function resetInterestButtons(f)
 end
 
 local function positionInterestButtons(f, isOwner)
+    -- Brackets always sit at the bottom of the popup. The ML's End/Cancel row no longer occupies
+    -- a row at the bottom -- it lives in the top-right corner -- so both owner and raider use the
+    -- same bottom-anchored bracket layout.
     f.bisBtn:ClearAllPoints()
-    if isOwner then
-        f.bisBtn:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 8, 32)
-    else
-        f.bisBtn:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 8, 10)
-    end
+    f.bisBtn:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 8, 10)
 end
 
 local function isPlayerAllowedForRoll(self, roll, playerName)
@@ -731,13 +730,16 @@ local function makePopup()
     -- which owns each button's enabled/disabled state: an enabled bracket spells out its name, a
     -- disabled one explains the class restriction instead. Setting them here would be clobbered.
 
-    -- control row (loot master): End Roll / Cancel on the left, OK (result mode) on the right
-    f.rollBtn = makeButton(f, "End Roll", 56)
-    f.rollBtn:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 8, 10)
-    f.cancelBtn = makeButton(f, "Cancel", 50)
-    f.cancelBtn:SetPoint("LEFT", f.rollBtn, "RIGHT", 6, 0)
+    -- Loot-master control row (compact): End/Start on the right, Cancel/Skip immediately to its
+    -- left, both tucked into the popup's TOP-RIGHT corner so the bracket buttons can sit at the
+    -- bottom of the frame (same layout as the raider's popup). OK is shown in result mode only and
+    -- re-anchors to TOPRIGHT at show time.
+    f.rollBtn = makeButton(f, "End", 40)
+    f.rollBtn:SetPoint("TOPRIGHT", f, "TOPRIGHT", -6, -6)
+    f.cancelBtn = makeButton(f, "Cancel", 46)
+    f.cancelBtn:SetPoint("RIGHT", f.rollBtn, "LEFT", -4, 0)
     f.okBtn = makeButton(f, "OK", 60)
-    f.okBtn:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -8, 10)
+    f.okBtn:SetPoint("TOPRIGHT", f, "TOPRIGHT", -8, -8)
 
     -- countdown bar along the bottom edge; shrinks over the roll's duration
     f.timer = CreateFrame("StatusBar", nil, f)
@@ -1002,14 +1004,19 @@ function addon:ShowInterestPopup(roll, slot)
     applyInterestButtonAvailability(self, f, roll)   -- disable brackets the player's class can't use
 
     if roll.owner then
-        -- the ML keeps the popup to drive the roll: Cancel aborts, Roll! resolves
+        -- the ML keeps the popup to drive the roll: Cancel aborts, End resolves.
+        -- Interest popup layout: End on the right, Cancel to its left.
         f.rollBtn:Show()
-        f.rollBtn:SetWidth(56)
-        f.rollBtn:SetText("End Roll")
+        f.rollBtn:SetWidth(40)
+        f.rollBtn:SetText("End")
+        f.rollBtn:ClearAllPoints()
+        f.rollBtn:SetPoint("TOPRIGHT", f, "TOPRIGHT", -6, -6)
         f.rollBtn:SetScript("OnClick", function() self:ResolveLiveRoll(roll.id) end)
         f.cancelBtn:Show()
-        f.cancelBtn:SetWidth(50)
+        f.cancelBtn:SetWidth(46)
         f.cancelBtn:SetText("Cancel")
+        f.cancelBtn:ClearAllPoints()
+        f.cancelBtn:SetPoint("RIGHT", f.rollBtn, "LEFT", -4, 0)
         f.cancelBtn:SetScript("OnClick", function() self:CancelLiveRoll(roll.id) end)
     else
         f.rollBtn:Hide()
@@ -1140,16 +1147,21 @@ function addon:ShowPendingPopup(lot, slot)
 
     f.bisBtn:Hide(); f.msBtn:Hide(); f.muBtn:Hide(); f.osBtn:Hide(); f.tmBtn:Hide(); f.passBtn:Hide(); f.okBtn:Hide()
 
+    -- Pending popup layout: Skip on the right, Start to its left.
     f.cancelBtn:Show()
-    f.cancelBtn:SetWidth(50)
+    f.cancelBtn:SetWidth(36)
     f.cancelBtn:SetText("Skip")
+    f.cancelBtn:ClearAllPoints()
+    f.cancelBtn:SetPoint("TOPRIGHT", f, "TOPRIGHT", -6, -6)
     f.cancelBtn:SetScript("OnClick", function()
         self.lootCore:Skip(lotId)       -- pending -> skipped; ledgerChanged closes this popup
     end)
 
     f.rollBtn:Show()
-    f.rollBtn:SetWidth(90)
-    f.rollBtn:SetText("Start Roll")
+    f.rollBtn:SetWidth(40)
+    f.rollBtn:SetText("Start")
+    f.rollBtn:ClearAllPoints()
+    f.rollBtn:SetPoint("RIGHT", f.cancelBtn, "LEFT", -4, 0)
     f.rollBtn:SetScript("OnClick", function()
         closePopup(self, f)
         self:StartLiveRoll(lotId)
