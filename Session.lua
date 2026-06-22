@@ -415,6 +415,13 @@ function addon:StartLootSession()
     -- owed, a winner opening a trade with the ML auto-fills.
     self:ResumePayoutMode()
 
+    -- A new session is a new epoch, so force a full snapshot: raiders must rebaseline to it to
+    -- activate the session (session.active is set only when a snapshot is applied, never by a delta,
+    -- and deltas do not carry the epoch). Without this a raider whose last sync predates the session
+    -- applies the new lots as plain deltas and never activates, until the heartbeat catches the epoch
+    -- change up to ~30s later.
+    self:AutoBroadcastSession(true)
+
     self:TriggerCallback("SESSION_UPDATED")
     self:Print("Loot session started. Payout mode ON.")
 end
