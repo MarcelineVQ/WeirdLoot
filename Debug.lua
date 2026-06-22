@@ -25,7 +25,7 @@ local DEFAULT_MAX = 5000
 local function ensureLog()
     WeirdLootDebugLog = WeirdLootDebugLog or {}
     local log = WeirdLootDebugLog
-    if log.enabled == nil then log.enabled = true end
+    if log.enabled == nil then log.enabled = false end   -- opt-in: trace only after /wl debug on
     log.max = log.max or DEFAULT_MAX
     log.seq = log.seq or 0
     log.records = log.records or {}
@@ -129,7 +129,12 @@ function addon:HandleDebugCommand(rest)
     local verb, arg = string.match(rest, "^(%S+)%s*(.*)$")
     verb = verb and string.lower(verb) or ""
 
-    if verb == "" or verb == "status" then
+    if verb == "" then
+        self:Print("Core debug trace (off by default; turn it on once and the setting persists). Commands:")
+        self:Print("  on / off: start or stop tracing.   status: state and record count.")
+        self:Print("  mark <label>: insert a marker for easier log chasing.   dump: show recent records.   clear: wipe it.")
+        self:Print("  sync: force a session sync.   drop <n>: (test) drop the next N sync sends.")
+    elseif verb == "status" then
         local drop = self._syncDropCount or 0
         self:Print(string.format("Core debug log: %s, %d record(s), seq %d, cap %d.%s",
             log.enabled and "ON" or "OFF", #log.records, log.seq or 0, log.max or DEFAULT_MAX,
@@ -167,6 +172,6 @@ function addon:HandleDebugCommand(rest)
             end
         end
     else
-        self:Print("Usage: /wl debug [status|on|off|clear|mark <label>|dump|drop <n>|sync]")
+        self:Print("Unknown debug command '" .. verb .. "'. Type /wl debug for options.")
     end
 end
