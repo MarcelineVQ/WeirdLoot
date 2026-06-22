@@ -416,6 +416,21 @@ test("pre-roll duplicate grows the open lot (one row, quantity 2)", function()
     eq(w.addon.lootView.items[1].quantity, 2, "projection quantity 2")
 end)
 
+test("skip then re-drop re-surfaces the lot (popup returns for new loot)", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    setBag(w, 40002, 1); bagUpdate(w)
+    local lot = openLot(w, 40002)
+    eq(w.addon.lootCore:State(lot.id), "pending", "first drop surfaced")
+    w.addon.lootCore:Skip(lot.id)
+    eq(w.addon.lootCore:State(lot.id), "skipped", "skip snoozes it")
+    -- same boss killed again: a second copy enters the bags. The fresh count increase must
+    -- re-surface the snoozed lot rather than leave it stuck (the surfacing-by-mint-event bug).
+    setBag(w, 40002, 2); bagUpdate(w)
+    eq(w.addon.lootCore:State(lot.id), "pending", "re-drop re-surfaces the skipped lot")
+    eq(openLot(w, 40002).count, 2, "count grew to 2")
+end)
+
 test("live roll: single copy, two rollers -> one owed winner + payout", function()
     local w = makeWorld("Masterlooter", true)
     startSession(w)

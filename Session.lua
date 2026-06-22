@@ -697,10 +697,6 @@ function addon:IsItemLocked(lotId)
     return self.lootCore:IsResolved(lotId)
 end
 
--- Retained as no-ops: locking/unlocking is a side effect of Resolve/Unlock in the core now.
-function addon:LockItem() end
-function addon:UnlockItem() end
-
 function addon:GetResultByItemId(lotId)
     for _, result in ipairs(self.lootView.results or {}) do
         if result.itemId == lotId then
@@ -709,8 +705,6 @@ function addon:GetResultByItemId(lotId)
     end
     return nil
 end
-
-function addon:RemoveResultByItemId() end
 
 function addon:HasLockedItems()
     return #self.lootCore:Resolved() > 0

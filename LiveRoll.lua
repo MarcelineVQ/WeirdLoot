@@ -123,38 +123,46 @@ function addon:InitializeLiveRoll()
         self.live.anchor = anchor
     end
 
-    -- The core drives surfacing now: a fresh lot auto-surfaces (ML + autoRoll), and any
-    -- ledger change reconciles the on-screen pending popups with the core's PENDING lots.
+    -- The core drives surfacing now: every ledger change reconciles the on-screen pending popups
+    -- against the core, surfacing fresh loot and closing popups for lots that have moved on.
     if self.lootCore and not self._liveRollWired then
         self._liveRollWired = true
-        self.lootCore:On("lotAdded", function(lot) self:OnLotAdded(lot) end)
         self.lootCore:On("ledgerChanged", function() self:SyncPendingPopups(); self:SyncRollPopups() end)
     end
 end
 
--- A freshly-minted lot auto-surfaces to the ML (unless autoRoll is off), moving it to
--- PENDING so SyncPendingPopups shows its Start Roll / Skip popup.
-function addon:OnLotAdded(lot)
-    if not self:IsAuthorizedLootMaster() then return end
-    if not self.db or not self.db.autoRoll then return end
-    if lot and lot.state == self.lootCore.STATE.NEW then
-        self.lootCore:Surface(lot.id)
-    end
-end
-
--- Reconcile pending popups against the core: show one for every PENDING lot that lacks a
--- popup, and close any pending popup whose lot has left PENDING (rolled / skipped / gone).
+-- Reconcile pending popups against the core on any ledger change: surface fresh loot to PENDING,
+-- show a popup for every live PENDING lot that lacks one, and close popups for lots that have left.
 function addon:SyncPendingPopups()
     if not self:IsAuthorizedLootMaster() then return end
     local core = self.lootCore
-    for _, lot in ipairs(core:List()) do
-        if lot.state == core.STATE.PENDING and not self:HasOpenPendingForLot(lot.id) then
-            self:ShowPendingPopup(lot)
+
+    -- Surface fresh loot here, state-driven, NOT off a one-shot mint event. A re-dropped copy that
+    -- GROWS an existing skipped/idle lot flips it back to NEW with no mint, so an event-only surface
+    -- would miss it and the popup would never reappear for loot seen before. autoRoll off => the ML
+    -- drives rolls from the loot tab, so do not auto-surface. SKIPPED/IDLE are deliberately left:
+    -- Skip must stick until a real new drop re-freshens the lot (-> NEW), and IDLE is the not-fresh
+    -- state. mint always rides a Reconcile -> ledgerChanged, so freshly minted lots land here too.
+    if self.db and self.db.autoRoll then
+        for _, lot in ipairs(core:List()) do
+            if lot.state == core.STATE.NEW then core:Surface(lot.id) end
         end
     end
+
+    local livePending = {}
+    for _, lot in ipairs(core:List()) do
+        if lot.state == core.STATE.PENDING then
+            livePending[lot.id] = true
+            if not self:HasOpenPendingForLot(lot.id) then self:ShowPendingPopup(lot) end
+        end
+    end
+
+    -- Close any pending popup whose lot is no longer a live PENDING: rolled, skipped, or its copies
+    -- all left the bags. A removed lot keeps state == PENDING (only the `removed` flag clears), so a
+    -- state check alone would leave a dead popup up; List() already excludes non-live lots.
     for i = #self.live.active, 1, -1 do
         local f = self.live.active[i]
-        if f.mode == "pending" and f.lotId and core:State(f.lotId) ~= core.STATE.PENDING then
+        if f.mode == "pending" and f.lotId and not livePending[f.lotId] then
             self:ClosePendingFrame(f)
         end
     end
@@ -1318,12 +1326,8 @@ function addon:GetLiveItemPrio(item)
     return formatLootRuleDisplay(lootRule) or "BiS > MS > MU > OS > TM"   -- default: bracket order
 end
 
--- Auto-surfacing and pending-popup restoration are now driven by core events
--- (OnLotAdded + SyncPendingPopups). These remain as thin entry points for any callers.
-function addon:AutoRollAddedItems()
-    self:SyncPendingPopups()
-end
-
+-- Pending-popup restoration is driven by core events (SyncPendingPopups); this stays as the
+-- entry point its callers (zone-in / authority-gained reconcile) use.
 function addon:RestorePendingPopups()
     self:SyncPendingPopups()
 end

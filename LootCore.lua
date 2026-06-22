@@ -545,17 +545,6 @@ function LootCore:State(id) local l = self.lots[id]; return l and l.state or nil
 function LootCore:IsResolved(id) local l = self.lots[id]; return l ~= nil and l.state == STATE.RESOLVED end
 function LootCore:LiveCount(id) local l = self.lots[id]; return l and liveCount(l) or 0 end
 
-function LootCore:Surfaceable() -- lots awaiting the ML's Start Roll / Skip
-    local out = {}
-    for i = 1, #self.order do
-        local l = self.lots[self.order[i]]
-        if l and (l.state == STATE.NEW or l.state == STATE.SKIPPED) and lotLive(l) then
-            out[#out + 1] = l
-        end
-    end
-    return out
-end
-
 function LootCore:List() -- live lots, mint order (the loot-tab projection)
     local out = {}
     for i = 1, #self.order do
