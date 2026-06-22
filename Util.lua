@@ -7,6 +7,22 @@ function string.trim(value)
     return (value or ""):match("^%s*(.-)%s*$")
 end
 
+-- The numeric item id is the canonical loot identity (links/names vary across clients).
+-- Parse it out of any item link or itemString.
+function util:ItemIdFromLink(link)
+    if type(link) ~= "string" then return nil end
+    local id = link:match("|Hitem:(%d+)") or link:match("item:(%d+)")
+    return id and tonumber(id) or nil
+end
+
+-- Render display fields from an itemId on demand. The link is force-cached by GetItemInfo;
+-- if the client hasn't cached it yet, fields may be nil until a later refresh.
+function util:ItemRender(itemId)
+    if not itemId then return nil end
+    local name, link, _, _, _, _, _, _, _, icon = GetItemInfo(itemId)
+    return name, link or ("item:" .. itemId), icon or "Interface\\Icons\\INV_Misc_QuestionMark"
+end
+
 function util:Split(value, delimiter)
     local results = {}
     if value == nil or value == "" then
@@ -232,6 +248,28 @@ function util:GetClassColorCode(className)
     end
 
     return string.format("|cff%02x%02x%02x", color.r * 255, color.g * 255, color.b * 255)
+end
+
+-- "You" rendering. Any name that resolves to the local player is shown as a special-colored
+-- "You" instead of the literal character name, so you instantly spot your own line in roll
+-- tooltips, the result popup, and Loot Results. Export text deliberately keeps literal names
+-- (it is shared with others, for whom "You" is meaningless).
+local YOU_COLOR = "|cff00ffcc"   -- aqua: distinct from every class color
+
+function util:IsSelfName(name)
+    if not name or name == "" then
+        return false
+    end
+    return self:NormalizeKey(name) == self:NormalizeKey(self:GetPlayerName("player") or "")
+end
+
+-- Color-coded display string for a player name: special "You" for the local player, otherwise the
+-- name in its class color. className is only used for the non-self color.
+function util:ColorPlayerName(name, className)
+    if self:IsSelfName(name) then
+        return YOU_COLOR .. "You|r"
+    end
+    return (self:GetClassColorCode(className) or "|cffffffff") .. tostring(name or "Unknown") .. "|r"
 end
 
 function util:FindBagItemByLink(itemLink)

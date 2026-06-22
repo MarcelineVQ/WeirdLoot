@@ -29,35 +29,51 @@ function addon:InitializePayout()
         debug  = function(text)
             if WeirdLootDB.payoutDebug then addon:Print("|cff888888[pay]|r " .. text) end
         end,
+        -- a completed trade is the authoritative "where it went": record per-copy delivery.
+        onDelivered = function(player, itemId)
+            local ok = addon.lootCore and addon.lootCore:MarkDeliveredFor(player, itemId, time())
+            -- trace the seam: did the engine report a delivery, and did the core match an owed award?
+            addon:LogCoreEvent("deliver-cb", { player = player, itemId = itemId, ok = ok and true or false })
+        end,
+        -- route the engine's own trade-flow trace to the same debug log as the core.
+        log = function(ev, data) addon:LogCoreEvent(ev, data) end,
     })
+
+    -- Owes are derived from the core's per-copy awards. A resolve adds owes for that lot's
+    -- non-ML winners (whispered once if payout is live); an unlock retracts them. The ML
+    -- owns this; raiders never run payout.
+    if self.lootCore and not self._payoutWired then
+        self._payoutWired = true
+        self.lootCore:On("lotResolved", function(lot) addon:OnLotResolvedPayout(lot) end)
+        self.lootCore:On("lotUnlocked", function(lot, winners) addon:OnLotUnlockedPayout(lot, winners) end)
+        -- core retired an owed copy (it left the bags): forgive it so payout never owes something
+        -- the core no longer backs. This keeps the two ledgers in sync during a live session.
+        self.lootCore:On("awardRemoved", function(itemId, winner) addon:OnAwardRemovedPayout(itemId, winner) end)
+    end
 end
 
--- Rebuild the owed ledger from the processed results. Called at the end of
--- ProcessLoot (loot-master side; already gated on IsAuthorizedLootMaster). We
--- CLEAR first so re-processing/re-rolling can't stack duplicate owes -- the ledger
--- always mirrors the latest results. result.itemId is a session id, so the real
--- WoW itemId is parsed from the item link.
-function addon:OwePayout(results)
-    if not self.payout then return 0 end
-    self.payout:ClearOwed()
+function addon:OnAwardRemovedPayout(itemId, winner)
+    if not self.payout or not self:IsAuthorizedLootMaster() then return end
+    if winner then self.payout:Forgive(winner, itemId) end
+end
+
+function addon:OnLotResolvedPayout(lot)
+    if not self.payout or not self:IsAuthorizedLootMaster() then return end
     local selfKey = addon.util:NormalizeKey(addon.util:GetPlayerName("player") or "")
-    local owed = 0
-    for _, result in ipairs(results or {}) do
-        local itemId = tonumber(string.match(result.itemLink or "", "|Hitem:(%d+)"))
-        if itemId then
-            for _, winner in ipairs(result.winners or {}) do
-                -- skip the ML winning their own loot: already in hand, no self-whisper
-                if winner and winner ~= "No winner" and addon.util:NormalizeKey(winner) ~= selfKey then
-                    self.payout:Owe(winner, itemId, 1, result.itemLink)
-                    owed = owed + 1
-                end
-            end
+    local _, link = addon.util:ItemRender(lot.itemId)
+    for _, award in ipairs(lot.awards or {}) do
+        local winner = award.state == addon.lootCore.AWARD.OWED and award.winner or nil
+        if winner and addon.util:NormalizeKey(winner) ~= selfKey then
+            self.payout:Owe(winner, lot.itemId, 1, link)
         end
     end
-    if owed > 0 then
-        self:Print(owed .. " winner item(s) ready. Click Start Payout (or /weirdloot payout) to hand them out.")
+end
+
+function addon:OnLotUnlockedPayout(lot, winners)
+    if not self.payout or not self:IsAuthorizedLootMaster() then return end
+    for _, winner in ipairs(winners or {}) do
+        self.payout:Forgive(winner, lot.itemId)
     end
-    return owed
 end
 
 local function refreshMaster(self)
@@ -94,6 +110,33 @@ function addon:StopPayout()
     end
 end
 
+-- An owe only exists because the ML is holding the item to hand over. If the ML does not
+-- physically hold it (delivered, vendored, traded away, or a stale owe from before this accounting
+-- existed), there is nothing to owe. Reconcile the persisted owe ledger against BAG REALITY -- the
+-- same tradeable counts the core reconciles against (itemId -> count) -- and forgive any owe we
+-- cannot back with a held copy. This is driven by the bag scan (Session:OnBagUpdate), which only
+-- calls it once bags have fully settled and no trade is mid-flight: that is the only safe moment to
+-- conclude "we do not have this". It keys off bag truth, never the core's loseable award history,
+-- so it can neither be fooled by a lost ledger nor wrongly delete a copy we still hold.
+function addon:ReconcilePayoutAgainstBags(heldCounts)
+    if not self.payout or not self:IsAuthorizedLootMaster() then return 0 end
+    heldCounts = heldCounts or {}
+    -- collect-then-forgive: Forgive mutates db.owed, so do not remove while iterating it
+    local stale = {}
+    for _, entry in pairs(self.payout:GetOwed() or {}) do
+        for _, item in ipairs(entry.items or {}) do
+            if (heldCounts[item.id] or 0) <= 0 then
+                stale[#stale + 1] = { player = entry.name, itemId = item.id }
+            end
+        end
+    end
+    for _, s in ipairs(stale) do
+        self.payout:Forgive(s.player, s.itemId)
+        self:LogCoreEvent("payout-reconcile", { player = s.player, itemId = s.itemId, reason = "not-held" })
+    end
+    return #stale
+end
+
 -- Turn payout mode on whenever a session is active (fresh start OR restored at login).
 -- payoutActive is runtime-only and resets every login, so a restored session would
 -- otherwise sit with owes that never whisper or auto-fill. Re-whispers anyone still
@@ -102,6 +145,19 @@ function addon:ResumePayoutMode()
     if not self.payout then return end
     if not (self.session and self.session.active) then return end
     if not self:IsAuthorizedLootMaster() then return end   -- only the real ML re-arms/whispers
+    -- Bags load in stages after a login. Reconcile owes against bag reality BEFORE whispering, but
+    -- only once bags have settled -- otherwise a half-loaded bag looks empty and we'd both whisper
+    -- AND forgive phantoms. If not settled yet, DEFER: set a flag the auth-retry loop re-fires each
+    -- frame until bags settle, so the re-whisper happens exactly once, against correct bag truth.
+    -- This is what makes the cleanup graceful by design: a stale owe for an item we no longer hold
+    -- is reconciled away here, before the login whisper, so it never goes out and never recurs.
+    local settled = self.bagSettleAt and (GetTime() >= self.bagSettleAt)
+    if not settled then
+        self._payoutResumePending = true
+        return
+    end
+    self._payoutResumePending = false
+    self:ReconcileLootNow()      -- settled bag scan forgives any owe we no longer hold (nothing to owe)
     local sent = self.payout:StartPayout()
     if sent and sent > 0 then
         self:Print("Payout mode ON: re-whispered " .. sent .. " owed winner(s).")

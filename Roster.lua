@@ -156,18 +156,58 @@ function addon:RefreshLootAuthority()
         isLootMaster = util:NormalizeKey(lootMasterName) == util:NormalizeKey(playerName)
     end
 
-    if not isLootMaster and isLeader and method ~= "master" then
-        isLootMaster = true                              -- leadership fallback (no ML set)
+    -- Leadership fallback, TEST MODE ONLY. WeirdLoot's job is trading out master-looted BoP, so the
+    -- only loot method it has authority over is "master". Under group / round-robin / free-for-all /
+    -- need-before-greed, loot goes straight to individuals and the leader has nothing to distribute, so
+    -- treating the leader as master looter there is a false positive. The only legitimate non-master
+    -- case is city/buddy testing (testMode), where there is no real ML but we still drive a session.
+    local testMode = self.db and self.db.testMode
+    if not isLootMaster and isLeader and method ~= "master" and testMode then
+        isLootMaster = true
     end
 
-    if not lootMasterName and isLeader then
+    if not lootMasterName and isLeader and testMode then
         lootMasterName = playerName
     end
 
     self.roster.lootMasterName = lootMasterName
     self.roster.isLootMaster = isLootMaster
 
+    -- Roster-unreadable detection: GetLootMethod knows master loot is on with the ML at a raid
+    -- index, but GetRaidRosterInfo cannot name that index -- a post-relog state the client cannot
+    -- recover from without a reload (it is why we, the actual ML, are not recognized). partyMasterIndex
+    -- == 0 means the API still flags US as that master looter, so we warn the right person; we do NOT
+    -- grant authority from it (raid authority stays gated on the real roster-name match above).
+    local nameAtML = (raidMasterIndex and raidMasterIndex > 0) and GetRaidRosterInfo(raidMasterIndex) or nil
+    self.roster.mlRosterUnreadable = self:RosterUnreadableForML(method, partyMasterIndex, raidMasterIndex, nameAtML)
+    if self.roster.mlRosterUnreadable then
+        -- Suppress the chat warning until bags settle (~5s after login). During the login/zone
+        -- window the roster is legitimately not yet populated, so the predicate is transiently true
+        -- even when the roster will load fine a moment later -- a false positive. The bag-settle
+        -- window is our "data has had time to arrive" signal, and the authRetry loop re-runs this at
+        -- 6/9/12/15s (past settle), so a genuinely-stuck post-relog state still warns.
+        local settled = self.bagSettleAt and (GetTime() >= self.bagSettleAt)
+        if settled and not self._rosterReloadWarned then
+            self._rosterReloadWarned = true
+            self:Print("|cffff4040The raid roster failed to load; loot-master controls are disabled until you /reload.|r")
+        end
+    else
+        self._rosterReloadWarned = nil
+    end
+
+    -- the core needs the ML identity to decide self-win (resolved) vs owed at resolve time
+    if self.lootCore then self.lootCore:SetML(lootMasterName) end
+
     self:TriggerCallback("AUTHORITY_UPDATED")
+end
+
+-- Pure predicate (unit-testable): the loot method points at a raid master looter that the
+-- (unloaded, post-relog) raid roster cannot name, while the API still flags US as that ML.
+function addon:RosterUnreadableForML(method, partyMasterIndex, raidMasterIndex, nameAtRaidML)
+    return method == "master"
+        and raidMasterIndex ~= nil and raidMasterIndex > 0
+        and nameAtRaidML == nil
+        and partyMasterIndex == 0
 end
 
 function addon:IsAuthorizedLootMaster()

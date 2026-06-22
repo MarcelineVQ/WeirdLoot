@@ -1,6 +1,12 @@
 local addon = WeirdLoot
 local util = addon.util
 
+-- Runtime-only loot projection: NEVER persisted. items/results are derived views of the lootCore
+-- ledger, rebuilt on every ledgerChanged. Keeping them on this addon-scoped table (not on
+-- self.session, which IS the persisted record) makes it structurally impossible to write a second,
+-- drift-prone copy of loot state to the SavedVariables. The core is the one persisted source of truth.
+addon.lootView = addon.lootView or { items = {}, results = {} }
+
 local MAX_BAG_ID = 4
 local SCAN_TOOLTIP_NAME = "WeirdLootScanTooltip"
 local tradeScanTooltip
@@ -14,9 +20,7 @@ local function buildSessionState(ownerKey)
         startSnapshot = {},
         currentSnapshot = {},
         scanMode = "delta",
-        items = {},
         responses = {},
-        results = {},
         lockedItems = {},
         pendingLinks = {},
         attendees = {},
@@ -161,11 +165,64 @@ function addon:InitializeSession()
     self.session.ownerKey = ownerKey
     self.session.lockedItems = self.session.lockedItems or {}
     self.session.pendingLinks = self.session.pendingLinks or {}
-    self.session.itemIdsByLink = self.session.itemIdsByLink or {}
-    self.session.nextItemSeq = self.session.nextItemSeq or 0
-    self.session.itemOrderByLink = self.session.itemOrderByLink or {}
-    self.session.nextItemOrder = self.session.nextItemOrder or 0
-    self.session.resolvedHeldByLink = self.session.resolvedHeldByLink or {}
+
+    -- self.session is the persisted record, so it must not carry the loot projection: that would
+    -- write loot state to disk a second time, beside the authoritative ledger. Keep it absent.
+    self.session.items = nil
+    self.session.results = nil
+
+    -- Persistence: the core owns a `lootCore` snapshot under the session so its accounting -- awards
+    -- and their disposition (owed/delivered/removed) -- survives a reload instead of being lost and
+    -- rebuilt empty from the current bags. Restore it BEFORE wiring the ledgerChanged handler so the
+    -- apply is silent (no broadcast/re-persist during init). The ML restores its authoritative
+    -- ledger; a raider restores a mirror that sync then corrects.
+    if self.lootCore then self.lootCore:LoadFrom(self.session) end
+
+    -- The LootCore owns loot truth; the loot projection is a derived view rebuilt from it.
+    -- Subscribe once: any ledger change re-projects, persists the ledger, refreshes the UI, syncs.
+    if self.lootCore and not self._lootCoreWired then
+        self._lootCoreWired = true
+        self.lootCore:On("ledgerChanged", function()
+            self:RebuildLootProjections()
+            self.lootCore:SaveTo(self.session)   -- keep the persisted ledger current
+            self:TriggerCallback("SESSION_UPDATED")
+            if self:IsAuthorizedLootMaster() then self:AutoBroadcastSession() end
+        end)
+    end
+    self:RebuildLootProjections()
+end
+
+-- Rebuild the runtime loot projection (addon.lootView.items / .results) from the core ledger.
+-- Runs on both the ML (after Reconcile/Resolve) and raiders (after ApplyRemote), so both render
+-- from one source of truth (the core), and the projection itself is never persisted. Names/
+-- links/icons are rendered on demand from itemId.
+function addon:RebuildLootProjections()
+    local core = self.lootCore
+    if not core then return end
+    local view = self.lootView
+
+    local items = {}
+    for _, lot in ipairs(core:List()) do
+        local name, link, icon = util:ItemRender(lot.itemId)
+        items[#items + 1] = {
+            id = lot.id,
+            itemId = lot.itemId,
+            link = link,
+            name = name or link or ("item:" .. tostring(lot.itemId)),
+            icon = icon,
+            quantity = core:LiveCount(lot.id),
+            state = lot.state,
+            responses = lot.responses,          -- playerKey -> tier string
+            locked = lot.state == core.STATE.RESOLVED,
+        }
+    end
+    view.items = items
+
+    local results = {}
+    for _, lot in ipairs(core:Resolved()) do
+        if lot.record then results[#results + 1] = lot.record end
+    end
+    view.results = results
 end
 
 function addon:BuildBagSnapshot()
@@ -206,8 +263,46 @@ function addon:HasAddedEpicLoot(currentSnapshot)
     return false
 end
 
+-- Remaining trade-window seconds parsed from an ALREADY-OPEN scan tooltip (no extra SetBagItem), so
+-- the bag scan can note the soonest-to-expire windowed item in the same pass. nil = no window line.
+local TRADE_TIME_PREFIX
+local function tradeTimePrefix()
+    if TRADE_TIME_PREFIX == nil then
+        local s = BIND_TRADE_TIME_REMAINING or "You may trade this item with players that were also eligible to loot it for the next %s."
+        TRADE_TIME_PREFIX = s:match("^(.-)%%s") or s
+    end
+    return TRADE_TIME_PREFIX
+end
+
+local function parseTradeDuration(text)
+    if not text then return nil end
+    local secs, found = 0, false
+    for num, unit in text:gmatch("(%d+)%s*(%a+)") do
+        unit = unit:lower()
+        if unit:find("day") then secs = secs + num * 86400; found = true
+        elseif unit:find("ho") or unit == "hr" or unit == "hrs" then secs = secs + num * 3600; found = true
+        elseif unit:find("min") then secs = secs + num * 60; found = true
+        elseif unit:find("sec") then secs = secs + num; found = true end
+    end
+    return found and secs or nil
+end
+
+local function tooltipTradeWindowSeconds(tooltip)
+    local prefix = tradeTimePrefix()
+    if not prefix or prefix == "" then return nil end
+    for i = 1, (tooltip:NumLines() or 0) do
+        local fs = _G[SCAN_TOOLTIP_NAME .. "TextLeft" .. i]
+        local txt = fs and fs:GetText()
+        if txt and txt:find(prefix, 1, true) then
+            return parseTradeDuration(txt:sub(#prefix + 1)) or 0
+        end
+    end
+    return nil
+end
+
 function addon:BuildTradeableEpicCounts()
     local counts = {}
+    local soonest                        -- soonest trade-window expiry (s) among counted windowed items
     local testMode = self.db and self.db.testMode
     local minQuality = testMode and 0 or 4
     local tooltip = getTradeScanTooltip()
@@ -229,12 +324,18 @@ function addon:BuildTradeableEpicCounts()
                 local tradeWindow = tooltipHasLine(tooltip, nil, "you may trade this item")
                 if (not soulbound) or tradeWindow then
                     counts[link] = (counts[link] or 0) + count
+                    if tradeWindow then
+                        local rem = tooltipTradeWindowSeconds(tooltip)
+                        if rem and (not soonest or rem < soonest) then soonest = rem end
+                    end
                 end
             elseif link and count > 0 and quality and quality >= minQuality then
-                local bindType = select(14, GetItemInfo(link))
-                local isBindOnEquip = bindType == 2
+                -- 3.3.5a GetItemInfo exposes no bind type (only the tooltip lines below do), so bind-on-
+                -- equip is read from the tooltip, not the item info.
+                local isBindOnEquip = false
                 local isTemporarilyTradeable = false
                 local isSoulbound = false
+                local windowSecs
 
                 tooltip:ClearLines()
                 tooltip:SetOwner(WorldFrame or UIParent, "ANCHOR_NONE")
@@ -242,6 +343,7 @@ function addon:BuildTradeableEpicCounts()
                 tooltip:Show()
                 if tooltipHasLine(tooltip, nil, "you may trade this item") then
                     isTemporarilyTradeable = true
+                    windowSecs = tooltipTradeWindowSeconds(tooltip)   -- read now, before SetHyperlink overwrites the tooltip
                 end
                 if tooltipHasLine(tooltip, ITEM_SOULBOUND, "soulbound") then
                     isSoulbound = true
@@ -260,12 +362,14 @@ function addon:BuildTradeableEpicCounts()
 
                 if isTemporarilyTradeable or (isBindOnEquip and not isSoulbound) then
                     counts[link] = (counts[link] or 0) + count
+                    if windowSecs and (not soonest or windowSecs < soonest) then soonest = windowSecs end
                 end
             end
         end
     end
 
     tooltip:Hide()
+    self._soonestLootExpiry = soonest    -- nil if nothing windowed; drives the expiry re-scan timer
     return counts
 end
 
@@ -283,17 +387,23 @@ function addon:StartLootSession()
     self.session.startSnapshot = self:BuildBagSnapshot()
     self.session.currentSnapshot = util:CloneTable(self.session.startSnapshot)
     self.session.scanMode = "delta"
-    self.session.items = {}
     self.session.responses = {}
-    self.session.results = {}
     self.session.lockedItems = {}
     self.session.pendingLinks = {}
     self.session.attendees = util:CloneTable(self:GetAttendees())
+    self.lootView = { items = {}, results = {} }    -- runtime projection; rebuilt by the Reconcile below
     self.session.itemIdsByLink = {}
     self.session.nextItemSeq = 0
     self.session.itemOrderByLink = {}
     self.session.nextItemOrder = 0
     self.session.resolvedHeldByLink = {}
+
+    -- Wipe the ledger and baseline the loot already in bags as idle (not fresh drops), so a
+    -- session started mid-bag does not auto-roll everything the ML is already carrying.
+    self.lootCore:Reset()
+    local eligible = self:ItemIdCounts(self:BuildTradeableEpicCounts())
+    self.session.prevEligible = eligible
+    self.lootCore:Reconcile(eligible, {})
 
     self.sessionDb.history = self.sessionDb.history or {}
 
@@ -305,6 +415,13 @@ function addon:StartLootSession()
     -- owed, a winner opening a trade with the ML auto-fills.
     self:ResumePayoutMode()
 
+    -- A new session is a new epoch, so force a full snapshot: raiders must rebaseline to it to
+    -- activate the session (session.active is set only when a snapshot is applied, never by a delta,
+    -- and deltas do not carry the epoch). Without this a raider whose last sync predates the session
+    -- applies the new lots as plain deltas and never activates, until the heartbeat catches the epoch
+    -- change up to ~30s later.
+    self:AutoBroadcastSession(true)
+
     self:TriggerCallback("SESSION_UPDATED")
     self:Print("Loot session started. Payout mode ON.")
 end
@@ -313,16 +430,12 @@ function addon:ClearSession()
     self.session.active = false
     self.session.ownerKey = self:GetSessionOwnerKey()
     self.session.scanMode = "delta"
-    self.session.items = {}
     self.session.responses = {}
-    self.session.results = {}
     self.session.lockedItems = {}
     self.session.pendingLinks = {}
-    self.session.itemIdsByLink = {}
-    self.session.nextItemSeq = 0
-    self.session.itemOrderByLink = {}
-    self.session.nextItemOrder = 0
-    self.session.resolvedHeldByLink = {}
+    self.session.prevEligible = {}
+    self.lootView = { items = {}, results = {} }
+    self.lootCore:Reset()
     self:TriggerCallback("SESSION_UPDATED")
 end
 
@@ -330,55 +443,15 @@ function addon:GetCurrentSession()
     return self.session
 end
 
-function addon:AssignPickupOrder(currentSnapshot, tradeableCounts, includeAllEpics)
-    local session = self:GetCurrentSession()
-    session.itemOrderByLink = session.itemOrderByLink or {}
-    session.nextItemOrder = session.nextItemOrder or 0
-
-    for bag = 0, MAX_BAG_ID do
-        local slots = GetContainerNumSlots(bag) or 0
-        for slot = 1, slots do
-            local link = GetContainerItemLink(bag, slot)
-            if link and currentSnapshot[link] and currentSnapshot[link] > 0 then
-                local eligibleCount = includeAllEpics and currentSnapshot[link] or (tradeableCounts[link] or 0)
-                if eligibleCount > 0 and not session.itemOrderByLink[link] then
-                    session.nextItemOrder = session.nextItemOrder + 1
-                    session.itemOrderByLink[link] = session.nextItemOrder
-                end
-            end
-        end
+-- Convert a link-keyed count map (from the bag scans) into an itemId-keyed one. Two links
+-- that share an itemId (e.g. random-suffix variants) collapse into one lot.
+function addon:ItemIdCounts(linkCounts)
+    local out = {}
+    for link, count in pairs(linkCounts or {}) do
+        local itemId = util:ItemIdFromLink(link)
+        if itemId then out[itemId] = (out[itemId] or 0) + count end
     end
-end
-
-function addon:NextSessionItemId()
-    local session = self:GetCurrentSession()
-    session.nextItemSeq = (session.nextItemSeq or 0) + 1
-    return string.format("%s:%d", session.id or "session", session.nextItemSeq)
-end
-
-function addon:AddResolvedHeldItem(link, quantity)
-    if not link or link == "" then
-        return
-    end
-
-    local session = self:GetCurrentSession()
-    session.resolvedHeldByLink = session.resolvedHeldByLink or {}
-    session.resolvedHeldByLink[link] = (session.resolvedHeldByLink[link] or 0) + math.max(tonumber(quantity) or 0, 0)
-end
-
-function addon:RemoveResolvedHeldItem(link, quantity)
-    if not link or link == "" then
-        return
-    end
-
-    local session = self:GetCurrentSession()
-    session.resolvedHeldByLink = session.resolvedHeldByLink or {}
-    local remaining = (session.resolvedHeldByLink[link] or 0) - math.max(tonumber(quantity) or 0, 0)
-    if remaining > 0 then
-        session.resolvedHeldByLink[link] = remaining
-    else
-        session.resolvedHeldByLink[link] = nil
-    end
+    return out
 end
 
 function addon:BuildSessionItemList(includeAllEpics)
@@ -458,6 +531,7 @@ end
 function addon:RefreshSessionItems(forceRefresh)
     local session = self:GetCurrentSession()
     if not session.active and not forceRefresh then
+        self:RebuildLootProjections()
         return
     end
     if not session.active and forceRefresh then
@@ -465,58 +539,23 @@ function addon:RefreshSessionItems(forceRefresh)
         session = self:GetCurrentSession()
     end
 
-    if forceRefresh then
-        session.scanMode = "all"
-    elseif session.scanMode ~= "all" then
-        session.scanMode = "delta"
+    if forceRefresh and self:IsAuthorizedLootMaster() then
+        -- manual Scan Bags: pick up all eligible loot and surface every open lot to the ML.
+        local eligible = self:ItemIdCounts(self:BuildManualScanCounts())
+        local fresh = {}
+        for itemId in pairs(eligible) do fresh[itemId] = true end
+        session.prevEligible = eligible
+        local core = self.lootCore
+        core:Reconcile(eligible, fresh)
+        for _, lot in ipairs(core:List()) do
+            if lot.state == core.STATE.IDLE or lot.state == core.STATE.NEW or lot.state == core.STATE.SKIPPED then
+                core:Surface(lot.id)
+            end
+        end
     end
 
-    local previousItemsByLink = {}
-    for _, item in ipairs(session.items or {}) do
-        previousItemsByLink[item.link] = item.id
-    end
-
-    local previousResponses = session.responses or {}
-    local previousLocks = session.lockedItems or {}
-    local previousResults = session.results or {}
-
-    session.items = self:BuildSessionItemList(session.scanMode == "all")
     session.attendees = util:CloneTable(self:GetAttendees())
-
-    local migratedResponses = {}
-    local migratedLocks = {}
-    local validLinks = {}
-    for _, item in ipairs(session.items) do
-        validLinks[item.link] = true
-
-        local previousId = previousItemsByLink[item.link]
-        if previousId and previousId == item.id then
-            migratedResponses[item.id] = util:CloneTable(previousResponses[previousId] or {})
-        else
-            migratedResponses[item.id] = {}
-        end
-
-        if previousId and previousId == item.id and previousLocks[previousId] then
-            migratedLocks[item.id] = true
-        end
-    end
-
-    session.responses = migratedResponses
-    session.lockedItems = migratedLocks
-    session.results = util:CloneTable(previousResults)
-
-    for link in pairs(session.itemIdsByLink or {}) do
-        if not validLinks[link] then
-            session.itemIdsByLink[link] = nil
-        end
-    end
-
-    for link in pairs(session.itemOrderByLink or {}) do
-        if not validLinks[link] then
-            session.itemOrderByLink[link] = nil
-        end
-    end
-
+    self:RebuildLootProjections()
     self:TriggerCallback("SESSION_UPDATED")
 end
 
@@ -525,69 +564,109 @@ function addon:OnBagUpdate()
     if not session.active then
         return false
     end
-
-    local currentSnapshot = self:BuildBagSnapshot()
-
-    -- Post-login settle window: bags load in STAGES after a login/reload, so a single
-    -- prime can baseline a partially-loaded bag and then mistake a later-loading bag's
-    -- items for fresh loot (auto-posting them). While inside the settle window we keep
-    -- re-baselining to the latest scan and never auto-roll. Genuine drops (you're not
-    -- looting in the first seconds after a loading screen) still roll once it closes.
-    if not self.bagSettleAt or (GetTime() < self.bagSettleAt) then
-        session.currentSnapshot = currentSnapshot
+    -- Only the ML reconciles bag reality into the ledger; raiders mirror via the snapshot.
+    if not self:IsAuthorizedLootMaster() then
         return false
     end
 
-    local previous = session.currentSnapshot or {}
+    local eligible = self:ItemIdCounts(self:BuildTradeableEpicCounts())
 
-    -- which item links gained count since the last scan -- i.e. were just looted or
-    -- traded in. These are the candidates for an automatic live roll.
-    local added = {}
-    local anyAdded = false
-    for link, count in pairs(currentSnapshot) do
-        local addedCount = count - (previous[link] or 0)
-        if addedCount > 0 then
-            added[link] = addedCount
-            anyAdded = true
+    -- Post-login settle window: bags load in STAGES after a login/reload. While inside it we
+    -- still reconcile (to baseline counts) but mark nothing fresh, so staged-loading items are
+    -- never mistaken for fresh drops and auto-surfaced.
+    local settled = self.bagSettleAt and (GetTime() >= self.bagSettleAt)
+    local prev = session.prevEligible or {}
+    local fresh = {}
+    if settled then
+        for itemId, count in pairs(eligible) do
+            if count > (prev[itemId] or 0) then fresh[itemId] = true end
         end
     end
+    session.prevEligible = eligible
 
-    session.currentSnapshot = currentSnapshot
-    if not anyAdded then
-        return false
+    -- While a trade window is open, a dropping count is the payout trade handing an owed item
+    -- over: protect owed awards so the trade-complete callback records delivery, not removal.
+    local protectOwed = self.payout and self.payout.IsTradeOpen and self.payout:IsTradeOpen()
+    self.lootCore:Reconcile(eligible, fresh, protectOwed) -- ledgerChanged -> projections + auto-surface (LiveRoll)
+
+    -- Reconcile the payout owe ledger against the same bag truth: an owe we can no longer back with
+    -- a held copy is nothing to owe. Only once bags have settled (so staged-loading items are not
+    -- read as gone) and no trade is mid-flight (an owed copy in the trade window is mid-delivery).
+    if settled and not protectOwed and self.ReconcilePayoutAgainstBags then
+        self:ReconcilePayoutAgainstBags(eligible)
     end
 
-    if session.scanMode == "all" then
-        self:RefreshSessionItems(true)
+    -- A trade window lapsing fires no game event, so schedule a single re-scan for just after the
+    -- soonest-to-expire item lapses; that pass drops it from the list, syncs raiders, and re-arms.
+    self:ArmTradeExpiryTimer(self._soonestLootExpiry)
+    return true
+end
+
+-- One-shot re-scan timer for the next trade-window lapse. We fire 5s AFTER the soonest item lapses:
+-- the buffer absorbs latency and coalesces a batch of items looted together into ONE check (we only
+-- ever track the single soonest expiry, never a per-item schedule). The re-scan drains the now-
+-- untradeable item and broadcasts to raiders; OnBagUpdate then re-arms for the next soonest.
+local tradeExpiryTimer = CreateFrame("Frame")
+tradeExpiryTimer:Hide()
+tradeExpiryTimer:SetScript("OnUpdate", function()
+    local at = addon._tradeExpiryAt
+    if not at then tradeExpiryTimer:Hide(); return end
+    if GetTime() >= at and not (InCombatLockdown and InCombatLockdown()) then
+        addon._tradeExpiryAt = nil
+        tradeExpiryTimer:Hide()
+        addon:ReconcileLootNow()
+    end
+end)
+
+function addon:ArmTradeExpiryTimer(seconds)
+    if seconds then
+        self._tradeExpiryAt = GetTime() + seconds + 5
+        tradeExpiryTimer:Show()
     else
-        self:RefreshSessionItems()
+        self._tradeExpiryAt = nil
+        tradeExpiryTimer:Hide()
     end
-
-    -- newly-arrived loot auto-starts a live roll (loot-master only, gated inside)
-    self:AutoRollAddedItems(added)
-    return true
 end
 
-function addon:SetPlayerResponse(itemId, playerName, choice)
-    local session = self:GetCurrentSession()
-    if self:IsItemLocked(itemId) then
+-- Re-scan bags and reconcile the ledger NOW (then broadcast any change), driven by triggers other
+-- than BAG_UPDATE: opening the loot tab, Start Roll, a periodic out-of-combat tick, and zone-in. A
+-- BoP trade window expiring fires no game event -- the item stays in bags, only its tooltip changes
+-- -- so without an out-of-band re-scan a now-untradeable item lingers on the list as rollable. The
+-- scan already excludes expired-window items; this just makes the reconcile actually run. No-op for
+-- raiders or when no session is active.
+function addon:ReconcileLootNow()
+    if self:OnBagUpdate() then self:AutoBroadcastSession(false) end
+end
+
+function addon:SetPlayerResponse(lotId, playerName, choice)
+    if self:IsItemLocked(lotId) then
         return false
     end
-    if not session.responses[itemId] then
-        session.responses[itemId] = {}
+    -- Only the ML mutates the authoritative ledger. A raider sends its pick to the ML and
+    -- waits for the snapshot to reflect it (mutating the local mirror would be overwritten).
+    if not self:IsAuthorizedLootMaster() then
+        self:SendSelection(lotId, choice)
+        return true
     end
-    session.responses[itemId][util:NormalizeKey(playerName)] = normalizeResponseChoice(choice)
-    self:TriggerCallback("SESSION_UPDATED")
-    if self.RefreshLiveRollCountForItem then
-        self:RefreshLiveRollCountForItem(itemId)
+    local applied = self.lootCore:SetResponse(lotId, util:NormalizeKey(playerName), normalizeResponseChoice(choice))
+    if applied then
+        self:TriggerCallback("SESSION_UPDATED")
+        if self.RefreshLiveRollCountForItem then
+            self:RefreshLiveRollCountForItem(lotId)
+        end
+        if self.MarkRollStateDirty then
+            self:MarkRollStateDirty(lotId)   -- throttled RSTATE -> raiders see the live pick list
+        end
+        -- Coalesced: a pick is NOT broadcast on its own (per-pick sends flood the wire during a
+        -- live roll). SetResponse marked the lot dirty in the core, so the pick rides the lot's
+        -- next LOTD: its resolve, or any other ledger change that flushes the delta. N picks on a
+        -- lot collapse into one message. The ML drives the live-roll count locally meanwhile.
     end
-    return true
+    return applied
 end
 
-function addon:GetPlayerResponse(itemId, playerName)
-    local session = self:GetCurrentSession()
-    local responses = session.responses[itemId] or {}
-    return normalizeResponseChoice(responses[util:NormalizeKey(playerName)])
+function addon:GetPlayerResponse(lotId, playerName)
+    return normalizeResponseChoice(self.lootCore:GetResponse(lotId, util:NormalizeKey(playerName)))
 end
 
 function addon:IsResponseActive(choice)
@@ -595,60 +674,37 @@ function addon:IsResponseActive(choice)
     return choice ~= "pass"
 end
 
-function addon:GetItemById(itemId)
-    for _, item in ipairs(self.session.items or {}) do
-        if item.id == itemId then
+function addon:GetItemById(lotId)
+    for _, item in ipairs(self.lootView.items or {}) do
+        if item.id == lotId then
             return item
         end
     end
     return nil
 end
 
-function addon:IsItemLocked(itemId)
-    local session = self:GetCurrentSession()
-    return session.lockedItems and session.lockedItems[itemId] == true or false
+-- Lock state lives in the core: a lot is "locked" once it has been resolved.
+function addon:IsItemLocked(lotId)
+    return self.lootCore:IsResolved(lotId)
 end
 
-function addon:LockItem(itemId)
-    local session = self:GetCurrentSession()
-    session.lockedItems = session.lockedItems or {}
-    session.lockedItems[itemId] = true
-end
+-- Retained as no-ops: locking/unlocking is a side effect of Resolve/Unlock in the core now.
+function addon:LockItem() end
+function addon:UnlockItem() end
 
-function addon:UnlockItem(itemId)
-    local session = self:GetCurrentSession()
-    session.lockedItems = session.lockedItems or {}
-    session.lockedItems[itemId] = nil
-end
-
-function addon:GetResultByItemId(itemId)
-    for _, result in ipairs(self.session.results or {}) do
-        if result.itemId == itemId then
+function addon:GetResultByItemId(lotId)
+    for _, result in ipairs(self.lootView.results or {}) do
+        if result.itemId == lotId then
             return result
         end
     end
     return nil
 end
 
-function addon:RemoveResultByItemId(itemId)
-    local results = self.session.results or {}
-    for index = #results, 1, -1 do
-        if results[index].itemId == itemId then
-            self:RemoveResolvedHeldItem(results[index].itemLink, results[index].quantity or 1)
-            table.remove(results, index)
-        end
-    end
-end
+function addon:RemoveResultByItemId() end
 
 function addon:HasLockedItems()
-    local session = self:GetCurrentSession()
-    for _, item in ipairs(session.items or {}) do
-        if self:IsItemLocked(item.id) then
-            return true
-        end
-    end
-
-    return false
+    return #self.lootCore:Resolved() > 0
 end
 
 function addon:UnlockAllRolls()
@@ -662,10 +718,7 @@ function addon:UnlockAllRolls()
         return false
     end
 
-    self.session.lockedItems = {}
-    self.session.results = {}
-    self.session.resolvedHeldByLink = {}
-    self:BroadcastSession()
+    self.lootCore:UnlockAll() -- ledgerChanged -> projections + snapshot broadcast
     self:TriggerCallback("RESULTS_UPDATED")
     self:Print("All loot unlocked for reroll.")
     return true

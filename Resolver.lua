@@ -2,37 +2,30 @@ local addon = WeirdLoot
 local util = addon.util
 
 function addon:InitializeResolver()
+    -- the core delegates winner-picking here, handing us exactly one lot's responses by id.
+    if self.lootCore then
+        self.lootCore:SetResolver(function(lot) return self:ResolveSessionItem(lot) end)
+    end
 end
 
-function addon:BuildRollerList(itemId)
-    local session = self:GetCurrentSession()
+-- Build the roller list from a lot's group-level responses (playerKey -> tier string).
+function addon:BuildRollerList(lot)
     local rollers = {}
-    local responses = session.responses[itemId] or {}
-    local item = self.GetItemById and self:GetItemById(itemId)
-    local itemName = item and item.name or nil
+    local responses = lot and lot.responses or {}
+    -- gate-tokens-by-class needs the item name; render it from the lot's itemId.
+    local itemName = lot and select(1, util:ItemRender(lot.itemId)) or nil
 
     for playerKey, choice in pairs(responses) do
         if self:IsResponseActive(choice) and self:IsPlayerAllowedForItem(itemName, playerKey) then
             local attendee = self:GetAttendee(playerKey) or self:GetRosterProfile(playerKey)
-            if attendee then
-                rollers[#rollers + 1] = {
-                    name = attendee.name or playerKey,
-                    className = attendee.className or "",
-                    specName = attendee.specName or "",
-                    status = attendee.status or "nil",
-                    descriptor = util:NormalizeKey((attendee.className or "") .. " " .. (attendee.specName or "")),
-                    responseType = self:GetPlayerResponse(itemId, playerKey),
-                }
-            else
-                rollers[#rollers + 1] = {
-                    name = playerKey,
-                    className = "",
-                    specName = "",
-                    status = "nil",
-                    descriptor = "",
-                    responseType = self:GetPlayerResponse(itemId, playerKey),
-                }
-            end
+            rollers[#rollers + 1] = {
+                name = attendee and attendee.name or playerKey,
+                className = attendee and attendee.className or "",
+                specName = attendee and attendee.specName or "",
+                status = attendee and attendee.status or "nil",
+                descriptor = util:NormalizeKey(((attendee and attendee.className) or "") .. " " .. ((attendee and attendee.specName) or "")),
+                responseType = choice,
+            }
         end
     end
 
@@ -371,10 +364,8 @@ function addon:BuildResultDetail(result)
 end
 
 function addon:SelectWinningRolls(rolls, quantity)
-    local winnerCount = 1
-    if (quantity or 1) >= 2 then
-        winnerCount = math.min(2, #rolls)
-    end
+    -- top-N: one distinct winner per copy (was hard-capped at 2; the core supports any N)
+    local winnerCount = math.min(quantity or 1, #rolls)
 
     local winners = {}
     for index = 1, winnerCount do
@@ -525,9 +516,20 @@ end
 -- Resolve a single session item through the shared bracket -> named -> spec -> status
 -- engine (used by both batch ProcessLoot and the live-roll flow). Returns the standard
 -- result record. Does NOT lock or append -- the caller does that.
-function addon:ResolveSessionItem(item)
+-- Resolve one lot. `lot` is a LootCore lot: identity is lot.itemId, count is lot.count, and
+-- the responses live on lot.responses. Display fields are rendered from itemId on demand.
+function addon:ResolveSessionItem(lot)
     local record
-        local rollers = self:BuildRollerList(item.id)
+        local _name, _link, _icon = util:ItemRender(lot.itemId)
+        local item = {
+            id = lot.id,
+            itemId = lot.itemId,
+            name = _name or ("item:" .. tostring(lot.itemId)),
+            link = _link,
+            icon = _icon,
+            quantity = lot.count or 1,
+        }
+        local rollers = self:BuildRollerList(lot)
         local allRollerNames = {}
         local allRollerDetails = {}
         for _, roller in ipairs(rollers) do
@@ -757,56 +759,40 @@ function addon:ProcessLoot()
     end
 
     local session = self:GetCurrentSession()
-    session.lockedItems = session.lockedItems or {}
-    local results = {}
-    local hadUnlockedItems = false
-    local existingResultsByItemId = {}
+    local core = self.lootCore
+    local resolvedAny = false
 
-    for _, existingResult in ipairs(session.results or {}) do
-        existingResultsByItemId[existingResult.itemId] = existingResult
-    end
-
-    for _, item in ipairs(session.items or {}) do
-        if self:IsItemLocked(item.id) then
-            if existingResultsByItemId[item.id] then
-                results[#results + 1] = existingResultsByItemId[item.id]
-            end
-        else
-            hadUnlockedItems = true
-            local record = self:ResolveSessionItem(item)
-            results[#results + 1] = record
-
-            self:LockItem(item.id)
-            self:AddResolvedHeldItem(item.link, item.quantity or 1)
+    -- Resolve every open lot (idle/new/pending/skipped). Rolling lots belong to an in-flight
+    -- live roll and are left alone; resolved lots are already done. Each Resolve fires
+    -- lotResolved (payout owes) and ledgerChanged (projection + snapshot broadcast).
+    for _, lot in ipairs(core:List()) do
+        if lot.state ~= core.STATE.ROLLING and lot.state ~= core.STATE.RESOLVED then
+            core:Resolve(lot.id)
+            resolvedAny = true
         end
     end
 
-    if not hadUnlockedItems then
-        self:Print("All session loot is already locked. Unlock a result to reroll it.")
+    if not resolvedAny then
+        self:Print("No unrolled loot to process. Unlock a result to reroll it.")
         return
     end
 
-    session.results = results
     self.sessionDb.history = self.sessionDb.history or {}
     self.sessionDb.history[#self.sessionDb.history + 1] = {
         sessionId = session.id,
         timestamp = time(),
-        results = util:CloneTable(results),
+        results = util:CloneTable(self.lootView.results or {}),
     }
 
-    if #results > 0 then
-        local text = "Loot has been rolled on, check the Results tab."
-        local ctl = _G.ChatThrottleLib
-        if ctl then
-            ctl:SendChatMessage("ALERT", self.prefix, text, "RAID_WARNING")
-        else
-            SendChatMessage(text, "RAID_WARNING")
-        end
+    local text = "Loot has been rolled on, check the Results tab."
+    local ctl = _G.ChatThrottleLib
+    if ctl then
+        ctl:SendChatMessage("ALERT", self.prefix, text, "RAID_WARNING")
+    else
+        SendChatMessage(text, "RAID_WARNING")
     end
 
-    self:OwePayout(results)        -- queue winners into the auto-trade payout ledger
-    self:BroadcastResults(results)
-    self:BroadcastSessionLocks()
+    self:BroadcastSession()        -- snapshot the resolved ledger to the raid
     self:TriggerCallback("RESULTS_UPDATED")
     self:Print("Loot processed.")
 end

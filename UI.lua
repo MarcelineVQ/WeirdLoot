@@ -623,6 +623,9 @@ function addon:SelectTab(tabKey)
         end
     end
 
+    -- Freshen the eligible list when the loot tab is opened: drops items whose trade window
+    -- lapsed silently (no bag event), so they can't be rolled. No-op unless ML with a session.
+    if tabKey == "loot" then self:ReconcileLootNow() end
     self:RefreshUI()
 end
 
@@ -636,6 +639,7 @@ function addon:ToggleMainFrame()
         self.ui.frame:Hide()
     else
         self.ui.frame:Show()
+        if self.ui.selectedTab == "loot" then self:ReconcileLootNow() end
         self:RefreshUI()
     end
 end
@@ -670,7 +674,7 @@ end
 function addon:BuildWinnersExportText()
     local lines = {}
 
-    for _, result in ipairs(self.session.results or {}) do
+    for _, result in ipairs(self.lootView.results or {}) do
         local itemName = result.itemName or ""
         if result.winners and #result.winners > 0 then
             for _, winnerName in ipairs(result.winners) do
@@ -700,7 +704,7 @@ function addon:BuildDetailedExportLogText()
         { key = "tm", label = "TM Rollers:" },
     }
 
-    for _, result in ipairs(self.session.results or {}) do
+    for _, result in ipairs(self.lootView.results or {}) do
         local groupedRollers = {
             bis = {},
             ms = {},
@@ -881,15 +885,8 @@ function addon:BuildLootTab()
     local header = createLabel(panel, "Session items", "TOPLEFT", panel, "TOPLEFT", 4, -4)
     header:SetFontObject(GameFontHighlight)
 
-    local syncButton = createButton(panel, "Request Sync", 110, 22)
-    syncButton:SetPoint("LEFT", header, "RIGHT", 12, 0)
-    syncButton:SetScript("OnClick", function()
-        addon:RequestSessionSync()
-    end)
-    panel.syncButton = syncButton
-
     local usabilityButton = createButton(panel, "Usable: Off", 110, 22)
-    usabilityButton:SetPoint("LEFT", syncButton, "RIGHT", 8, 0)
+    usabilityButton:SetPoint("LEFT", header, "RIGHT", 12, 0)
     usabilityButton:SetScript("OnClick", function()
         addon:ToggleLootUsabilitySort()
     end)
@@ -999,15 +996,12 @@ function addon:BuildLootTab()
                     addon:Print("Your class cannot use that token. You may only pass.")
                     return
                 end
-                local activeRoll = addon:GetActiveLiveRollForItem(row.item)
+                -- SetPlayerResponse routes itself: the ML writes the core (delta syncs out),
+                -- a raider whispers the pick to the ML. The loot tab and the live roll share the
+                -- lot's responses, so a loot-tab pick already reflects on the roll. No separate
+                -- per-pick broadcast path is needed here.
                 if not addon:SetPlayerResponse(row.item.id, playerName, option.key) then
                     return
-                end
-                if activeRoll then
-                    addon:SendInterest(activeRoll.id, option.key)
-                else
-                    addon:BroadcastSelectionState(row.item.id, playerName, option.key)
-                    addon:SendSelection(row.item.id, option.key)
                 end
                 updateLootChoiceButtons(row, option.key)
             end)
@@ -1044,18 +1038,18 @@ function addon:BuildLootTab()
             GameTooltip:ClearLines()
             GameTooltip:AddLine("Players Rolling", 1, 0.82, 0)
 
+            -- Prefer the live pick-list (registrants kept current by RSTATE), so a raider sees who is
+            -- rolling in real time; fall back to the ledger responses when no roll is active. No roll
+            -- number is shown (rolls happen at resolution, not live), and your own line reads "You".
             local entries = addon:GetLiveRollEntriesForItem(row.item)
             if entries and #entries > 0 then
                 for _, entry in ipairs(entries) do
-                    local colorCode = util:GetClassColorCode(entry.className) or "|cffffffff"
-                    GameTooltip:AddLine(string.format("%s%s|r - %d - %s",
-                        colorCode,
-                        entry.name or "Unknown",
-                        entry.roll or 0,
+                    GameTooltip:AddLine(string.format("%s - %s",
+                        util:ColorPlayerName(entry.name, entry.className),
                         addon:GetResponseLabel(entry.tier)), 1, 1, 1)
                 end
             else
-                local rollers = addon:BuildRollerList(row.item.id) or {}
+                local rollers = addon:BuildRollerList(addon.lootCore:Get(row.item.id)) or {}
                 table.sort(rollers, function(left, right)
                     return string.lower(left.name or "") < string.lower(right.name or "")
                 end)
@@ -1063,10 +1057,8 @@ function addon:BuildLootTab()
                     GameTooltip:AddLine("No active rollers", 1, 1, 1)
                 else
                     for _, roller in ipairs(rollers) do
-                        local colorCode = util:GetClassColorCode(roller.className) or "|cffffffff"
-                        GameTooltip:AddLine(string.format("%s%s|r - %s",
-                            colorCode,
-                            roller.name or "Unknown",
+                        GameTooltip:AddLine(string.format("%s - %s",
+                            util:ColorPlayerName(roller.name, roller.className),
                             string.upper(roller.responseType or "pass")), 1, 1, 1)
                     end
                 end
@@ -1150,7 +1142,7 @@ end
 
 function addon:GetSortedLootItems()
     local items = {}
-    for _, item in ipairs(self.session.items or {}) do
+    for _, item in ipairs(self.lootView.items or {}) do
         items[#items + 1] = item
     end
 
@@ -1538,14 +1530,8 @@ function addon:BuildMasterTab()
         addon:RefreshSessionItems(true)
     end)
 
-    local broadcastButton = createButton(panel, "Broadcast", 120, 24)
-    broadcastButton:SetPoint("LEFT", scanButton, "RIGHT", 8, 0)
-    broadcastButton:SetScript("OnClick", function()
-        addon:BroadcastSession()
-    end)
-
     local processButton = createButton(panel, "Roll Out the Loot", 120, 24)
-    processButton:SetPoint("LEFT", broadcastButton, "RIGHT", 8, 0)
+    processButton:SetPoint("LEFT", scanButton, "RIGHT", 8, 0)
     processButton:SetScript("OnClick", function()
         addon:ProcessLoot()
     end)
@@ -1600,7 +1586,6 @@ function addon:BuildMasterTab()
 
     panel.startButton = startButton
     panel.scanButton = scanButton
-    panel.broadcastButton = broadcastButton
     panel.processButton = processButton
     panel.unlockButton = unlockButton
     panel.exportWinnersButton = exportWinnersButton
@@ -2008,6 +1993,45 @@ function addon:BuildOptionsTab()
         addon:SetMinimapButtonShown(checked)
     end)
 
+    -- Roll result tooltip docking: where the result/roller hover tooltips appear relative to the
+    -- popup. Defaults to the right of the popup; configurable since that can be wrong for some UIs.
+    local anchorLabel = createLabel(panel, "Roll result tooltip docking:", "TOPLEFT", minimapCB, "BOTTOMLEFT", 0, -22)
+    local ANCHOR_OPTIONS = {
+        { value = "RIGHT",  text = "Right of popup" },
+        { value = "LEFT",   text = "Left of popup" },
+        { value = "TOP",    text = "Above popup" },
+        { value = "BOTTOM", text = "Below popup" },
+        { value = "CURSOR", text = "At cursor" },
+    }
+    local function anchorText(v)
+        for _, o in ipairs(ANCHOR_OPTIONS) do if o.value == v then return o.text end end
+        return ANCHOR_OPTIONS[1].text
+    end
+    local anchorDrop = CreateFrame("Frame", "WeirdLootTooltipAnchorDropdown", panel, "UIDropDownMenuTemplate")
+    -- The dropdown (and its child Button) is created at the panel's BASE level, so on this elevated
+    -- panel it renders dimmed under the +8 widgets and its button never catches clicks. Raise the
+    -- frame AND the button child (raising the parent does not reliably cascade to children on 3.3.5a).
+    elevateInteractiveFrame(anchorDrop, panel, 8)
+    local anchorBtn = _G[anchorDrop:GetName() .. "Button"]
+    if anchorBtn then elevateInteractiveFrame(anchorBtn, anchorDrop, 2) end
+    anchorDrop:SetPoint("LEFT", anchorLabel, "RIGHT", -4, -2)
+    UIDropDownMenu_SetWidth(anchorDrop, 120)
+    UIDropDownMenu_Initialize(anchorDrop, function(_, level)
+        for _, o in ipairs(ANCHOR_OPTIONS) do
+            local info = UIDropDownMenu_CreateInfo()
+            info.text = o.text
+            info.value = o.value
+            info.checked = (getOptions(addon).rollResultTooltipAnchor or "RIGHT") == o.value
+            info.func = function()
+                getOptions(addon).rollResultTooltipAnchor = o.value
+                UIDropDownMenu_SetText(anchorDrop, o.text)
+                CloseDropDownMenus()
+            end
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+    UIDropDownMenu_SetText(anchorDrop, anchorText(opt.rollResultTooltipAnchor or "RIGHT"))
+
     panel.autoCloseCB = autoCloseCB
     panel.autoCloseSeconds = autoCloseSeconds
     panel.rollDurBox = rollDurBox
@@ -2022,6 +2046,7 @@ function addon:BuildOptionsTab()
     panel.blacklistSaveBtn = saveBtn
     panel.blacklistDeleteBtn = deleteBtn
     panel.minimapCB = minimapCB
+    panel.anchorDrop = anchorDrop
 end
 
 local function positionMinimapButton(button)
@@ -2136,14 +2161,13 @@ end
 function addon:RefreshLootTab()
     local items = self:GetSortedLootItems()
     local playerName = util:GetPlayerName("player")
-    if self.ui.panels and self.ui.panels.loot and self.ui.panels.loot.syncButton then
-        local label = self:IsAuthorizedLootMaster() and "Rebroadcast" or "Request Sync"
-        self.ui.panels.loot.syncButton:SetText(label)
-    end
     if self.ui.panels and self.ui.panels.loot and self.ui.panels.loot.usabilityButton then
         local usabilityLabel = self.db.ui.lootUsabilitySort and "Usable: On" or "Usable: Off"
         self.ui.panels.loot.usabilityButton:SetText(usabilityLabel)
     end
+    -- Cold cache: warm any uncached item names via the same scan-tooltip primer the roll popups
+    -- use, so a freshly-dropped item does not sit in the list as a stale "item:<id>".
+    self:WarmLootItemNames(items)
     self.ui.lootList.update(#items, function(row, index)
         local item = items[index]
         row.item = item
@@ -2153,8 +2177,13 @@ function addon:RefreshLootTab()
         end
 
         row:Show()
-        row.icon:SetTexture(item.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
-        local itemText = item.link and item.link ~= "" and item.link or item.name or ""
+        -- Re-resolve from itemId so a name the client cached AFTER the projection was built shows
+        -- here instead of the stale fallback the cold-cache projection stored.
+        local rName, rLink, rIcon = util:ItemRender(item.itemId)
+        row.icon:SetTexture(rIcon or item.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
+        local itemText = (rLink and rLink ~= "" and rLink)
+            or (item.link and item.link ~= "" and item.link)
+            or rName or item.name or ""
         if (item.quantity or 1) > 1 then
             itemText = string.format("%s x%d", itemText, item.quantity)
         end
@@ -2172,9 +2201,21 @@ function addon:RefreshLootTab()
         row.itemSlot:SetText(slotText)
         row.info:SetText(getLootItemInfoText(item))
 
-        local rollCount = #(self:BuildRollerList(item.id) or {})
+        -- Same source as the hover tooltip: the live pick-list while a roll is active, else the
+        -- ledger responses, so the count and the tooltip never disagree (notably on a raider, whose
+        -- ledger responses are coalesced but whose registrants are live via RSTATE).
+        local entries = self:GetLiveRollEntriesForItem(item)
+        local rollCount
+        if entries and #entries > 0 then
+            rollCount = #entries
+        else
+            rollCount = #(self:BuildRollerList(self.lootCore:Get(item.id)) or {})
+        end
         row.state:SetText(string.format("%d rolling", rollCount))
     end)
+    -- arm the shared resolve ticker if any name was still cold; it re-renders this list as the
+    -- client caches them, then self-stops (same machinery the popups use).
+    if self._lootNamesPending then self:EnsureNameTicker() end
 end
 
 function addon:RefreshRaidersTab()
@@ -2220,7 +2261,7 @@ function addon:RefreshRaidersTab()
 end
 
 function addon:RefreshResultsTab()
-    local results = self.session.results or {}
+    local results = self.lootView.results or {}
     self.ui.resultsList.update(#results, function(row, index)
         local result = results[index]
         row.result = result
@@ -2239,8 +2280,7 @@ function addon:RefreshResultsTab()
             local winnerParts = {}
             for winnerIndex, winnerName in ipairs(result.winners) do
                 local detail = result.winnerDetails[winnerIndex] or {}
-                local colorCode = util:GetClassColorCode(detail.className)
-                winnerParts[#winnerParts + 1] = (colorCode or "|cffffffff") .. winnerName .. "|r"
+                winnerParts[#winnerParts + 1] = util:ColorPlayerName(winnerName, detail.className)
             end
             row.winner:SetText(table.concat(winnerParts, ", "))
         else
@@ -2303,12 +2343,17 @@ end
 function addon:RefreshMasterTab()
     local panel = self.ui.masterPanel
     local authorized = self:IsAuthorizedLootMaster()
-    panel.warning:SetText(authorized and "" or "Loot master controls are locked until you are the loot master or leadership fallback.")
+    if not authorized and self.roster.mlRosterUnreadable then
+        -- We ARE the master looter (per GetLootMethod) but the raid roster did not load, so the
+        -- name-match can't confirm it. Only a reload recovers the roster.
+        panel.warning:SetText("|cffff4040The raid roster failed to load, so loot-master controls are disabled. Please /reload to fix it.|r")
+    else
+        panel.warning:SetText(authorized and "" or "Loot master controls are locked until you are the loot master or leadership fallback.")
+    end
 
     if authorized then
         panel.startButton:Enable()
         panel.scanButton:Enable()
-        panel.broadcastButton:Enable()
         panel.processButton:Enable()
         panel.exportWinnersButton:Enable()
         panel.exportLogButton:Enable()
@@ -2320,7 +2365,6 @@ function addon:RefreshMasterTab()
     else
         panel.startButton:Disable()
         panel.scanButton:Disable()
-        panel.broadcastButton:Disable()
         panel.processButton:Disable()
         panel.exportWinnersButton:Disable()
         panel.exportLogButton:Disable()
@@ -2347,12 +2391,11 @@ function addon:RefreshMasterTab()
     local payoutActive = self.payout and self.payout:IsPayoutActive()
     panel.payoutButton:SetText(payoutActive and "Pause Payout" or "Start Payout")
 
-    local session = self:GetCurrentSession()
     local attendeeCount = #(self:GetAttendees() or {})
-    local itemCount = #(session.items or {})
-    local resultCount = #(session.results or {})
+    local itemCount = #(self.lootView.items or {})
+    local resultCount = #(self.lootView.results or {})
     local lockedCount = 0
-    for _, item in ipairs(session.items or {}) do
+    for _, item in ipairs(self.lootView.items or {}) do
         if self:IsItemLocked(item.id) then
             lockedCount = lockedCount + 1
         end
@@ -2360,7 +2403,6 @@ function addon:RefreshMasterTab()
     panel.summary:SetText(table.concat({
         "Start Session: Establishes the active loot session.",
         "Scan Bags: Searches bags for current epic items from the loot master's bags.",
-        "Broadcast: Manually syncs items and current roll status to the raid.",
         "Roll Out the Loot: Resolves winners, records results, and enables the safety lock.",
         "Unlock Roll: Clears the rollout lock so the current session's loot can be rerolled intentionally.",
         "Pause Payout: Toggles payout mode so owed winners can trade for auto-filled loot, or pauses that flow without clearing the ledger.",

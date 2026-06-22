@@ -5,14 +5,18 @@
 ## Version: 0.0.1
 ## IconTexture: Interface\AddOns\WeirdLoot\Textures\weirdloot
 ## SavedVariables: WeirdLootDB, WeirdLootSessionDB
+## SavedVariablesPerCharacter: WeirdLootDebugLog
 
 Libs\LibStub\LibStub.lua
 Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
 Libs\AceComm-3.0\ChatThrottleLib.lua
 Libs\AceComm-3.0\AceComm-3.0.lua
+Libs\WeirdSync-1.0\WeirdSync-1.0.lua
 TradeDeliver.lua
 
 Core.lua
+LootCore.lua
+Debug.lua
 Util.lua
 Config.lua
 Roster.lua

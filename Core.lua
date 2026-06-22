@@ -1,3 +1,21 @@
+-- Core: the addon's bootstrap and event hub. It owns the event frame and fans WoW events out to
+-- the modules; loot accounting itself lives in LootCore (see LootCore.lua's header for the model).
+--
+-- Event entry points (this file registers and dispatches them):
+--   BAG_UPDATE                         -> OnBagUpdate (the single hinge: ALL loot enters the model
+--                                         only through the bag. AutoLoot routes master loot into the
+--                                         ML's bags and stops; the resulting BAG_UPDATE is what the
+--                                         scanner observes. Only the ML reconciles bag reality into
+--                                         the ledger; raiders mirror via the synced snapshot.)
+--   RAID_ROSTER_UPDATE / PARTY_*       -> RefreshRoster + RefreshLootAuthority (who is the ML)
+--   PLAYER_LOGIN / ENTERING_WORLD      -> init, restore the session, recheck authority once data settles
+--   CHAT_MSG_ADDON                     -> handled by AceComm (Comm.lua / the WeirdSync channel)
+--   LOOT_OPENED / LOOT_BIND_CONFIRM    -> AutoLoot;   TRADE_SHOW / bag deltas -> TradeDeliver
+--
+-- Authority: the ML owns the live ledger and runs all mutation (reconcile/resolve/payout); raiders
+-- hold a read-only mirror. RefreshLootAuthority resolves ML status from GetLootMethod + the raid
+-- roster; everything downstream gates on IsAuthorizedLootMaster.
+
 local addonName, addon = ...
 
 WeirdLoot = WeirdLoot or {}
@@ -8,6 +26,11 @@ addon.prefix = "WeirdLoot"
 addon.version = "1.0"
 addon.callbacks = {}
 addon.events = CreateFrame("Frame")
+
+-- Optional structured trace sink. Debug.lua replaces this with the real recorder when loaded;
+-- without it (the test harness, or a client with debug off-by-file) it stays a no-op so comm and
+-- core callers can log unconditionally without guarding.
+function addon:LogCoreEvent() end
 
 SLASH_WEIRDLOOT1 = "/weirdloot"
 SLASH_WEIRDLOOT2 = "/wl"
@@ -3497,6 +3520,7 @@ function addon:PLAYER_LOGIN()
             customWhitelistPresets = {},
             minimapButtonHidden = false,
             minimapButtonAngle = 200,
+            rollResultTooltipAnchor = "RIGHT",   -- where roll-popup hover tooltips dock: RIGHT/LEFT/TOP/BOTTOM/CURSOR
         },
         ui = {
             selectedTab = "loot",
@@ -3573,6 +3597,7 @@ function addon:PLAYER_LOGIN()
         math.randomseed(time() + guidSeed)
     end
 
+    if self.InitializeDebug then self:InitializeDebug() end  -- wire the core trace sink before anything touches the ledger (optional module)
     self:InitializeConfig()
     self:InitializeRoster()
     self:InitializeSession()
@@ -3721,6 +3746,10 @@ local authRetry = CreateFrame("Frame")
 authRetry:Hide()
 authRetry:SetScript("OnUpdate", function(frame, dt)
     frame.elapsed = (frame.elapsed or 0) + dt
+    -- Fire a payout resume that deferred because bags were still loading; ResumePayoutMode no-ops
+    -- until bags settle, then runs once (reconcile owes against bags, re-whisper). Cheap: a boolean
+    -- in the common case, and this frame only runs in the ~15s login/zone window before it hides.
+    if addon._payoutResumePending then addon:ResumePayoutMode() end
     local target = AUTH_RETRY_TIMES[frame.index or 1]
     if not target then frame:Hide(); return end
     if frame.elapsed >= target then
@@ -3735,22 +3764,43 @@ function addon:ScheduleAuthorityRecheck()
     authRetry:Show()
 end
 
+-- Periodic eligible-loot reconcile. A BoP trade window expiring fires no game event, so without a
+-- timed re-scan an item that lapsed while idle stays on the list as rollable. Out of combat only --
+-- tooltip scans + ledger churn shouldn't run mid-fight; we just wait for the next period.
+local RECONCILE_PERIOD = 60
+local reconcileTicker = CreateFrame("Frame")
+reconcileTicker.elapsed = 0
+reconcileTicker:SetScript("OnUpdate", function(frame, dt)
+    frame.elapsed = (frame.elapsed or 0) + dt
+    if frame.elapsed < RECONCILE_PERIOD then return end
+    frame.elapsed = 0
+    if InCombatLockdown and InCombatLockdown() then return end
+    addon:ReconcileLootNow()        -- no-op unless ML with an active session
+end)
+
 -- Re-evaluate authority; if we only NOW resolve as ML (data finally arrived), run the
 -- ML-on-login work the early PLAYER_ENTERING_WORLD check skipped.
 function addon:RecheckLootAuthority()
     local was = self.roster.isLootMaster
+    local hadML = self.roster.lootMasterName
     self:RefreshLootAuthority()
     if self.roster.isLootMaster and not was then
         self:AutoBroadcastSession(true)
         self:ResumePayoutMode()
         self:RestorePendingPopups()
         self:MaybePromptStartSession()
+    elseif not self.roster.isLootMaster and not hadML and self.roster.lootMasterName then
+        -- Raider: the loot master only just resolved (the client had no loot-method / roster data
+        -- at login). Now that we know who to ask, request the session. This is the post-load
+        -- authority timing the sync library deliberately does not own; we drive it from here.
+        self:RequestSessionSync()
     end
 end
 
 function addon:PLAYER_ENTERING_WORLD()
     self:RefreshAll()
     if self:IsAuthorizedLootMaster() then
+        self:OnBagUpdate()              -- drop items whose trade window lapsed while away, before broadcasting
         self:AutoBroadcastSession(true)
         self:RestorePendingPopups()     -- re-show pending items the ML hadn't decided on
     else
@@ -3814,6 +3864,9 @@ function addon:HandleSlashCommand(msg)
             and "ON - every item in your bags counts as session loot (city testing)."
             or "OFF - only tradable epics count."))
         self:RefreshSessionItems(true)
+    elseif command == "debug" or string.sub(command, 1, 6) == "debug " then
+        local rest = string.match(string.trim(msg or ""), "^%S+%s*(.*)$")
+        self:HandleDebugCommand(rest)
     elseif command == "autoroll" then
         self.db.autoRoll = not self.db.autoRoll
         self:Print("Auto-roll on new loot " .. (self.db.autoRoll and "ON." or "OFF (right-click an item to roll manually)."))
