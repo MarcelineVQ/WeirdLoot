@@ -291,10 +291,9 @@ local function getPlayerClassName(self, playerKey)
     return ""
 end
 
-local function nextLiveRollValue()
-    return math.random(1, 100)
-end
-
+-- The live pick-list shows only who is in and their bracket. There is no live roll value: rolls are
+-- not made as you go (a misclick would lock you into a wrong number), they are generated once when
+-- the loot master resolves the lot. So entries carry no roll, and the list orders by bracket then name.
 local function buildLiveRollEntries(self, roll)
     local entries = {}
     for playerKey, registrant in pairs(roll and roll.registrants or {}) do
@@ -305,7 +304,6 @@ local function buildLiveRollEntries(self, roll)
                 name = registrant.name or getPlayerDisplayName(self, playerKey),
                 className = registrant.className or getPlayerClassName(self, playerKey),
                 tier = tier,
-                roll = registrant.roll or 0,
             }
         end
     end
@@ -315,9 +313,6 @@ local function buildLiveRollEntries(self, roll)
         local rightRank = RESPONSE_ORDER[right.tier] or 0
         if leftRank ~= rightRank then
             return leftRank > rightRank
-        end
-        if (left.roll or 0) ~= (right.roll or 0) then
-            return (left.roll or 0) > (right.roll or 0)
         end
         return string.lower(left.name or "") < string.lower(right.name or "")
     end)
@@ -372,7 +367,7 @@ local function showRollCountTooltip(self, f)
         GameTooltip:AddLine("No active rollers", 1, 1, 1)
     else
         for _, entry in ipairs(entries) do
-            GameTooltip:AddLine(string.format("%s - %d - %s", util:ColorPlayerName(entry.name, entry.className), entry.roll or 0, RESPONSE_LABELS[entry.tier] or string.upper(entry.tier or "")), 1, 1, 1)
+            GameTooltip:AddLine(string.format("%s - %s", util:ColorPlayerName(entry.name, entry.className), RESPONSE_LABELS[entry.tier] or string.upper(entry.tier or "")), 1, 1, 1)
         end
     end
 
