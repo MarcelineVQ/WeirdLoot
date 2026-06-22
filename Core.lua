@@ -3718,6 +3718,32 @@ StaticPopupDialogs["WEIRDLOOT_DELETE_BLACKLIST_PRESET"] = {
     hideOnEscape = 1,
 }
 
+StaticPopupDialogs["WEIRDLOOT_REROLL_ITEM"] = {
+    text = "Confirm you want to reroll %s",
+    button1 = YES,
+    button2 = NO,
+    OnAccept = function(self)
+        local data = self.data
+        if data and data.lotId then
+            addon:UnlockSessionRoll(data.lotId)
+        end
+    end,
+    OnShow = function(self)
+        local data = self.data
+        if data and data.itemLink and data.itemLink ~= "" then
+            GameTooltip:SetOwner(self, "ANCHOR_NONE")
+            GameTooltip:ClearAllPoints()
+            GameTooltip:SetPoint("TOPLEFT", self, "TOPRIGHT", 8, 0)
+            GameTooltip:SetHyperlink(data.itemLink)
+            GameTooltip:Show()
+        end
+    end,
+    OnHide = function() GameTooltip:Hide() end,
+    timeout = 0,
+    whileDead = 1,
+    hideOnEscape = 1,
+}
+
 StaticPopupDialogs["WEIRDLOOT_END_SESSION"] = {
     text = "End the current WeirdLoot session and clear its state?",
     button1 = YES,

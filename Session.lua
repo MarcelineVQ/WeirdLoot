@@ -734,6 +734,22 @@ function addon:HasLockedItems()
     return #self.lootCore:Resolved() > 0
 end
 
+-- Unlock a single resolved lot for reroll. Goes through the core's per-lot Unlock so the
+-- ledger change retracts any owe (payout) and broadcasts via the normal ledgerChanged path.
+function addon:UnlockSessionRoll(lotId)
+    if not self:IsAuthorizedLootMaster() then
+        self:Print("Only the loot master can unlock rolled loot.")
+        return false
+    end
+    if not self.lootCore:Unlock(lotId) then
+        self:Print("That item is not in a resolved state; nothing to reroll.")
+        return false
+    end
+    self:TriggerCallback("RESULTS_UPDATED")
+    self:Print("Unlocked for reroll.")
+    return true
+end
+
 function addon:UnlockAllRolls()
     if not self:IsAuthorizedLootMaster() then
         self:Print("Only the loot master can unlock rolled loot.")
