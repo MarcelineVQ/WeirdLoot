@@ -3512,6 +3512,7 @@ function addon:PLAYER_LOGIN()
             resultPopupAutoCloseEnabled = false,
             resultPopupAutoCloseSeconds = 15,
             rollDuration = 30,
+            rollBatchSize = 5,
             whitelistEnabled = false,
             whitelistText = "",
             blacklistEnabled = false,

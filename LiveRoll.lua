@@ -1345,6 +1345,8 @@ function addon:CancelLiveRoll(rollId)
     self:CloseInterestPopup(roll)
     self.lootCore:Cancel(rollId)             -- rolling -> pending; SyncPendingPopups re-shows it
     self:Print("Roll cancelled: " .. (roll.name or "item") .. " (back to pending).")
+
+    if self.NotifyRollBatchFinished then self:NotifyRollBatchFinished(rollId) end
 end
 
 function addon:OnCancelMessage(fields)
@@ -1479,6 +1481,8 @@ function addon:ResolveLiveRoll(rollId)
     else
         self:Print(string.format("%s -> %s.", roll.name or "item", winnersText))
     end
+
+    if self.NotifyRollBatchFinished then self:NotifyRollBatchFinished(rollId) end
 end
 
 -- Group a result record's rollers by bracket into the popup's section format
