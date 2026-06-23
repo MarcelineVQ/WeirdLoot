@@ -1340,19 +1340,38 @@ function addon:ShowResultPopup(roll, winners, sections, slot)
 
     -- Auto-close governs the result popup's lifetime: only auto-hide when enabled (a 0 duration
     -- closes it immediately on the next frame; a positive duration after that many seconds). When
-    -- disabled, the popup stays until the player clicks OK.
+    -- disabled, the popup stays until the player clicks OK. The same bottom-bar countdown used by
+    -- the roll popup visualizes the remaining time so the player sees how long they have to look.
     local opt = getOptions()
     if opt.resultPopupAutoCloseEnabled then
         local timeout = tonumber(opt.resultPopupAutoCloseSeconds) or 0
-        f.resultElapsed = 0
-        f:SetScript("OnUpdate", function(selfFrame, elapsed)
-            selfFrame.resultElapsed = (selfFrame.resultElapsed or 0) + (elapsed or 0)
-            if selfFrame.resultElapsed >= timeout then
+        if timeout > 0 then
+            f.timer:Show()
+            f.timer:SetValue(1)
+            f.timer:SetStatusBarColor(0, 1, 0.1)
+            f.resultDeadline = GetTime() + timeout
+            f.resultDuration = timeout
+            f:SetScript("OnUpdate", function(selfFrame)
+                local remaining = selfFrame.resultDeadline - GetTime()
+                local frac = remaining / selfFrame.resultDuration
+                if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
+                selfFrame.timer:SetValue(frac)
+                selfFrame.timer:SetStatusBarColor(1 - frac, frac, 0.1)   -- green -> red as it drains
+                if remaining <= 0 then
+                    selfFrame:SetScript("OnUpdate", nil)
+                    selfFrame.timer:Hide()
+                    closePopup(self, selfFrame)
+                    compactPopups(self)
+                end
+            end)
+        else
+            -- timeout == 0: close on the next frame, no visible bar.
+            f:SetScript("OnUpdate", function(selfFrame)
                 selfFrame:SetScript("OnUpdate", nil)
                 closePopup(self, selfFrame)
                 compactPopups(self)
-            end
-        end)
+            end)
+        end
     end
 
     addActivePopup(self, f, slot)        -- reuse the interest popup's slot so it stays put
