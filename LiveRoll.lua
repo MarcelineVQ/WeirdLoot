@@ -195,14 +195,19 @@ function addon:SyncPendingPopups()
             if lot.state == core.STATE.NEW then toStart[#toStart + 1] = lot.id end
         end
         toStart = self:OrderLotIdsNonEquipFirst(toStart)   -- non-equipment (bags/mounts) rolls first
+        -- pcall so a StartLiveRoll error cannot leave _autoStarting latched true, which would
+        -- silently disable every future auto-start until /reload. Re-raise so the error still shows.
         self._autoStarting = true
-        for _, lotId in ipairs(toStart) do
-            local cur = core:Get(lotId)
-            if cur and cur.state == core.STATE.NEW then
-                self:StartLiveRoll(lotId)
+        local ok, err = pcall(function()
+            for _, lotId in ipairs(toStart) do
+                local cur = core:Get(lotId)
+                if cur and cur.state == core.STATE.NEW then
+                    self:StartLiveRoll(lotId)
+                end
             end
-        end
+        end)
         self._autoStarting = false
+        if not ok then error(err, 0) end
     elseif self.db and self.db.autoRoll and not optAutoSkip then
         for _, lot in ipairs(core:List()) do
             if lot.state == core.STATE.NEW then core:Surface(lot.id) end
