@@ -1583,38 +1583,22 @@ function addon:BuildMasterTab()
     panel.warning = createLabel(panel, "", "TOPLEFT", panel, "TOPLEFT", 8, -8)
     panel.warning:SetTextColor(1, 0.2, 0.2)
 
-    local startButton = createButton(panel, "Start Session", 120, 24)
-    startButton:SetPoint("TOPLEFT", panel, "TOPLEFT", 8, -36)
-    startButton:SetScript("OnClick", function()
-        addon:StartLootSession()
-    end)
-
-    local endSessionButton = createButton(panel, "End Session", 120, 24)
-    endSessionButton:SetPoint("LEFT", startButton, "RIGHT", 8, 0)
-    endSessionButton:SetScript("OnClick", function()
-        StaticPopup_Show("WEIRDLOOT_END_SESSION")
-    end)
-
-    local scanButton = createButton(panel, "Scan Bags", 120, 24)
-    scanButton:SetPoint("LEFT", endSessionButton, "RIGHT", 8, 0)
-    scanButton:SetScript("OnClick", function()
-        addon:RefreshSessionItems(true)
-    end)
-
+    -- Row 1 (top): primary actions during a session.
     local processButton = createButton(panel, "Start Rolls", 120, 24)
-    processButton:SetPoint("LEFT", scanButton, "RIGHT", 8, 0)
+    processButton:SetPoint("TOPLEFT", panel, "TOPLEFT", 8, -36)
     processButton:SetScript("OnClick", function()
         addon:ProcessLoot()
     end)
 
-    local unlockButton = createButton(panel, "Unlock Roll", 100, 24)
-    unlockButton:SetPoint("LEFT", processButton, "RIGHT", 8, 0)
-    unlockButton:SetScript("OnClick", function()
-        addon:UnlockAllSessionRolls()
+    local payoutButton = createButton(panel, "Start Payout", 120, 24)
+    payoutButton:SetPoint("LEFT", processButton, "RIGHT", 8, 0)
+    payoutButton:SetScript("OnClick", function()
+        addon:TogglePayout()
     end)
 
+    -- Row 2: exports + roster/named-items I/O.
     local exportWinnersButton = createButton(panel, "Export Winners", 110, 24)
-    exportWinnersButton:SetPoint("TOPLEFT", startButton, "BOTTOMLEFT", 0, -8)
+    exportWinnersButton:SetPoint("TOPLEFT", processButton, "BOTTOMLEFT", 0, -8)
     exportWinnersButton:SetScript("OnClick", function()
         addon:ExportWinners()
     end)
@@ -1649,10 +1633,29 @@ function addon:BuildMasterTab()
         addon:BroadcastNamedItems()
     end)
 
-    local payoutButton = createButton(panel, "Start Payout", 120, 24)
-    payoutButton:SetPoint("LEFT", unlockButton, "RIGHT", 8, 0)
-    payoutButton:SetScript("OnClick", function()
-        addon:TogglePayout()
+    -- Row 3 (bottom): session lifecycle + unlock.
+    local startButton = createButton(panel, "Start Session", 120, 24)
+    startButton:SetPoint("TOPLEFT", exportWinnersButton, "BOTTOMLEFT", 0, -8)
+    startButton:SetScript("OnClick", function()
+        addon:StartLootSession()
+    end)
+
+    local endSessionButton = createButton(panel, "End Session", 120, 24)
+    endSessionButton:SetPoint("LEFT", startButton, "RIGHT", 8, 0)
+    endSessionButton:SetScript("OnClick", function()
+        StaticPopup_Show("WEIRDLOOT_END_SESSION")
+    end)
+
+    local scanButton = createButton(panel, "Scan Bags", 120, 24)
+    scanButton:SetPoint("LEFT", endSessionButton, "RIGHT", 8, 0)
+    scanButton:SetScript("OnClick", function()
+        addon:RefreshSessionItems(true)
+    end)
+
+    local unlockButton = createButton(panel, "Unlock Roll", 100, 24)
+    unlockButton:SetPoint("LEFT", scanButton, "RIGHT", 8, 0)
+    unlockButton:SetScript("OnClick", function()
+        addon:UnlockAllSessionRolls()
     end)
 
     panel.startButton = startButton
@@ -1673,7 +1676,7 @@ function addon:BuildMasterTab()
         .. "and their owed items auto-fill into the trade window (you click Trade to send). Trades from non-winners "
         .. "are declined while loot is still owed. Pause keeps the owed list but stops auto-fill.")
 
-    panel.controlsTitle = createLabel(panel, "Controls", "TOPLEFT", exportWinnersButton, "BOTTOMLEFT", 0, -24)
+    panel.controlsTitle = createLabel(panel, "Controls", "TOPLEFT", startButton, "BOTTOMLEFT", 0, -24)
     panel.controlsTitle:SetFontObject(GameFontHighlightLarge)
 
     panel.summary = createLabel(panel, "", "TOPLEFT", panel.controlsTitle, "BOTTOMLEFT", 0, -8)
