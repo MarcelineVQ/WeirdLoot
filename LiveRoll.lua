@@ -269,7 +269,10 @@ local POPUP_INTEREST_OWNER_H = 64       -- floor for the ML popup: End/Cancel li
                                         -- the brackets, so the brackets push up; this keeps them clear
                                         -- of the item icon/name instead of overlapping (mis-clicks).
 local RESPONSE_ORDER = { bis = 5, ms = 4, mu = 3, os = 2, tm = 1, pass = 0 }
-local RESPONSE_LABELS = { bis = "BiS", ms = "MS", mu = "MU", os = "OS", tm = "TM", pass = "Pass" }
+-- Display labels for the rolling hover lists (live loot popup + loot tab row). The TM bracket
+-- spells out "Tmog" here so the reader instantly knows what the roller wants, without conflating
+-- it with the compact "TM" abbreviation used on the bracket buttons themselves.
+local RESPONSE_LABELS = { bis = "BiS", ms = "MS", mu = "MU", os = "OS", tm = "Tmog", pass = "Pass" }
 -- Hover text spelling out each roll-choice bracket abbreviation (shared with the loot tab).
 local CHOICE_TOOLTIPS = addon.RESPONSE_TOOLTIPS
 -- ROLL_DURATION / getOptions / getRollDuration are declared at the top of the file so the
