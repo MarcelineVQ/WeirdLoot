@@ -1439,6 +1439,176 @@ test("auto-start keeps non-equipment ahead of equipment in the batch", function(
     eq(sent[2], 40001, "equipment follows")
 end)
 
+-- capture the itemId order in which a world opens roll popups (ShowInterestPopup), ML or raider.
+local function tapPopups(w)
+    local seen = {}
+    local orig = w.addon.ShowInterestPopup
+    w.addon.ShowInterestPopup = function(self, roll, slot)
+        seen[#seen + 1] = roll.itemId
+        return orig(self, roll, slot)
+    end
+    return seen
+end
+
+-- (1) keystone: what the ML pops up == what raiders receive. Guards the exact reported symptom
+-- (ML sees one order, raiders see the reverse) across the full dispatch -> wire -> OnDropMessage path.
+test("auto-start: raider roll order matches the ML's own popup order", function()
+    local ml = makeWorld("Masterlooter", true)
+    local r1 = makeWorld("Raider", false)
+    local mlPops = tapPopups(ml)
+    local r1Pops = tapPopups(r1)
+
+    startSession(ml)
+    ml.addon.db.autoRoll = false
+    ml.addon.db.options = ml.addon.db.options or {}
+    ml.addon.db.options.autoStartRoll = false
+    ml.addon.db.options.autoSkipRoll = false
+
+    setBag(ml, 40001, 1); bagUpdate(ml)
+    setBag(ml, 40002, 1); bagUpdate(ml)
+    setBag(ml, 40003, 1); bagUpdate(ml)
+    clearWire()
+    ml.addon.db.options.autoStartRoll = true
+    ml.addon:SyncPendingPopups()
+    flushWireTo(r1, "Masterlooter")
+
+    eq(#mlPops, 3, "ML opened three popups")
+    eq(#r1Pops, 3, "raider opened three popups")
+    eq(table.concat(r1Pops, ","), table.concat(mlPops, ","), "raider order equals ML popup order")
+    eq(table.concat(mlPops, ","), "40001,40002,40003", "and both are the in-order batch (not reversed)")
+end)
+
+-- (2) bulk path: the Start Rolls button broadcasts in OrderLotIdsNonEquipFirst order, non-equip first.
+test("bulk ProcessLoot broadcasts non-equipment first, in order", function()
+    local ml = makeWorld("Masterlooter", true)
+    ml.addon.util.REDUCED_ROLL_ITEMS[40004] = true   -- 40004 = known non-equipment (rolls first)
+    local sent = {}
+    local origSend = ml.addon.SendLargeMessage
+    ml.addon.SendLargeMessage = function(self, command, values, ...)
+        if command == "DROP" then sent[#sent + 1] = tonumber(values[2]) end
+        return origSend(self, command, values, ...)
+    end
+    startSession(ml)
+    ml.addon.db.autoRoll = false
+    ml.addon.db.options = ml.addon.db.options or {}
+    ml.addon.db.options.autoStartRoll = false
+    ml.addon.db.options.rollBatchSize = 99           -- one batch, no draining gaps
+
+    setBag(ml, 40001, 1); bagUpdate(ml)              -- equipment, minted first
+    setBag(ml, 40004, 1); bagUpdate(ml)              -- non-equipment, minted second
+    clearWire()
+    ml.addon:ProcessLoot()
+
+    eq(#sent, 2, "both lots broadcast")
+    eq(sent[1], 40004, "non-equipment leads")
+    eq(sent[2], 40001, "equipment follows")
+end)
+
+-- (3) split debounce (laggy mid-pickup): two reconcile windows must broadcast every lot exactly
+-- once -- none stranded, none double-sent.
+test("split-debounce auto-start broadcasts all loot exactly once", function()
+    local ml = makeWorld("Masterlooter", true)
+    local sent = {}
+    local origSend = ml.addon.SendLargeMessage
+    ml.addon.SendLargeMessage = function(self, command, values, ...)
+        if command == "DROP" then sent[#sent + 1] = tonumber(values[2]) end
+        return origSend(self, command, values, ...)
+    end
+    startSession(ml)
+    ml.addon.db.autoRoll = false
+    ml.addon.db.options = ml.addon.db.options or {}
+    ml.addon.db.options.autoStartRoll = true
+    ml.addon.db.options.autoSkipRoll = false
+    clearWire()
+
+    -- window 1: two items settle
+    setBag(ml, 40001, 1); setBag(ml, 40002, 1); bagUpdate(ml)
+    -- window 2: the rest of the corpse lands a beat later
+    setBag(ml, 40003, 1); setBag(ml, 40004, 1); bagUpdate(ml)
+
+    eq(#sent, 4, "all four lots broadcast across the two windows")
+    local seen = {}
+    for _, id in ipairs(sent) do seen[id] = (seen[id] or 0) + 1 end
+    eq(seen[40001], 1, "40001 sent once"); eq(seen[40002], 1, "40002 sent once")
+    eq(seen[40003], 1, "40003 sent once"); eq(seen[40004], 1, "40004 sent once")
+    local rolling = 0
+    for _, lot in ipairs(ml.addon.lootCore:List()) do if lot.state == "rolling" then rolling = rolling + 1 end end
+    eq(rolling, 4, "every lot ended up rolling (nothing stranded)")
+end)
+
+-- (5) a StartLiveRoll error mid-batch must not latch _autoStarting (which would disable all future
+-- auto-starts until reload). The error still propagates; the flag clears; the next batch works.
+test("auto-start error does not permanently disable auto-start", function()
+    local ml = makeWorld("Masterlooter", true)
+    startSession(ml)
+    ml.addon.db.autoRoll = false
+    ml.addon.db.options = ml.addon.db.options or {}
+    ml.addon.db.options.autoStartRoll = false        -- mint quietly so the lots stay NEW
+    ml.addon.db.options.autoSkipRoll = false
+
+    setBag(ml, 40001, 1); bagUpdate(ml)
+    setBag(ml, 40002, 1); bagUpdate(ml)
+
+    -- make the dispatch blow up mid-batch, then drive the pass (it re-raises, so pcall it here)
+    local origStart = ml.addon.StartLiveRoll
+    ml.addon.StartLiveRoll = function() error("boom") end
+    clearWire()
+    ml.addon.db.options.autoStartRoll = true
+    local ok = pcall(function() ml.addon:SyncPendingPopups() end)
+    check(not ok, "the StartLiveRoll error propagates (not swallowed)")
+    eq(ml.addon._autoStarting, false, "_autoStarting cleared despite the error")
+
+    -- recover: real StartLiveRoll, fresh drop -> auto-start still fires
+    ml.addon.StartLiveRoll = origStart
+    local sent = {}
+    local origSend = ml.addon.SendLargeMessage
+    ml.addon.SendLargeMessage = function(self, command, values, ...)
+        if command == "DROP" then sent[#sent + 1] = tonumber(values[2]) end
+        return origSend(self, command, values, ...)
+    end
+    setBag(ml, 40003, 1); bagUpdate(ml)
+    check(#sent >= 1, "auto-start still works after the earlier error")
+end)
+
+-- (4) guard-hygiene invariant. CAVEAT: this is a WHITE-BOX test of the _autoStarting flag by name,
+-- not a behavior test. If the re-entrancy is ever solved a different way (deferred/coalesced
+-- ledgerChanged, a renamed or differently-scoped guard, etc.), this test can fail while the addon
+-- is perfectly correct -- the behavior tests above (order preserved, all loot broadcast) are the
+-- real contract. So a failure HERE is a signal to re-check the mechanism, not proof of a bug: if the
+-- ordering/completeness tests still pass, update or delete this one rather than "fixing" the code.
+test("auto-start guard: a re-entrant SyncPendingPopups is a no-op while dispatching", function()
+    local ml = makeWorld("Masterlooter", true)
+    local sent = {}
+    local origSend = ml.addon.SendLargeMessage
+    ml.addon.SendLargeMessage = function(self, command, values, ...)
+        if command == "DROP" then sent[#sent + 1] = tonumber(values[2]) end
+        return origSend(self, command, values, ...)
+    end
+    startSession(ml)
+    ml.addon.db.autoRoll = false
+    ml.addon.db.options = ml.addon.db.options or {}
+    ml.addon.db.options.autoStartRoll = false        -- mint quietly: lots stay NEW
+    ml.addon.db.options.autoSkipRoll = false
+    setBag(ml, 40001, 1); bagUpdate(ml)
+    setBag(ml, 40002, 1); bagUpdate(ml)
+
+    -- simulate "a dispatch is already in flight": with the flag set, the call must short-circuit.
+    ml.addon.db.options.autoStartRoll = true
+    ml.addon._autoStarting = true
+    clearWire()
+    ml.addon:SyncPendingPopups()
+    eq(#sent, 0, "guarded call sends nothing")
+    local stillNew = 0
+    for _, lot in ipairs(ml.addon.lootCore:List()) do if lot.state == "new" then stillNew = stillNew + 1 end end
+    eq(stillNew, 2, "guarded call leaves the NEW lots untouched")
+
+    -- clearing the flag restores normal dispatch
+    ml.addon._autoStarting = false
+    ml.addon:SyncPendingPopups()
+    eq(#sent, 2, "dispatch resumes once the guard clears")
+    eq(ml.addon._autoStarting, false, "flag is back to false after a completed pass")
+end)
+
 -- ===========================================================================
 -- 25-man message-load report (opt-in: WLLOAD=1). Reveals the real outgoing message
 -- count/bytes of a full raid loot session WITHOUT testing in-game, by tallying the mocked
