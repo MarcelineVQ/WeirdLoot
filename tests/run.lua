@@ -1270,12 +1270,27 @@ end)
 test("trade engine: declines a non-owed player's trade during payout", function()
     local w = makeWorld("Masterlooter", true)
     startSession(w)
+    -- autoCancel now defaults OFF (Allow All Trades on by default), so flip it on for THIS test.
+    w.addon:SetAllowAllTrades(false)
     w.addon.payout:Owe("Alice", 40005, 1, linkFor(40005))   -- someone is owed
     w.addon.payout:StartPayout()
     setPartner(w, "Bob")                                     -- Bob is NOT owed
     fireEvent(w, "TRADE_SHOW")
     check(w.env.__closeTrade >= 1, "non-owed trade declined (CloseTrade called)")
     eq(owedCount(w), 1, "Alice still owed; nothing handed to Bob")
+end)
+
+test("trade engine: Allow All Trades default ON lets a non-owed trade open during payout", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    eq(w.addon:IsAllowAllTrades(), true, "allow-all is on by default")
+    w.addon.payout:Owe("Alice", 40005, 1, linkFor(40005))   -- someone IS owed (payout in progress)
+    w.addon.payout:StartPayout()
+    local closesBefore = w.env.__closeTrade
+    setPartner(w, "Bob")                                     -- Bob is NOT owed
+    fireEvent(w, "TRADE_SHOW")
+    eq(w.env.__closeTrade, closesBefore, "non-owed trade is NOT auto-declined while allow-all is on")
+    eq(owedCount(w), 1, "Alice still owed; the non-owed trade did not touch the ledger")
 end)
 
 -- ===========================================================================

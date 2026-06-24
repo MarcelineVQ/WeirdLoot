@@ -110,6 +110,29 @@ function addon:StopPayout()
     end
 end
 
+-- Allow-all-trades toggle. The trade engine's autoCancel flag, when on (default), declines a
+-- trade from someone who isn't on the payout list while loot is still being handed out -- which
+-- is what we want during payout, but blocks legitimate non-loot trades (a raider handing the ML
+-- a flask, a charged battery, etc.). Flipping allow-all on disables that gate so every trade
+-- opens normally; the loot master can still auto-fill an owed trade by hand via Fill Trade.
+function addon:IsAllowAllTrades()
+    if not self.payout then return false end
+    return not self.payout:GetAutoCancel()
+end
+
+function addon:SetAllowAllTrades(allow)
+    if not self.payout then return end
+    self.payout:SetAutoCancel(not allow)
+    self:Print(allow
+        and "All trades allowed: non-owed trades will NOT be auto-declined during payout."
+        or "Non-owed trades will be auto-declined during payout.")
+    refreshMaster(self)
+end
+
+function addon:ToggleAllowAllTrades()
+    self:SetAllowAllTrades(not self:IsAllowAllTrades())
+end
+
 -- An owe only exists because the ML is holding the item to hand over. If the ML does not
 -- physically hold it (delivered, vendored, traded away, or a stale owe from before this accounting
 -- existed), there is nothing to owe. Reconcile the persisted owe ledger against BAG REALITY -- the
