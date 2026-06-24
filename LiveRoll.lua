@@ -319,6 +319,9 @@ local POPUP_INTEREST_OWNER_H = 64       -- floor for the ML popup: End/Cancel li
                                         -- the brackets, so the brackets push up; this keeps them clear
                                         -- of the item icon/name instead of overlapping (mis-clicks).
 local RESPONSE_ORDER = { bis = 5, ms = 4, mu = 3, os = 2, tm = 1, pass = 0 }
+-- Shown "Prio:" string for an item with no listed priority. BiS is omitted: a no-prio item cannot
+-- roll BiS (see util:RollTierAvailability), so its default order starts at MS.
+local DEFAULT_PRIO = "MS > MU > OS > TM"
 -- Display labels for the rolling hover lists (live loot popup + loot tab row). The TM bracket
 -- spells out "Tmog" here so the reader instantly knows what the roller wants, without conflating
 -- it with the compact "TM" abbreviation used on the bracket buttons themselves.
@@ -578,14 +581,16 @@ local DISABLED_REASON_TEXT = {
     class = "Your class cannot use this item.",
     unique = "You already have this unique item.",
     quest = "You have already completed this quest.",
+    noprio = "No priority is listed for this item.",
 }
 
 local function applyInterestButtonAvailability(self, f, roll)
     local playerName = util:GetPlayerName("player")
     local allowed = isPlayerAllowedForRoll(self, roll, playerName)
     local blockReason = self:RollSelfBlockReason(roll.itemId)
+    local hasPrio = self:ItemHasPriority(roll and roll.name)
     -- shared policy: a roll popup is always an open (never locked) lot
-    local avail = util:RollTierAvailability(roll.itemId, allowed, false, blockReason)
+    local avail = util:RollTierAvailability(roll.itemId, allowed, false, blockReason, hasPrio)
 
     for key, btn in pairs(interestButtons(f)) do
         local reason = avail[key]
@@ -1052,7 +1057,11 @@ end
 -- Self-protection: you already hold a pure-Unique copy of itemId, so you can never receive another and
 -- should not roll on it. Hold-check first (cheap, usually false -> skips the tooltip scan). Enforced
 -- only on the rolling player's own client, like the class-token block: the ML can't see others' bags.
+-- The ML is exempt: they always transiently hold the dropped copy during rolls (it sits in their bags
+-- until handed out), so the hold-check would trip on the very item being rolled -- a false positive.
+-- Other players only ever hold a copy that is genuinely theirs.
 function addon:OwnsBlockingUnique(itemId)
+    if self:IsAuthorizedLootMaster() then return false end
     return self:PlayerHoldsItem(itemId) and self:IsItemPureUnique(itemId)
 end
 
@@ -1090,7 +1099,7 @@ function addon:RefreshPopupItem(f)
     f.icon:SetTexture(icon or "Interface\\Icons\\INV_Misc_QuestionMark")
     f.name:SetText(formatRollItemLabel(link, name, f.itemQuantity))
     if f.mode == "pending" then
-        f.sub:SetText("|cffffffffPrio:|r " .. (self:GetLiveItemPrio({ name = name }) or "BiS > MS > MU > OS > TM"))
+        f.sub:SetText("|cffffffffPrio:|r " .. (self:GetLiveItemPrio({ name = name }) or DEFAULT_PRIO))
     end
     if f.roll then f.roll.name = name; f.roll.link = link; f.roll.icon = icon end
     return true
@@ -1200,7 +1209,7 @@ function addon:ShowInterestPopup(roll, slot)
     f.itemLink = roll.link
     f.name:SetText(formatRollItemLabel(roll.link, roll.name, roll.quantity))
     self:TrackPopupItem(f, roll.itemId, roll.quantity)
-    f.sub:SetText("|cffffffffPrio:|r " .. ((roll.prio and roll.prio ~= "") and roll.prio or "BiS > MS > MU > OS > TM"))
+    f.sub:SetText("|cffffffffPrio:|r " .. ((roll.prio and roll.prio ~= "") and roll.prio or DEFAULT_PRIO))
     f.okBtn:Hide()
 
     f.bisBtn:Show(); f.msBtn:Show(); f.muBtn:Show(); f.osBtn:Show(); f.tmBtn:Show(); f.passBtn:Show()
@@ -1350,7 +1359,7 @@ function addon:ShowPendingPopup(lot, slot)
     f.itemLink = link
     f.name:SetText(formatRollItemLabel(link, name, quantity))
     self:TrackPopupItem(f, lot.itemId, quantity)
-    f.sub:SetText("|cffffffffPrio:|r " .. (self:GetLiveItemPrio({ name = name }) or "BiS > MS > MU > OS > TM"))
+    f.sub:SetText("|cffffffffPrio:|r " .. (self:GetLiveItemPrio({ name = name }) or DEFAULT_PRIO))
     f.count:Hide()
     f.countHover:Hide()
     if f.rollLines then
@@ -1601,7 +1610,7 @@ function addon:GetLiveItemPrio(item)
     end
 
     local lootRule = itemName and self:GetLootRule(itemName)
-    return formatLootRuleDisplay(lootRule) or "BiS > MS > MU > OS > TM"   -- default: bracket order
+    return formatLootRuleDisplay(lootRule) or DEFAULT_PRIO   -- no rule: no-prio default bracket order
 end
 
 -- Pending-popup restoration is driven by core events (SyncPendingPopups); this stays as the

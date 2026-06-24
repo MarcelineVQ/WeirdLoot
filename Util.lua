@@ -419,11 +419,12 @@ local NONEQUIP_TIERS = { ms = true, os = true, pass = true }   -- reduced-roll i
 
 -- Single source of truth for which roll brackets (BiS/MS/MU/OS/TM/Pass) an item offers, so the roll
 -- popup and the loot tab (mirrors of each other) never drift. They differ only in how they render the
--- result. Returns a map bracket -> disable reason ("locked" / "quest" / "unique" / "type" / "class")
--- or nil when the bracket is available. blockReason: a self-only reason the local player can't use
--- this drop at all (already did the quest / already hold the unique), so only Pass is allowed. Self-
--- only, like the class block; the ML cannot see others' bags.
-function util:RollTierAvailability(item, isAllowed, isLocked, blockReason)
+-- result. Returns a map bracket -> disable reason ("locked" / "quest" / "unique" / "type" / "class" /
+-- "noprio") or nil when the bracket is available. blockReason: a self-only reason the local player
+-- can't use this drop at all (already did the quest / already hold the unique), so only Pass is
+-- allowed. Self-only, like the class block; the ML cannot see others' bags. hasPrio: whether the item
+-- has a listed priority (see addon:ItemHasPriority); BiS is offered only for such items.
+function util:RollTierAvailability(item, isAllowed, isLocked, blockReason, hasPrio)
     local reduced = self:IsKnownNonEquipment(item)
     local out = {}
     for _, key in ipairs(ROLL_TIERS) do
@@ -439,6 +440,12 @@ function util:RollTierAvailability(item, isAllowed, isLocked, blockReason)
             reason = (not NONEQUIP_TIERS[key]) and "type" or nil
         elseif not isAllowed then
             reason = "class"                               -- gear (incl. tier tokens) honors class rules
+        end
+        -- BiS is only meaningful for an item with a listed priority. Lowest-precedence reason: it
+        -- fires only when BiS would otherwise be available, so it never overrides a more specific
+        -- block (locked/class/type/self-block) and never touches the other brackets.
+        if reason == nil and key == "bis" and not hasPrio then
+            reason = "noprio"
         end
         out[key] = reason
     end

@@ -868,6 +868,15 @@ function addon:GetNamedRule(itemName)
     return self.config.namedRules[util:NormalizeKey(itemName or "")]
 end
 
+function addon:ItemHasPriority(itemName)
+    -- "Listed priority" means the item appears in the spec-priority list (lootRules) or the
+    -- named-items list (namedRules, incl. a session LC override). BiS is only offered for such
+    -- items; a generic drop in neither list has no priority to roll BiS against. Keyed by item
+    -- name today; an item-id index is the planned successor.
+    if not itemName or itemName == "" then return false end
+    return (self:GetLootRule(itemName) or self:GetNamedRule(itemName)) and true or false
+end
+
 function addon:GetRosterEntries()
     return self.config.rosterEntries or {}
 end
