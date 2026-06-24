@@ -577,14 +577,15 @@ local DISABLED_REASON_TEXT = {
     type = "Not used for this item type.",
     class = "Your class cannot use this item.",
     unique = "You already have this unique item.",
+    quest = "You have already completed this quest.",
 }
 
 local function applyInterestButtonAvailability(self, f, roll)
     local playerName = util:GetPlayerName("player")
     local allowed = isPlayerAllowedForRoll(self, roll, playerName)
-    local ownsUnique = self:OwnsBlockingUnique(roll.itemId)
+    local blockReason = self:RollSelfBlockReason(roll.itemId)
     -- shared policy: a roll popup is always an open (never locked) lot
-    local avail = util:RollTierAvailability(roll.itemId, allowed, false, ownsUnique)
+    local avail = util:RollTierAvailability(roll.itemId, allowed, false, blockReason)
 
     for key, btn in pairs(interestButtons(f)) do
         local reason = avail[key]
@@ -1021,8 +1022,9 @@ function addon:IsItemPureUnique(itemId)
     return false
 end
 
--- Does the LOCAL player already physically hold itemId? Checks bag contents, equipped gear, AND the
--- equipped bags themselves (a Unique BAG like Dragon Hide Bag). Cannot see the bank.
+-- Does the LOCAL player already physically hold itemId? Checks bag contents, equipped gear, the
+-- equipped bags themselves (a Unique BAG like Dragon Hide Bag), AND the keyring (where quest-reward
+-- keys live). Cannot see the bank.
 function addon:PlayerHoldsItem(itemId)
     if not itemId then return false end
     local maxBag = NUM_BAG_SLOTS or 4
@@ -1039,6 +1041,11 @@ function addon:PlayerHoldsItem(itemId)
         local inv = ContainerIDToInventoryID and ContainerIDToInventoryID(bag)
         if inv and GetInventoryItemID("player", inv) == itemId then return true end
     end
+    local keyring = KEYRING_CONTAINER or -2                 -- the keyring (quest-reward keys live here)
+    local nKeys = (GetKeyRingSize and GetKeyRingSize()) or 0
+    for slot = 1, nKeys do
+        if GetContainerItemID(keyring, slot) == itemId then return true end
+    end
     return false
 end
 
@@ -1047,6 +1054,31 @@ end
 -- only on the rolling player's own client, like the class-token block: the ML can't see others' bags.
 function addon:OwnsBlockingUnique(itemId)
     return self:PlayerHoldsItem(itemId) and self:IsItemPureUnique(itemId)
+end
+
+-- Some drops start a one-time quest and are consumed doing so, so a held/unique check on the drop
+-- itself can't tell you already did the quest. Instead we check for the quest's REWARD: if you hold it
+-- you completed the quest and the drop is useless to you. Map: dropped itemId -> reward itemId. (Key
+-- to the Focusing Iris: the dropped key 44569/44577 starts a quest whose reward is the permanent
+-- keyring key 44582/44581.) Source: chromiecraft quest_template StartItem/RewardItem1.
+addon.ROLL_REWARD_GATE = {
+    [44569] = 44582,   -- Key to the Focusing Iris (normal)        -> reward keyring key 44582
+    [44577] = 44581,   -- Heroic Key to the Focusing Iris (heroic) -> reward keyring key 44581
+}
+
+-- You already hold the quest reward this drop grants, so you finished the quest -> don't roll on it.
+function addon:OwnsQuestReward(itemId)
+    local reward = self.ROLL_REWARD_GATE[itemId]
+    return reward ~= nil and self:PlayerHoldsItem(reward)
+end
+
+-- Combined self-block reason for rolling on itemId, or nil if you may roll. "quest" (you already did
+-- the quest this drop starts) takes priority over "unique" (you already hold this pure-Unique item).
+function addon:RollSelfBlockReason(itemId)
+    if not itemId then return nil end
+    if self:OwnsQuestReward(itemId) then return "quest" end
+    if self:OwnsBlockingUnique(itemId) then return "unique" end
+    return nil
 end
 
 -- Re-render a popup's name/icon/link from its itemId. Returns true once the name resolves.

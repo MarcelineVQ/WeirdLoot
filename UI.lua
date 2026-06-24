@@ -327,8 +327,8 @@ end
 local function applyLootChoiceAvailability(row, isLocked, isAllowed, itemLink)
     -- Same policy as the roll popup (util:RollTierAvailability), rendered as plain enable/disable.
     local itemId = itemLink and util:ItemIdFromLink(itemLink)
-    local ownsUnique = itemId and addon:OwnsBlockingUnique(itemId)
-    local avail = util:RollTierAvailability(itemLink, isAllowed, isLocked, ownsUnique)
+    local blockReason = itemId and addon:RollSelfBlockReason(itemId)
+    local avail = util:RollTierAvailability(itemLink, isAllowed, isLocked, blockReason)
     for _, option in ipairs(RESPONSE_BUTTONS) do
         local button = row.choiceButtons[option.key]
         if avail[option.key] then button:Disable() else button:Enable() end
@@ -1018,7 +1018,11 @@ function addon:BuildLootTab()
                     addon:Print("Your class cannot use that token. You may only pass.")
                     return
                 end
-                if option.key ~= "pass" and addon:OwnsBlockingUnique(row.item.id) then
+                local blockReason = option.key ~= "pass" and addon:RollSelfBlockReason(row.item.id)
+                if blockReason == "quest" then
+                    addon:Print("You have already completed that quest. You may only pass.")
+                    return
+                elseif blockReason == "unique" then
                     addon:Print("You already have that unique item. You may only pass.")
                     return
                 end
