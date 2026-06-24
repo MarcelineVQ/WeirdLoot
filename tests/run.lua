@@ -1174,6 +1174,7 @@ test("eligible class: roll brackets stay enabled", function()
     local ml = makeWorld("Masterlooter", true)
     local raider = makeWorld("Raidertwo", false)
     raider.addon.IsPlayerAllowedForItem = function() return true end
+    raider.addon.ItemHasPriority = function() return true end   -- listed prio so BiS is offered too
     startSession(ml)
     setBag(ml, 40004, 1); bagUpdate(ml)
     local lot = openLot(ml, 40004)
@@ -1560,8 +1561,23 @@ test("roll block: RollTierAvailability with a blockReason disables every bracket
     end
     local quest = w.addon.util:RollTierAvailability(40005, true, false, "quest")
     eq(quest.bis, "quest", "the reason string is passed through verbatim")
-    local open = w.addon.util:RollTierAvailability(40005, true, false, nil)
-    eq(open.bis, nil, "BiS is available when not self-blocked")
+    local open = w.addon.util:RollTierAvailability(40005, true, false, nil, true)
+    eq(open.bis, nil, "BiS is available when not self-blocked and the item has a listed priority")
+end)
+
+test("roll block: BiS is disabled for an item with no listed priority", function()
+    local w = makeWorld("Masterlooter", true)
+    -- hasPrio=false: only the BiS bracket gains the noprio reason; every other bracket is untouched.
+    local noprio = w.addon.util:RollTierAvailability(40005, true, false, nil, false)
+    eq(noprio.bis, "noprio", "BiS is disabled when the item has no listed priority")
+    for _, k in ipairs({ "ms", "mu", "os", "tm", "pass" }) do
+        eq(noprio[k], nil, k .. " stays available; noprio only touches BiS")
+    end
+    -- noprio is lowest precedence: a more specific BiS block still wins.
+    local locked = w.addon.util:RollTierAvailability(40005, true, true, nil, false)
+    eq(locked.bis, "locked", "a locked lot reports locked, not noprio")
+    local blocked = w.addon.util:RollTierAvailability(40005, true, false, "unique", false)
+    eq(blocked.bis, "unique", "a self-block reason still wins over noprio")
 end)
 
 test("roll block: PlayerHoldsItem sees bag contents, equipped gear, and equipped bags", function()
@@ -1588,6 +1604,17 @@ test("roll block: OwnsBlockingUnique needs the item to be pure-Unique AND held",
     check(w.addon:OwnsBlockingUnique(40005), "held pure-unique is blocked")
     check(not w.addon:OwnsBlockingUnique(40004), "held non-unique is not blocked")
     check(not w.addon:OwnsBlockingUnique(40001), "pure-unique not held is not blocked")
+end)
+
+test("roll block: the ML is exempt from the own-unique block (holds the drop only to hand it out)", function()
+    local w = makeWorld("Masterlooter", true)
+    w.addon.IsItemPureUnique = function(_, id) return id == 40005 end
+    putBag(w, 0, 1, 40005, 1)                     -- the unique drop sits in the ML's bags during rolls
+    w.addon.IsAuthorizedLootMaster = function() return true end
+    check(not w.addon:OwnsBlockingUnique(40005), "ML holding the dropped unique is not self-blocked")
+    -- a non-ML holding the same unique is still blocked: the copy is genuinely theirs
+    w.addon.IsAuthorizedLootMaster = function() return false end
+    check(w.addon:OwnsBlockingUnique(40005), "a non-ML holder is still blocked")
 end)
 
 test("roll block: PlayerHoldsItem also scans the keyring (quest-reward keys live there)", function()
