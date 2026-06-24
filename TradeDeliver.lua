@@ -337,12 +337,18 @@ function TradeDeliver:New(config)
     e._dbg = config.debug or function() end
     e._onDelivered = config.onDelivered or function() end  -- (player, itemId, count) on trade complete
     e._log = config.log or function() end                  -- (ev, data) trade-flow trace (optional)
-    -- autoCancel is a runtime flag (default ON), not persisted: while payout is
-    -- active, a trade from someone NOT on the owed list is declined + whispered.
-    -- Kept off db on purpose so it always defaults on each session.
-    e.autoCancel = (config.autoCancel ~= false)
+    -- autoCancel is a runtime flag (default OFF), not persisted: when ON, a trade from someone
+    -- NOT on the owed list is declined + whispered while payout is active. Default off matches
+    -- the "Allow All Trades: ON" default UI state -- raiders can freely trade the LM non-loot
+    -- items (flasks, etc.) without the engine canceling the window. Kept off db on purpose so
+    -- it always defaults to allow-all each session; the LM can flip it via the toggle.
+    e.autoCancel = (config.autoCancel == true)
 
-    e.payoutActive = false
+    -- Payout mode is ON by default for every engine lifetime. Owes added while no session
+    -- is active don't auto-whisper (no owes exist), so defaulting on is safe and matches what
+    -- the loot master almost always wants: the first session-start of a /reload is already armed.
+    -- An explicit Pause Payout flips this off until the next /reload (it's runtime-only).
+    e.payoutActive = true
     e.pending = nil         -- { key, placed = { {it, qty}, ... } }  consumed on complete
     e.fillState = nil       -- { key, name, plan, destBags, waiting }
     e.fillGen = 0           -- invalidates stale settle/fallback timers

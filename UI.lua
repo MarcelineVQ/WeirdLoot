@@ -1583,9 +1583,28 @@ function addon:BuildMasterTab()
     panel.warning = createLabel(panel, "", "TOPLEFT", panel, "TOPLEFT", 8, -8)
     panel.warning:SetTextColor(1, 0.2, 0.2)
 
-    -- Row 1 (top): primary actions during a session.
+    -- Section header style matches the Options tab: gold-tinted large text with a thin gold
+    -- horizontal divider underneath. Returns the divider so the next widget can anchor below it.
+    local function makeSectionHeader(text, anchorTo, anchorPoint, offsetY)
+        local h = createLabel(panel, text, "TOPLEFT", anchorTo, anchorPoint or "BOTTOMLEFT", 0, offsetY or -16)
+        h:SetFontObject(GameFontHighlightLarge)
+        h:SetTextColor(1, 0.82, 0)
+        local d = panel:CreateTexture(nil, "ARTWORK")
+        d:SetTexture("Interface\\Buttons\\WHITE8x8")
+        d:SetVertexColor(0.5, 0.4, 0.1, 0.6)
+        d:SetHeight(1)
+        d:SetPoint("TOPLEFT", h, "BOTTOMLEFT", 0, -4)
+        d:SetPoint("RIGHT", panel, "RIGHT", -40, 0)
+        return h, d
+    end
+
+    -- Section 1: Loot Master Controls -- session-time actions.
+    local lmHeader, lmDivider = makeSectionHeader("Loot Master Controls", panel, "TOPLEFT", -12)
+    lmHeader:ClearAllPoints()
+    lmHeader:SetPoint("TOPLEFT", panel, "TOPLEFT", 12, -12)
+
     local processButton = createButton(panel, "Start Rolls", 120, 24)
-    processButton:SetPoint("TOPLEFT", panel, "TOPLEFT", 8, -36)
+    processButton:SetPoint("TOPLEFT", lmDivider, "BOTTOMLEFT", 0, -8)
     processButton:SetScript("OnClick", function()
         addon:ProcessLoot()
     end)
@@ -1596,9 +1615,20 @@ function addon:BuildMasterTab()
         addon:TogglePayout()
     end)
 
-    -- Row 2: exports + roster/named-items I/O.
+    -- Allow-all-trades toggle. Default OFF (non-owed trades are auto-declined during payout to
+    -- keep loot handout clean). Flip ON when a raider needs to trade the LM something non-loot
+    -- (flask, charged battery, etc.) without the engine canceling the window.
+    local allowTradesButton = createButton(panel, "Allow All Trades: OFF", 160, 24)
+    allowTradesButton:SetPoint("LEFT", payoutButton, "RIGHT", 8, 0)
+    allowTradesButton:SetScript("OnClick", function()
+        addon:ToggleAllowAllTrades()
+    end)
+
+    -- Section 2: Import/Export Controls.
+    local ioHeader, ioDivider = makeSectionHeader("Import/Export Controls", processButton, "BOTTOMLEFT", -16)
+
     local exportWinnersButton = createButton(panel, "Export Winners", 110, 24)
-    exportWinnersButton:SetPoint("TOPLEFT", processButton, "BOTTOMLEFT", 0, -8)
+    exportWinnersButton:SetPoint("TOPLEFT", ioDivider, "BOTTOMLEFT", 0, -8)
     exportWinnersButton:SetScript("OnClick", function()
         addon:ExportWinners()
     end)
@@ -1633,9 +1663,11 @@ function addon:BuildMasterTab()
         addon:BroadcastNamedItems()
     end)
 
-    -- Row 3 (bottom): session lifecycle + unlock.
+    -- Section 3: Session Controls.
+    local sessHeader, sessDivider = makeSectionHeader("Session Controls", exportWinnersButton, "BOTTOMLEFT", -16)
+
     local startButton = createButton(panel, "Start Session", 120, 24)
-    startButton:SetPoint("TOPLEFT", exportWinnersButton, "BOTTOMLEFT", 0, -8)
+    startButton:SetPoint("TOPLEFT", sessDivider, "BOTTOMLEFT", 0, -8)
     startButton:SetScript("OnClick", function()
         addon:StartLootSession()
     end)
@@ -1670,6 +1702,12 @@ function addon:BuildMasterTab()
     panel.importNamedItemsButton = importNamedItemsButton
     panel.broadcastNamedItemsButton = broadcastNamedItemsButton
     panel.payoutButton = payoutButton
+    panel.allowTradesButton = allowTradesButton
+
+    setButtonTooltip(allowTradesButton, "Allow All Trades (toggle)",
+        "When OFF (default), trades opened by raiders who aren't on the payout list are auto-declined "
+        .. "during payout so the loot handout stays clean. Turn ON to let any raider open a trade with "
+        .. "the loot master (e.g. handing over a flask or other non-loot item).")
 
     setButtonTooltip(payoutButton, "Payout Mode (toggle)",
         "Turn automatic loot delivery on or off. While ON: each winner is whispered to open a trade with you, "
@@ -2687,6 +2725,7 @@ function addon:RefreshMasterTab()
         panel.importNamedItemsButton:Enable()
         panel.broadcastNamedItemsButton:Enable()
         panel.payoutButton:Enable()
+        if panel.allowTradesButton then panel.allowTradesButton:Enable() end
     else
         panel.startButton:Disable()
         panel.endSessionButton:Disable()
@@ -2699,6 +2738,7 @@ function addon:RefreshMasterTab()
         panel.importNamedItemsButton:Disable()
         panel.broadcastNamedItemsButton:Disable()
         panel.payoutButton:Disable()
+        if panel.allowTradesButton then panel.allowTradesButton:Disable() end
     end
 
     if panel.unlockButton then
@@ -2716,6 +2756,11 @@ function addon:RefreshMasterTab()
 
     local payoutActive = self.payout and self.payout:IsPayoutActive()
     panel.payoutButton:SetText(payoutActive and "Pause Payout" or "Start Payout")
+
+    if panel.allowTradesButton then
+        local allow = self:IsAllowAllTrades()
+        panel.allowTradesButton:SetText(allow and "Allow All Trades: ON" or "Allow All Trades: OFF")
+    end
 
     local attendeeCount = #(self:GetAttendees() or {})
     local itemCount = #(self.lootView.items or {})
