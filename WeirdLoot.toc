@@ -17,6 +17,7 @@ Libs\WeirdSync-1.0\WeirdSync-1.0.lua
 TradeDeliver.lua
 
 Core.lua
+LootPrios.lua
 LootCore.lua
 Debug.lua
 Util.lua
