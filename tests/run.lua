@@ -159,6 +159,11 @@ local function makeWorld(playerName, isML)
     -- ---- bag + trade-window model (drives the real TradeDeliver engine) ----
     env.__bags = {}                                  -- [bag] = { size=N, [slot]={id,count,link} }
     for b = 0, 4 do env.__bags[b] = { size = 16 } end
+    -- equipped slots (gear 1..19, equipped bags 20..23) for the owns-a-unique roll block
+    env.NUM_BAG_SLOTS = 4
+    env.__equipped = {}                              -- [invSlot] = itemId
+    env.GetInventoryItemID = function(_, slot) return env.__equipped[slot] end
+    env.ContainerIDToInventoryID = function(bag) return 19 + bag end   -- bag1->20 .. bag4->23
     env.__cursor = nil                               -- item held on the cursor
     env.__tradePartner = nil                         -- UnitName("NPC")
     env.__tradeSlots = 0                             -- placed trade slots this window
@@ -1522,6 +1527,47 @@ test("trade engine: Allow All Trades default ON lets a non-owed trade open durin
     fireEvent(w, "TRADE_SHOW")
     eq(w.env.__closeTrade, closesBefore, "non-owed trade is NOT auto-declined while allow-all is on")
     eq(owedCount(w), 1, "Alice still owed; the non-owed trade did not touch the ledger")
+end)
+
+-- ===========================================================================
+-- ROLL BLOCK: a pure-Unique item the player already holds (self-only, like the class block)
+-- ===========================================================================
+
+test("roll block: RollTierAvailability with ownsUnique disables every bracket but Pass", function()
+    local w = makeWorld("Masterlooter", true)
+    local blocked = w.addon.util:RollTierAvailability(40005, true, false, true)
+    eq(blocked.pass, nil, "Pass stays available when you already own the unique")
+    for _, k in ipairs({ "bis", "ms", "mu", "os", "tm" }) do
+        eq(blocked[k], "unique", k .. " bracket blocked with the unique reason")
+    end
+    local open = w.addon.util:RollTierAvailability(40005, true, false, false)
+    eq(open.bis, nil, "BiS is available when the item is not already owned")
+end)
+
+test("roll block: PlayerHoldsItem sees bag contents, equipped gear, and equipped bags", function()
+    local w = makeWorld("Saelinen", false)
+    check(not w.addon:PlayerHoldsItem(40005), "not held to start")
+
+    putBag(w, 0, 1, 40005, 1)
+    check(w.addon:PlayerHoldsItem(40005), "found in a bag")
+
+    w.env.__bags[0][1] = nil
+    w.env.__equipped[11] = 40005                 -- a ring slot
+    check(w.addon:PlayerHoldsItem(40005), "found in equipped gear")
+
+    w.env.__equipped[11] = nil
+    w.env.__equipped[20] = 40004                 -- a Unique BAG equipped in the first bag slot
+    check(w.addon:PlayerHoldsItem(40004), "found as an equipped bag")
+end)
+
+test("roll block: OwnsBlockingUnique needs the item to be pure-Unique AND held", function()
+    local w = makeWorld("Saelinen", false)
+    w.addon.IsItemPureUnique = function(_, id) return id == 40005 or id == 40001 end
+    putBag(w, 0, 1, 40005, 1)                     -- pure-unique AND held
+    putBag(w, 0, 2, 40004, 1)                     -- held but not pure-unique
+    check(w.addon:OwnsBlockingUnique(40005), "held pure-unique is blocked")
+    check(not w.addon:OwnsBlockingUnique(40004), "held non-unique is not blocked")
+    check(not w.addon:OwnsBlockingUnique(40001), "pure-unique not held is not blocked")
 end)
 
 -- ===========================================================================

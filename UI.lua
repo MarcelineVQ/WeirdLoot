@@ -326,7 +326,9 @@ end
 
 local function applyLootChoiceAvailability(row, isLocked, isAllowed, itemLink)
     -- Same policy as the roll popup (util:RollTierAvailability), rendered as plain enable/disable.
-    local avail = util:RollTierAvailability(itemLink, isAllowed, isLocked)
+    local itemId = itemLink and util:ItemIdFromLink(itemLink)
+    local ownsUnique = itemId and addon:OwnsBlockingUnique(itemId)
+    local avail = util:RollTierAvailability(itemLink, isAllowed, isLocked, ownsUnique)
     for _, option in ipairs(RESPONSE_BUTTONS) do
         local button = row.choiceButtons[option.key]
         if avail[option.key] then button:Disable() else button:Enable() end
@@ -1014,6 +1016,10 @@ function addon:BuildLootTab()
                 local playerName = util:GetPlayerName("player")
                 if option.key ~= "pass" and not isPlayerAllowedForLootItem(row.item, playerName) then
                     addon:Print("Your class cannot use that token. You may only pass.")
+                    return
+                end
+                if option.key ~= "pass" and addon:OwnsBlockingUnique(row.item.id) then
+                    addon:Print("You already have that unique item. You may only pass.")
                     return
                 end
                 -- SetPlayerResponse routes itself: the ML writes the core (delta syncs out),

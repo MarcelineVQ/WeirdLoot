@@ -417,18 +417,23 @@ end
 local ROLL_TIERS = { "bis", "ms", "mu", "os", "tm", "pass" }
 local NONEQUIP_TIERS = { ms = true, os = true, pass = true }   -- reduced-roll items get MS/OS(greed)/Pass
 
--- Single source of truth for which roll tiers an item offers, so the roll popup and the loot tab
--- (mirrors of each other) never drift. They differ only in how they render the result. Returns a map
--- tier -> disable reason ("locked" / "type" / "class") or nil when the tier is available.
-function util:RollTierAvailability(item, isAllowed, isLocked)
+-- Single source of truth for which roll brackets (BiS/MS/MU/OS/TM/Pass) an item offers, so the roll
+-- popup and the loot tab (mirrors of each other) never drift. They differ only in how they render the
+-- result. Returns a map bracket -> disable reason ("locked" / "unique" / "type" / "class") or nil when
+-- the bracket is available. ownsUnique: the local player already holds this pure-Unique item, so only
+-- Pass is allowed (you cannot receive a second). Self-only, like the class block; the ML cannot see
+-- others' bags.
+function util:RollTierAvailability(item, isAllowed, isLocked, ownsUnique)
     local reduced = self:IsKnownNonEquipment(item)
     local out = {}
     for _, key in ipairs(ROLL_TIERS) do
         local reason
         if isLocked then
-            reason = "locked"                              -- a locked (rolled-out) lot disables every tier
+            reason = "locked"                              -- a locked (rolled-out) lot disables every bracket
         elseif key == "pass" then
             reason = nil                                   -- pass is always available on an open lot
+        elseif ownsUnique then
+            reason = "unique"                              -- already hold this Unique item; only Pass remains
         elseif reduced then
             -- reduced-roll item (bag/mount/etc.): MS/OS/Pass only, and no class restriction applies
             reason = (not NONEQUIP_TIERS[key]) and "type" or nil
