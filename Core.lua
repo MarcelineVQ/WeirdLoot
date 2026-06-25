@@ -3683,6 +3683,20 @@ StaticPopupDialogs["WEIRDLOOT_START_SESSION"] = {
     showAlert = 1,
 }
 
+-- Restarting mid-session wipes the live roll/loot tally and re-baselines from current bags
+-- (StartLootSession resets lootCore, responses and owed payouts), so gate it behind an explicit
+-- confirmation the same way End Session is.
+StaticPopupDialogs["WEIRDLOOT_RESTART_SESSION"] = {
+    text = "A WeirdLoot session is already running. Starting fresh wipes the current raid's roll and loot history and re-baselines from your current bags. Continue?",
+    button1 = YES,
+    button2 = NO,
+    OnAccept = function() addon:StartLootSession() end,
+    timeout = 0,
+    whileDead = 1,
+    hideOnEscape = 1,
+    showAlert = 1,
+}
+
 function addon:MaybePromptStartSession()
     self.raidPrompt = self.raidPrompt or { declined = false }
     local _, instanceType = IsInInstance()
