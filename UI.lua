@@ -521,7 +521,10 @@ function addon:InitializeUI()
     frame:SetWidth(980)
     frame:SetHeight(640)
     frame:SetPoint("CENTER", UIParent, "CENTER", self.db.ui.frame.x or 0, self.db.ui.frame.y or 0)
-    frame:SetFrameStrata("FULLSCREEN_DIALOG")
+    -- HIGH sits one band below DIALOG, where StaticPopups live, so our own confirmation
+    -- popups (End/Start Session, Reroll, LC override) render in front of this window.
+    -- Toplevel + the OnShow Raise keeps us above other same-strata addon frames.
+    frame:SetFrameStrata("HIGH")
     frame:SetToplevel(true)
     frame:SetFrameLevel(1000)
     frame:SetMovable(true)
@@ -1680,7 +1683,12 @@ function addon:BuildMasterTab()
     local startButton = createButton(panel, "Start Session", 120, 24)
     startButton:SetPoint("TOPLEFT", sessDivider, "BOTTOMLEFT", 0, -8)
     startButton:SetScript("OnClick", function()
-        addon:StartLootSession()
+        -- Restarting over a live session is destructive (wipes the running tally), so confirm first.
+        if addon.session and addon.session.active then
+            StaticPopup_Show("WEIRDLOOT_RESTART_SESSION")
+        else
+            addon:StartLootSession()
+        end
     end)
 
     local endSessionButton = createButton(panel, "End Session", 120, 24)
