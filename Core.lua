@@ -132,11 +132,6 @@ addon.defaultRosterEntries = {
     { name = "scozotti", className = "paladin", specName = "holy", status = "nil" },
 }
 
-addon.legacySampleRosterImportText = table.concat({
-    "volcker, warlock demonology, main",
-    "volckur, mage arcane, designatedAlt",
-}, "\n")
-
 local defaultRosterImportText = ""
 
 addon.blacklistPresets = {
@@ -3457,6 +3452,17 @@ function addon:PLAYER_LOGIN()
                 "([Vv][Oo][Ll][Cc][Kk][Ee][Rr]%s*,%s*[Ww][Aa][Rr][Ll][Oo][Cc][Kk]%s+)[Aa][Ff][Ff][Ll][Ii][Cc][Tt][Ii][Oo][Nn]",
                 "%1demonology"
             )
+        end
+
+        -- One-time roster reset: existing characters carry a saved roster that includes ghosts
+        -- (anagke, araea, burgah, cheezburgah, clemency, ...) from the OLD default list. The
+        -- 70-entry list is now authoritative; stamp once so this only runs against pre-stamp DBs
+        -- and never re-clobbers a roster the user later edits. Fresh installs already get the new
+        -- defaults via ensureDefaults, so the stamp is also set during the defaults block below.
+        if not WeirdLootDB.config.rosterDefaultV2Applied then
+            WeirdLootDB.config.rosterEntries = addon.util:CloneTable(addon.defaultRosterEntries or {})
+            WeirdLootDB.config.rosterImportText = ""   -- forces NormalizeAllConfig to re-serialize from rosterEntries
+            WeirdLootDB.config.rosterDefaultV2Applied = true
         end
     end
 
