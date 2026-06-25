@@ -5,6 +5,9 @@
 local addon = WeirdLoot
 
 addon.defaultLootPriorityText = [=[
+Gauntlets of the Lost Conqueror, warlock demonology / warlock affliction / priest holy / priest discipline / priest shadow / paladin holy / paladin protection > paladin retribution
+Gauntlets of the Lost Protector, shaman enhancement / hunter survival / hunter marksmanship > warrior fury / warrior arms / shaman restoration
+Gauntlets of the Lost Vanquisher, rogue assassination / mage arcane / mage fire / death knight frost / death knight blood / druid balance / druid restoration > rogue combat / death knight unholy / druid balance
 Shadow of the Ghoul, paladin protection / warrior protection
 Haunting Call, shaman elemental
 Silent Crusader, death knight frost
@@ -16,22 +19,18 @@ Heritage, death knight blood
 Thunderstorm Amulet, warlock affliction / warlock demonology 
 Aged Winter Cloak, druid feral / hunter survival / hunter marksmanship / death knight frost / death knight unholy / warrior fury / warrior arms
 Shroud of Luminosity, shaman elemental / shaman restoration / paladin holy
-
 Crown of the Lost Conqueror, warlock affliction / warlock demonology / paladin protection > priest shadow / priest holy / priest discipline / paladin retribution / paladin holy
 Mantle of the Lost Conqueror, paladin protection / paladin retribution / paladin holy / priest discipline / priest holy / priest shadow / warlock affliction / warlock demonology
 Breastplate of the Lost Conqueror, warlock affliction / warlock demonology / paladin protection / paladin retribution / paladin holy > priest discipline / priest holy / priest shadow
 Legplates of the Lost Conqueror, paladin holy > paladin retribution
-
 Crown of the Lost Protector, shaman elemental / shaman restoration / warrior fury / warrior arms > shaman enhancement / hunter survival / hunter marksmanship
 Mantle of the Lost Protector, hunter survival / hunter marksmanship / shaman restoration / shaman enhancement / warrior fury / warrior arms > shaman elemental
 Breastplate of the Lost Protector, shaman enhancement / shaman restoration / shaman elemental
 Legplates of the Lost Protector, shaman restoration / shaman enhancement / warrior fury / warrior arms
-
 Crown of the Lost Vanquisher, rogue combat / rogue assassination / rogue subtlety / death knight blood / mage fire / mage arcane / druid balance / druid feral
 Mantle of the Lost Vanquisher, rogue combat / rogue assassination / rogue subtlety / death knight frost / death knight blood / death knight unholy / mage fire / mage arcane / druid balance / druid restoration / druid feral
 Breastplate of the Lost Vanquisher, druid balance / mage fire / mage arcane / death knight frost / death knight blood / death knight unholy
 Legplates of the Lost Vanquisher, mage arcane / rogue assassination / death knight frost / death knight blood > druid balance / death knight unholy
-
 Mantle of the Locusts, druid restoration
 Sash of the Parlor, priest discipline
 Leggings of Atrophy, shaman elemental
@@ -42,54 +41,44 @@ Inexorable Sabatons, paladin protection / warrior protection
 Sabatons of Sudden Reprisal, death knight unholy > death knight frost
 Webbed Death, rogue combat / rogue assassination / rogue subtlety
 Gemmed Wand of the Nerubians, mage fire / priest shadow / warlock affliction > mage arcane > warlock demonology
-
 Punctilious Bindings, priest shadow
 Gloves of Token Respect, priest discipline
 Seized Beauty, priest discipline > paladin holy
-
 Sinner's Bindings, druid feral / rogue combat / rogue assassination / rogue subtlety / warrior fury / warrior arms
 Torn Web Wrapping, hunter survival / hunter marksmanship / shaman enhancement
 Bindings of the Hapless Prey, paladin protection / warrior protection
 Ablative Chitin Girdle, warrior protection / paladin protection / death knight blood
 Matriarch's Spawn, druid restoration / warlock affliction > mage arcane / priest discipline > warlock demonology
 Wraith Strike, shaman enhancement > shaman restoration
-
 Sash of Solitude, priest discipline
 Belt of the Tortured, rogue assassination > paladin retribution / druid feral / shaman enhancement
 Fleshless Girdle, warrior protection
 Surplus Limb, priest shadow / warlock demonology / mage fire / mage arcane > warlock affliction
 Split Greathammer, warrior protection
 Arrowsong, hunter survival / hunter marksmanship
-
 Cowl of Vanity, priest shadow
 Mantle of the Corrupted, shaman elemental > druid balance
 Slime Stream Bands, shaman enhancement / hunter survival / hunter marksmanship
 Depraved Linked Belt, hunter survival / hunter marksmanship
 Girdle of Chivalry, paladin retribution / death knight frost / death knight unholy
 Plague Igniter, priest discipline
-
 Urn of Lost Memories, priest discipline
-
 Cincture of Polarity, mage fire / druid balance / shaman elemental
 Faceguard of the Succumbed, paladin holy
 Sabatons of Endurance, paladin protection / warrior protection
 Spire of Sunset, priest discipline
-
 Thrusting Bands, paladin retribution > druid feral
 Gauntlets of the Disobedient, warrior protection
 Accursed Spine, druid balance
 Spinning Fate, warrior fury / warrior arms / rogue combat / rogue assassination / rogue subtlety
-
 Heigan's Putrid Vestments, shaman elemental / priest shadow
 Serene Echoes, priest discipline
 Stalk-Skin Belt, druid feral / rogue combat / rogue assassination / rogue subtlety / warrior fury / warrior arms
 Eruption-Scarred Boots, shaman restoration > shaman elemental
 Breastplate of Tormented Rage, warrior protection
-
 Boots of Impetuous Ideals, warlock affliction / warlock demonology / mage fire
 Footwraps of Vile Deceit, druid feral
 Fading Glow, priest discipline
-
 Bindings of the Expansive Mind, druid balance
 Shoulderpads of Secret Arts, hunter survival / hunter marksmanship
 Bands of Mutual Respect, shaman restoration / shaman elemental
@@ -97,11 +86,9 @@ Girdle of Recuperation, shaman restoration
 Bracers of the Unholy Knight, death knight blood > paladin protection / warrior protection
 Girdle of Razuvious, death knight frost / death knight unholy
 Legplates of Double Strikes, warrior fury / warrior arms
-
 Leggings of Failed Escape, hunter survival / hunter marksmanship
 Helm of Vital Protection, warrior protection / paladin protection / death knight blood
 Abetment Bracers, paladin holy
-
 Zeliek's Gauntlets, death knight unholy
 Broken Promise, paladin protection
 Gloves of Grandeur, druid balance
