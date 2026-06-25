@@ -3537,8 +3537,12 @@ StaticPopupDialogs["WEIRDLOOT_SAVE_WHITELIST_PRESET"] = {
         local name = self.editBox and self.editBox:GetText() or ""
         name = string.match(name, "^%s*(.-)%s*$") or ""
         if name == "" then return end
-        local text = (addon.ui and addon.ui.panels and addon.ui.panels.options and addon.ui.panels.options.whitelistBox
-            and addon.ui.panels.options.whitelistBox.editBox and addon.ui.panels.options.whitelistBox.editBox:GetText()) or ""
+        -- The Options "panel" is a ScrollFrame; the multi-line text widgets live on the scroll
+        -- child stashed at addon.ui.optionsPanel. Reading from addon.ui.panels.options here returns
+        -- nil for the box and silently saves an empty preset.
+        local inner = addon.ui and addon.ui.optionsPanel
+        local box = inner and inner.whitelistBox and inner.whitelistBox.editBox
+        local text = (box and box:GetText()) or ""
         if addon:SaveCustomWhitelistPreset(name, text) then
             if addon.RefreshWhitelistPresetDropdown then addon:RefreshWhitelistPresetDropdown(name) end
         end
@@ -3581,8 +3585,11 @@ StaticPopupDialogs["WEIRDLOOT_SAVE_BLACKLIST_PRESET"] = {
         local name = self.editBox and self.editBox:GetText() or ""
         name = string.match(name, "^%s*(.-)%s*$") or ""
         if name == "" then return end
-        local text = (addon.ui and addon.ui.panels and addon.ui.panels.options and addon.ui.panels.options.blacklistBox
-            and addon.ui.panels.options.blacklistBox.editBox and addon.ui.panels.options.blacklistBox.editBox:GetText()) or ""
+        -- See the whitelist save dialog for context: addon.ui.panels.options is the ScrollFrame;
+        -- the multi-line text widgets live on the scroll child at addon.ui.optionsPanel.
+        local inner = addon.ui and addon.ui.optionsPanel
+        local box = inner and inner.blacklistBox and inner.blacklistBox.editBox
+        local text = (box and box:GetText()) or ""
         if addon:SaveCustomBlacklistPreset(name, text) then
             if addon.RefreshBlacklistPresetDropdown then addon:RefreshBlacklistPresetDropdown(name) end
         end
