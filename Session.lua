@@ -166,6 +166,12 @@ function addon:InitializeSession()
     self.session.lockedItems = self.session.lockedItems or {}
     self.session.pendingLinks = self.session.pendingLinks or {}
 
+    -- Seed the epoch high-water from our own restored session id so a later mint lands above it (and,
+    -- during the upgrade from time()-stamp epochs, above the legacy scale). A disk-restored session is
+    -- NOT a live mirror: clear the runtime flag so a takeover never rebroadcasts stale leftover loot.
+    self:ObserveEpoch(self.session.id)
+    self._mirrorActive = false
+
     -- self.session is the persisted record, so it must not carry the loot projection: that would
     -- write loot state to disk a second time, beside the authoritative ledger. Keep it absent.
     self.session.items = nil
@@ -381,13 +387,56 @@ function addon:BuildTradeableEpicCounts()
     return counts
 end
 
+-- Session epochs used to be tostring(time()), so a non-ML client that had started a session LATER
+-- than the current ML held a higher epoch and could win WeirdSync's "newest epoch" race (poisoning
+-- the raid on relog). Epochs are now a monotonic generation counter persisted account-wide: it only
+-- ever increases, and a fresh epoch is minted on session start AND on loot-master handoff, so the
+-- current ML always holds the newest epoch by construction, independent of any client's wall clock.
+function addon:NextEpoch()
+    local high = (self.sessionDb.epochHigh or 0) + 1
+    self.sessionDb.epochHigh = high
+    return tostring(high)
+end
+
+-- Raise the high-water to any epoch we have seen (our own restored id, or a peer/ML snapshot). Seeding
+-- from observed legacy time()-stamp epochs also lifts the counter above the old scale, so a peer still
+-- holding a time-based epoch is not out-ranked by a small generation number during the upgrade.
+function addon:ObserveEpoch(epoch)
+    local g = tonumber(epoch)
+    if g and g > (self.sessionDb.epochHigh or 0) then
+        self.sessionDb.epochHigh = g
+    end
+end
+
+-- Called when we gain confirmed loot-master authority (Roster:RefreshLootAuthority, false->true) while
+-- a session is already LIVE and we were mirroring it as a raider. Continue that session instead of
+-- wiping it: the core ledger we mirrored IS the state, so we only re-stamp a fresh (higher) epoch and
+-- force a full snapshot, and the raid rebaselines onto us.
+--
+-- Two guards keep this safe:
+--   * _mirrorActive: only a session received from the wire THIS play-session qualifies. A disk-restored
+--     leftover (active=true from a past raid) is never rebroadcast as if it were the current one.
+--   * payout is NOT auto-resumed. Owed/delivered disposition is not carried on the wire and the items
+--     sit in the previous ML's bags, so re-whispering already-paid winners would be worse than a manual
+--     resume. The new ML turns payout on deliberately.
+function addon:AssumeLootMasterSession()
+    if not self.session or not self.session.active then return end
+    if not self._mirrorActive then return end          -- not a live mirror: do not rebroadcast stale loot
+    self.session.id = self:NextEpoch()
+    self.session.ownerKey = self:GetSessionOwnerKey()
+    self.lootCore:SaveTo(self.session)
+    self:AutoBroadcastSession(true)                    -- full snapshot at the new epoch; raiders rebaseline
+    self:TriggerCallback("SESSION_UPDATED")
+    self:Print("Loot master role assumed; continuing the active loot session.")
+end
+
 function addon:StartLootSession()
     if not self:IsAuthorizedLootMaster() then
         self:Print("Only the loot master can start a loot session.")
         return
     end
 
-    local sessionId = tostring(time())
+    local sessionId = self:NextEpoch()
     self.session.id = sessionId
     self.session.active = true
     self.session.ownerKey = self:GetSessionOwnerKey()

@@ -2352,6 +2352,212 @@ end
 if os.getenv("WLBOSS") then bossDropReport() end
 
 -- ===========================================================================
+-- epoch generation counter + loot-master handoff takeover (the stale-epoch poison fix)
+-- ===========================================================================
+
+-- Epochs are a monotonic counter now, not tostring(time()); the harness clock is frozen at CLOCK,
+-- so under the old scheme two session starts would collide on the same id. The counter must still
+-- strictly increase.
+test("epoch: session ids are a monotonic counter, independent of the clock", function()
+    local ml = makeWorld("Masterlooter", true)
+    startSession(ml)
+    local e1 = tonumber(ml.addon.session.id)
+    check(e1 ~= nil, "epoch is numeric")
+    startSession(ml)
+    local e2 = tonumber(ml.addon.session.id)
+    check(e2 and e1 and e2 > e1, "second epoch > first with the clock frozen (got " .. tostring(e2) .. " vs " .. tostring(e1) .. ")")
+end)
+
+-- Migration safety: a peer still on a time()-stamp epoch must not out-rank a freshly minted one.
+-- Observing any epoch lifts the high-water, so the next mint lands above it.
+test("epoch: a mint always lands above any epoch seen on the wire (migration-safe)", function()
+    local ml = makeWorld("Masterlooter", true)
+    ml.addon:ObserveEpoch("1781803516")     -- a legacy time()-stamp from an un-upgraded peer
+    startSession(ml)
+    check(tonumber(ml.addon.session.id) > 1781803516, "new epoch out-ranks the legacy time-stamp epoch")
+end)
+
+-- The safety guard: a session restored from disk (active, but never mirrored this run) must NEVER be
+-- rebroadcast on ML gain -- that would push stale leftover loot onto the raid.
+test("handoff: a disk-restored leftover session is not rebroadcast on ML gain", function()
+    local w = makeWorld("Promotee", false)
+    w.addon.session.active = true            -- looks active...
+    w.addon.session.id = "5"
+    w.addon._mirrorActive = false            -- ...but it is NOT a live mirror (disk leftover)
+    clearWire()
+    w.addon:AssumeLootMasterSession()
+    eq(w.addon.session.id, "5", "epoch left untouched (no takeover)")
+    eq(#WIRE, 0, "nothing broadcast")
+end)
+
+-- The feature: gaining ML over a session we were actively mirroring continues it -- a fresh, higher
+-- epoch is minted, the mirrored ledger is kept, and a snapshot goes out so the raid rebaselines.
+test("handoff: gaining ML over a live mirror continues it under a higher epoch, ledger intact", function()
+    local ml = makeWorld("Masterlooter", true)
+    local promotee = makeWorld("Promotee", false)
+    startSession(ml)
+    setBag(ml, 40001, 1); bagUpdate(ml)      -- a fresh drop auto-rolls and broadcasts
+    flushWireTo(promotee, "Masterlooter")     -- promotee mirrors the live session
+
+    check(promotee.addon._mirrorActive == true, "promotee marked as a live mirror")
+    local mirrored = #promotee.addon.lootCore:All()
+    check(mirrored > 0, "promotee mirrored the lot(s)")
+    local epBefore = tonumber(promotee.addon.session.id)
+
+    promotee.addon.roster.isLootMaster = true  -- they just became the raid's loot master
+    clearWire()
+    promotee.addon:AssumeLootMasterSession()
+
+    check(tonumber(promotee.addon.session.id) > epBefore, "epoch bumped above the mirrored one (got "
+        .. tostring(promotee.addon.session.id) .. " vs " .. tostring(epBefore) .. ")")
+    eq(#promotee.addon.lootCore:All(), mirrored, "ledger preserved across the takeover")
+    check(#WIRE > 0, "a snapshot was broadcast at the new epoch")
+end)
+
+-- Q2: a fresh login transiently reports partyMasterIndex==0 (self) before the raid roster loads.
+-- In a RAID that must not self-claim loot master; in a 5-man PARTY it legitimately still does.
+test("Q2: in a raid, an unresolved master-index does not self-claim loot master", function()
+    local w = makeWorld("Bystander", false)
+    w.env.GetNumRaidMembers = function() return 5 end
+    w.env.GetNumPartyMembers = function() return 0 end
+    w.env.GetLootMethod = function() return "master", 0, nil end   -- partyMaster=0, raid index unresolved
+    w.addon:RefreshLootAuthority()
+    eq(w.addon.roster.isLootMaster, false, "did not self-claim ML in a raid")
+end)
+
+-- WeirdLoot is a raid tool: a 5-man party (even with master loot pointed at us) must never drive it.
+test("ML gating: a 5-man party never grants loot-master authority", function()
+    local w = makeWorld("Bystander", false)
+    w.env.GetNumRaidMembers = function() return 0 end
+    w.env.GetNumPartyMembers = function() return 4 end
+    w.env.GetLootMethod = function() return "master", 0, nil end   -- party master loot pointed at self
+    w.addon:RefreshLootAuthority()
+    eq(w.addon.roster.isLootMaster, false, "party master loot does not activate WeirdLoot")
+end)
+
+-- The original incident, reproduced deterministically. A is the real ML and B mirrors A. C was a
+-- loot master earlier, so it carries a stale active session with its own (higher) epoch, and is now
+-- just a raider. C "logs in": PLAYER_ENTERING_WORLD runs while GetLootMethod is in the post-relog
+-- window -- master loot, partyMasterIndex==0 (the API flagging C as self), the raid master index not
+-- yet resolvable. Pre-fix, C self-claimed loot master there and broadcast its stale session, and
+-- peers adopted it over the real ML. The raid-only ML gate must keep C from ever claiming authority,
+-- so it broadcasts nothing. (Drive PLAYER_ENTERING_WORLD, not just RefreshLootAuthority, so the real
+-- broadcast path is exercised: revert the gate and C emits a SNAP here, failing the test.)
+test("regression: a demoted ex-ML relogging in the login window never broadcasts as authority", function()
+    local A = makeWorld("Masterlooter", true)
+    local B = makeWorld("Raider", false)
+    local C = makeWorld("Exmaster", false)
+
+    startSession(A)
+    setBag(A, 40001, 1); bagUpdate(A)
+    flushWireTo(B, "Masterlooter")
+    local aEpoch = A.addon.session.id
+    eq(B.addon.session.id, aEpoch, "B is mirroring A's session")
+    local bLots = #B.addon.lootCore:All()
+    check(bLots > 0, "B mirrored A's lot(s)")
+
+    -- C carries a stale active session from when it was ML (its own, higher legacy-shaped epoch).
+    C.addon.session.active = true
+    C.addon.session.id = "9999999999"          -- stale and numerically higher than A's counter epoch
+    C.addon._mirrorActive = false              -- disk-restored leftover, not a live mirror
+
+    -- the transient post-relog window: in a raid, master loot, partyMaster=0 (self), raid index unresolved
+    C.env.GetNumRaidMembers = function() return 5 end
+    C.env.GetNumPartyMembers = function() return 0 end
+    C.env.GetLootMethod = function() return "master", 0, nil end
+    clearWire()
+    C.addon:PLAYER_ENTERING_WORLD()            -- the actual login path (RefreshAll + broadcast-if-authority)
+
+    eq(C.addon.roster.isLootMaster, false, "C did not self-claim loot master in the login window")
+    local cAuthorityTraffic = 0
+    for _, m in ipairs(WIRE) do
+        if m.sender == "Exmaster" and m.value and (m.value[1] == "SNAP" or m.value[1] == "H") then
+            cAuthorityTraffic = cAuthorityTraffic + 1
+        end
+    end
+    eq(cAuthorityTraffic, 0, "C broadcast no authority traffic (SNAP/H) at login")
+
+    -- and a peer correctly bound to the real ML is untouched by anything C put on the wire
+    flushWireTo(B, "Exmaster")
+    eq(B.addon.session.id, aEpoch, "B still on A's session (not poisoned by C)")
+    eq(#B.addon.lootCore:All(), bLots, "B's mirrored ledger unchanged")
+end)
+
+-- ===========================================================================
+-- authoritative ledger sync: per-copy disposition (winner/state/holder) on the wire, holder-aware
+-- live count, and the handoff masking bug it fixes.
+-- ===========================================================================
+
+-- The disposition is authoritative ledger state (not derivable from itemId), so it must survive the
+-- wire intact -- otherwise a promoted ML cannot inherit the owed map.
+test("ledger sync: award disposition (winner/state/holder) round-trips on the wire", function()
+    local w = makeWorld("Masterlooter", true)
+    local lot = { id = "L:1", itemId = 40005, state = "resolved", count = 1, responses = {},
+        awards = {
+            { winner = "bob",         state = "owed",     holder = "masterlooter" },
+            { winner = "masterlooter", state = "resolved", holder = "masterlooter" },
+        } }
+    local back = w.addon:DecodeLotValue(w.addon:BuildLotValue(lot))
+    check(back.awards and #back.awards == 2, "both awards survived")
+    eq(back.awards[1].winner, "bob", "owed winner preserved")
+    eq(back.awards[1].state, "owed", "owed state preserved")
+    eq(back.awards[1].holder, "masterlooter", "holder preserved")
+    eq(back.awards[2].state, "resolved", "self-win state preserved")
+end)
+
+-- A held/owed copy lives in the HOLDER's bags, so it must only count toward that ML's bag reconcile.
+test("ledger: holder-aware live count excludes a previous ML's held copy", function()
+    local w = makeWorld("Masterlooter", true)
+    startSession(w)
+    setBag(w, 40005, 1); bagUpdate(w)
+    local lot = openLot(w, 40005)
+    w.addon:StartLiveRoll(lot.id)
+    w.addon:RegisterInterest(lot.id, "Masterlooter", "ms")   -- the ML wins his own roll (self-win)
+    w.addon:ResolveLiveRoll(lot.id)
+    eq(w.addon.lootCore:liveCountForItem(40005), 1, "held by the resolving ML: counts")
+    w.addon.lootCore:SetML("Someoneelse")
+    eq(w.addon.lootCore:liveCountForItem(40005), 0, "after the ML changes, the old ML's held copy no longer counts")
+end)
+
+-- The Crimson Steel bug, end to end. A self-wins an item (resolved, held by A). B mirrors it (with
+-- holder=A on the wire), becomes ML, and loots a FRESH copy of the same item. Pre-fix, A's inherited
+-- self-won copy counted as live for B, so want(1)==live(1) and the drop was masked -- never rolled.
+-- Holder-aware live count means A's copy (holder != B) does not count, so the fresh drop surfaces.
+test("handoff: a previous ML's self-won item does not mask the new ML's fresh drop", function()
+    local A = makeWorld("Masterlooter", true)
+    local B = makeWorld("Promotee", false)
+
+    startSession(A)
+    setBag(A, 40005, 1); bagUpdate(A)
+    local won = openLot(A, 40005)
+    A.addon:StartLiveRoll(won.id)
+    A.addon:RegisterInterest(won.id, "Masterlooter", "ms")   -- A wins his own loot
+    A.addon:ResolveLiveRoll(won.id)
+    eq(A.addon.lootCore:State(won.id), "resolved", "A self-won and resolved the item")
+    A.addon:AutoBroadcastSession(true)                       -- full snapshot carries the disposition
+
+    flushWireTo(B, "Masterlooter")
+    local mirror = B.addon.lootCore:Get(won.id)
+    check(mirror and mirror.awards and mirror.awards[1].holder, "B's mirror carries the award holder")
+
+    -- B becomes loot master and continues the session.
+    B.addon.roster.isLootMaster = true
+    B.addon.roster.lootMasterName = "Promotee"
+    B.addon.lootCore:SetML("Promotee")
+    B.addon:AssumeLootMasterSession()
+
+    -- B loots a fresh copy of the same item.
+    setBag(B, 40005, 1); bagUpdate(B)
+    local fresh
+    for _, l in ipairs(B.addon.lootCore:lotsForItem(40005)) do
+        if l.id ~= won.id and not l.removed then fresh = l end
+    end
+    check(fresh ~= nil, "B's fresh drop minted a NEW lot (not masked by A's inherited copy)")
+    check(fresh and (fresh.state == "pending" or fresh.state == "rolling"), "the fresh drop surfaced for rolling")
+    check(B.addon.lootCore:Get(won.id) ~= nil, "A's resolved lot is still kept as the loot log")
+end)
+
+-- ===========================================================================
 print("")
 print(string.format("=== WeirdLoot battery: %d passed, %d failed ===", pass, fail))
 if fail > 0 then

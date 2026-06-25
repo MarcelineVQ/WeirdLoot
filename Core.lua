@@ -26,7 +26,7 @@ addon.prefix = "WeirdLoot"
 -- Future versions should simply pull the version from the .toc via
 -- GetAddOnMetadata("WeirdLoot", "Version"), but since we're iterating frequently
 -- this should show live, so a .lua file based version is correct.
-addon.version = "1.1.3"
+addon.version = "1.1.4"
 addon.callbacks = {}
 addon.events = CreateFrame("Frame")
 
@@ -3417,6 +3417,7 @@ function addon:PLAYER_LOGIN()
         activeSession = nil,
         activeSessions = {},
         history = {},
+        epochHigh = 0,   -- monotonic session-epoch high-water (see NextEpoch); makes handoff ordering clock-proof
     })
 
     if WeirdLootDB and WeirdLootDB.config then

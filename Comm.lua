@@ -256,6 +256,17 @@ function addon:BuildLotValue(lot)
     for _, a in ipairs(lot.awards or {}) do
         if a.winner then winners[#winners + 1] = a.winner end
     end
+    -- Per-copy disposition is AUTHORITATIVE ledger state, not derivable from itemId, so it rides the
+    -- wire alongside the breakdown: every client (including a freshly promoted ML) then holds the same
+    -- owed/holder truth. Compact positional triple {winner|false, state, holder|false}; false (not nil)
+    -- so the array has no holes. LibSerialize dedups the repeated names.
+    local awards
+    if lot.awards then
+        awards = {}
+        for i, a in ipairs(lot.awards) do
+            awards[i] = { a.winner or false, a.state, a.holder or false }
+        end
+    end
     local v = {
         "L",
         id = lot.id,
@@ -264,6 +275,7 @@ function addon:BuildLotValue(lot)
         count = self.lootCore:LiveCount(lot.id),
         responses = lot.responses,                  -- map sent directly (dedups across lots)
         winners = winners,
+        awards = awards,
         removed = lot.removed or nil,
         seq = self.lootCore.seq or 0,               -- used by deltas; ignored in a full snapshot
         rollRemaining = tonumber(self:RollRemaining(lot)),   -- number for a rolling lot, else nil
@@ -285,6 +297,14 @@ function addon:DecodeLotValue(v)
         responses = v.responses or {},
         removed = v.removed or nil,
     }
+    -- Rebuild the authoritative award disposition so a mirror's liveCount is holder-aware (a copy held
+    -- by another ML is not in OUR bags) and a promoted ML inherits the owed map directly.
+    if v.awards then
+        lot.awards = {}
+        for i, a in ipairs(v.awards) do
+            lot.awards[i] = { winner = a[1] or nil, state = a[2], holder = a[3] or nil }
+        end
+    end
     if lot.state == self.lootCore.STATE.RESOLVED then
         local winners = v.winners or {}
         if v.record then
@@ -320,6 +340,10 @@ function addon:SyncApplySnapshot(lines, epoch)
     -- empty snapshot). Don't fabricate a session: mark inactive rather than show a phantom one.
     self.session.id = epoch
     self.session.active = epoch ~= nil and epoch ~= ""
+    -- Track the epoch so our next mint stays above it, and remember that this session is a LIVE mirror
+    -- received from the authority (not a disk-restored leftover) so an ML handoff may safely continue it.
+    self:ObserveEpoch(epoch)
+    self._mirrorActive = self.session.active
     self.session.attendees = {}
     if self.ui then self.ui.selectedResult = nil end
 
