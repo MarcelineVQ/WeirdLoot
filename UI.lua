@@ -1715,15 +1715,39 @@ function addon:BuildMasterTab()
     panel.payoutButton = payoutButton
     panel.allowTradesButton = allowTradesButton
 
-    setButtonTooltip(allowTradesButton, "Allow All Trades (toggle)",
+    setButtonTooltip(allowTradesButton, "Allow All Trades (Toggle)",
         "When OFF (default), trades opened by raiders who aren't on the payout list are auto-declined "
         .. "during payout so the loot handout stays clean. Turn ON to let any raider open a trade with "
         .. "the loot master (e.g. handing over a flask or other non-loot item).")
 
-    setButtonTooltip(payoutButton, "Payout Mode (toggle)",
+    setButtonTooltip(payoutButton, "Payout Mode (Toggle)",
         "Turn automatic loot delivery on or off. While ON: each winner is whispered to open a trade with you, "
         .. "and their owed items auto-fill into the trade window (you click Trade to send). Trades from non-winners "
         .. "are declined while loot is still owed. Pause keeps the owed list but stops auto-fill.")
+		
+	setButtonTooltip(startButton, "Start Session",
+        "Establishes the active loot session.")
+		
+	setButtonTooltip(scanButton, "Scan Bags",
+        "Searches the Lootmaster's bags for tradeable |cffa335ee[Epic]|r items to be rolled out during an active session.")
+	
+	setButtonTooltip(unlockButton, "Unlock Roll",
+        "Clears the rollout lock so the current session's loot can be rerolled intentionally.")
+
+	setButtonTooltip(exportWinnersButton, "Export Winners",
+        "Generates a plain-text list of all looted items and their recipients for recordkeeping.")
+		
+	setButtonTooltip(exportLogButton, "Export Log",
+		"Generates a audit log of all looted items and their associated rolls and outcomes.")
+
+	setButtonTooltip(importRosterButton, "Import Roster",
+		"Opens an editable import window where you can paste the current weekly roster list and save it to WeirdLoot. This includes information such as character name, class, specialization, and designation (Main, Designated Alt, Alt).")
+
+	setButtonTooltip(importNamedItemsButton, "Import Named Items",
+		"Opens an editable import window where you can paste the current named-item priority list and save it to WeirdLoot. This is reserved for items that are prioritized based on Loot Council decision.")
+
+	setButtonTooltip(processButton, "Start Rolls",
+		"Starts live rolls in batches (size configurable in Options). The next batch starts when the current one finishes.")
 
     panel.controlsTitle = createLabel(panel, "Controls", "TOPLEFT", startButton, "BOTTOMLEFT", 0, -24)
     panel.controlsTitle:SetFontObject(GameFontHighlightLarge)
@@ -2766,7 +2790,7 @@ function addon:RefreshMasterTab()
     end
 
     local payoutActive = self.payout and self.payout:IsPayoutActive()
-    panel.payoutButton:SetText(payoutActive and "Pause Payout" or "Start Payout")
+    panel.payoutButton:SetText(payoutActive and "Payout Mode: ON" or "Payout Mode: OFF")
 
     if panel.allowTradesButton then
         local allow = self:IsAllowAllTrades()
