@@ -122,12 +122,13 @@ function addon:RefreshLootAuthority()
     -- 1) who is the master looter?
     local lootMasterName
     if method == "master" then
+        -- WeirdLoot is a RAID loot tool: authority is taken ONLY from the raid master-looter index.
+        -- 5-man party master loot is intentionally not driven, and ignoring partyMasterIndex here also
+        -- closes the login race where the API transiently reports partyMasterIndex == 0 (flagging US)
+        -- before the raid roster loads -- which previously let a non-ML self-grant and broadcast a
+        -- phantom session. (Solo city testing still drives a session via the testMode leadership path.)
         if raidMasterIndex and raidMasterIndex > 0 then
             lootMasterName = stripRealm(GetRaidRosterInfo(raidMasterIndex))   -- ML in raid
-        elseif partyMasterIndex == 0 then
-            lootMasterName = playerName                                        -- we are party ML
-        elseif partyMasterIndex and partyMasterIndex > 0 then
-            lootMasterName = stripRealm(UnitName("party" .. partyMasterIndex)) -- party member ML
         end
     end
 
@@ -170,6 +171,7 @@ function addon:RefreshLootAuthority()
         lootMasterName = playerName
     end
 
+    local wasLootMaster = self.roster.isLootMaster
     self.roster.lootMasterName = lootMasterName
     self.roster.isLootMaster = isLootMaster
 
@@ -197,6 +199,13 @@ function addon:RefreshLootAuthority()
 
     -- the core needs the ML identity to decide self-win (resolved) vs owed at resolve time
     if self.lootCore then self.lootCore:SetML(lootMasterName) end
+
+    -- Gaining confirmed loot-master authority over a session we were mirroring: continue it under a
+    -- fresh epoch so the current ML always holds the newest epoch (a stale/older session can never
+    -- out-rank us). Only a false->true transition fires it, so the event/retry re-runs do not re-mint.
+    if isLootMaster and not wasLootMaster then
+        self:AssumeLootMasterSession()
+    end
 
     self:TriggerCallback("AUTHORITY_UPDATED")
 end

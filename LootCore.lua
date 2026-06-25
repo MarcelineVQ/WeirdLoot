@@ -111,12 +111,19 @@ local function awardIsLive(a)
     return a.state == AWARD.OWED or a.state == AWARD.RESOLVED
 end
 
--- How many physical copies of this lot are still in the ML's bags (live).
-local function liveCount(lot)
+-- How many physical copies of this lot are live. With a mlKey, count ONLY copies whose holder is
+-- that ML: a held/owed award physically sits in the holder's bags, so after a loot-master handoff the
+-- previous ML's copies must not count toward the NEW ML's bag reconcile (otherwise a fresh drop of the
+-- same item is masked by the inherited copy and never surfaces). A nil holder (lot minted before
+-- holders were tracked) or a nil mlKey counts as before, so display/unlock paths are unaffected.
+local function liveCount(lot, mlKey)
     if lot.removed then return 0 end
     if lot.awards then
         local n = 0
-        for i = 1, #lot.awards do if awardIsLive(lot.awards[i]) then n = n + 1 end end
+        for i = 1, #lot.awards do
+            local a = lot.awards[i]
+            if awardIsLive(a) and (a.holder == nil or mlKey == nil or a.holder == mlKey) then n = n + 1 end
+        end
         return n
     end
     return lot.count or 0
@@ -236,10 +243,12 @@ function LootCore:openLotForItem(itemId)
     return nil
 end
 
+-- Reconcile compares this against the CURRENT ML's bag scan, so it counts only copies this ML holds
+-- (holder-aware): an inherited copy held by a previous ML is not in our bags and must not mask a drop.
 function LootCore:liveCountForItem(itemId)
     local total = 0
     local lots = self:lotsForItem(itemId)
-    for i = 1, #lots do total = total + liveCount(lots[i]) end
+    for i = 1, #lots do total = total + liveCount(lots[i], self._mlKey) end
     return total
 end
 
@@ -462,11 +471,14 @@ function LootCore:Resolve(id)
     lot.awards = {}
     for i = 1, lot.count do
         local w = winners[i]
-        local award = { winner = w or nil }
+        -- holder = the player physically custodying this copy, recorded by name (the resolving ML), so
+        -- the disposition survives a loot-master handoff: "self-win" stops meaning "whoever is ML now"
+        -- and becomes "this named player has it". owed = won by someone other than the holder.
+        local award = { winner = w or nil, holder = self._mlKey }
         if w and not self:IsML(w) then
             award.state = AWARD.OWED
         else
-            award.state = AWARD.RESOLVED -- self-win or no winner: ML already holds it
+            award.state = AWARD.RESOLVED -- self-win or no winner: the holder (ML) already has this copy
         end
         lot.awards[i] = award
     end
