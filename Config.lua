@@ -705,16 +705,20 @@ end
 
 function addon:NormalizeAllConfig()
     local rosterEntries = self.config.rosterEntries
-    local rosterImportText = self.config.rosterImportText or ""
-    local shouldUseDefaultRoster = rosterImportText == "" or rosterImportText == (self.legacySampleRosterImportText or "")
 
-    if shouldUseDefaultRoster and (type(rosterEntries) ~= "table" or #rosterEntries <= 2) then
-        rosterEntries = util:CloneTable(self.defaultRosterEntries or {})
-    elseif type(rosterEntries) ~= "table" or #rosterEntries == 0 then
-        rosterEntries = self:ParseRosterImport(self.config.rosterImportText or "")
-    end
+    -- Single roster source: whatever lives in self.config.rosterEntries. The PLAYER_LOGIN
+    -- migration handles the one-time switch from legacy saved data to the curated default; from
+    -- then on this function trusts the saved entries. If they're missing/empty (fresh install
+    -- with no defaults yet, or a roster nuked by hand), reparse the saved import text or fall
+    -- back to the curated default.
     if type(rosterEntries) ~= "table" or #rosterEntries == 0 then
-        rosterEntries = util:CloneTable(self.defaultRosterEntries or {})
+        local rosterImportText = self.config.rosterImportText or ""
+        if rosterImportText ~= "" then
+            rosterEntries = self:ParseRosterImport(rosterImportText)
+        end
+        if type(rosterEntries) ~= "table" or #rosterEntries == 0 then
+            rosterEntries = util:CloneTable(self.defaultRosterEntries or {})
+        end
     end
 
     self.config.rosterEntries = self:NormalizeRosterEntries(rosterEntries)
