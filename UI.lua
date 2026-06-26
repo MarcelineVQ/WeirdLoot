@@ -432,6 +432,24 @@ local function buildPlainCandidateSummary(candidate)
     }, " - ")
 end
 
+local function groupedRollSortValue(candidate)
+    if candidate.auto or candidate.rollText == "AUTO" then
+        return 101
+    end
+    return tonumber(candidate.roll) or tonumber(candidate.rollText) or -1
+end
+
+local function sortGroupedRollers(entries)
+    table.sort(entries, function(left, right)
+        local leftRoll = groupedRollSortValue(left)
+        local rightRoll = groupedRollSortValue(right)
+        if leftRoll == rightRoll then
+            return string.lower(left.name or "") < string.lower(right.name or "")
+        end
+        return leftRoll > rightRoll
+    end)
+end
+
 local function formatSpecPriorityDisplay(specPriorityText)
     local normalized = string.trim(specPriorityText or "")
     if normalized == "" then
@@ -743,6 +761,7 @@ function addon:BuildDetailedExportLogText()
         for _, group in ipairs(groups) do
             local entries = groupedRollers[group.key] or {}
             if #entries > 0 then
+                sortGroupedRollers(entries)
                 if renderedGroups > 0 then
                     lines[#lines + 1] = ""
                 end

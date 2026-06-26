@@ -1541,7 +1541,6 @@ function addon:ShowResultPopup(roll, winners, sections, slot)
             if #s.members > 0 then
                 local mem = {}
                 for _, m in ipairs(s.members) do mem[#mem + 1] = m end
-                table.sort(mem, function(a, b) return (a.roll or 0) > (b.roll or 0) end)
                 for _, m in ipairs(mem) do
                     local key = util:NormalizeKey(m.name)
                     local winnerType = s.label or "?"
@@ -1785,6 +1784,24 @@ end
 -- ({label, members={{name, roll}}}), highest bracket first, for the result popup breakdown.
 local SECTION_ORDER = { "bis", "ms", "mu", "os", "tm" }
 local SECTION_LABELS = { bis = "BiS", ms = "MS", mu = "MU", os = "OS", tm = "TM" }
+local function sectionMemberSortValue(member)
+    if member.auto or member.rollText == "AUTO" then
+        return 101
+    end
+    return tonumber(member.roll) or tonumber(member.rollText) or -1
+end
+
+local function sortSectionMembers(entries)
+    table.sort(entries, function(left, right)
+        local leftRoll = sectionMemberSortValue(left)
+        local rightRoll = sectionMemberSortValue(right)
+        if leftRoll == rightRoll then
+            return string.lower(left.name or "") < string.lower(right.name or "")
+        end
+        return leftRoll > rightRoll
+    end)
+end
+
 function addon:SectionsFromResult(record)
     local buckets = {}
     for _, d in ipairs(record.allRollerDetails or {}) do
@@ -1796,7 +1813,10 @@ function addon:SectionsFromResult(record)
     end
     local sections = {}
     for _, key in ipairs(SECTION_ORDER) do
-        if buckets[key] then sections[#sections + 1] = { label = SECTION_LABELS[key], members = buckets[key] } end
+        if buckets[key] then
+            sortSectionMembers(buckets[key])
+            sections[#sections + 1] = { label = SECTION_LABELS[key], members = buckets[key] }
+        end
     end
     return sections
 end
