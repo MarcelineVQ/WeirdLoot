@@ -109,6 +109,35 @@ local function stripRealm(name)
     return name and string.match(name, "^[^-]+") or name
 end
 
+local function unitFlagTrue(fn, unit)
+    if type(fn) ~= "function" then
+        return false
+    end
+
+    local ok, value = pcall(fn, unit)
+    return ok and value and true or false
+end
+
+function addon:IsPlayerRaidLeaderOrAssistant()
+    if (GetNumRaidMembers() or 0) <= 0 then
+        return false
+    end
+
+    if unitFlagTrue(UnitIsRaidLeader, "player") or unitFlagTrue(UnitIsRaidOfficer, "player") then
+        return true
+    end
+
+    local playerName = util:GetPlayerName("player")
+    for index = 1, (GetNumRaidMembers() or 0) do
+        local name, rank = GetRaidRosterInfo(index)
+        if playerName and name and util:NormalizeKey(stripRealm(name)) == util:NormalizeKey(playerName) then
+            return (rank == 2) or (rank == 1)
+        end
+    end
+
+    return false
+end
+
 -- Determine the master looter's name and whether *we* drive WeirdLoot, robustly across
 -- every group shape (mirrors RCLootCouncil's GetML): raid master-loot, party master-loot,
 -- raid leader/assistant, party leader, and solo. The leadership fallback only applies when
@@ -122,13 +151,19 @@ function addon:RefreshLootAuthority()
     -- 1) who is the master looter?
     local lootMasterName
     if method == "master" then
-        -- WeirdLoot is a RAID loot tool: authority is taken ONLY from the raid master-looter index.
-        -- 5-man party master loot is intentionally not driven, and ignoring partyMasterIndex here also
-        -- closes the login race where the API transiently reports partyMasterIndex == 0 (flagging US)
-        -- before the raid roster loads -- which previously let a non-ML self-grant and broadcast a
-        -- phantom session. (Solo city testing still drives a session via the testMode leadership path.)
+        -- Raid takes the master-looter index from the raid roster. The party-ML fallback below is
+        -- gated on numParty > 0 AND numRaid == 0 so it ONLY fires in an actual 5-man party, never
+        -- during the post-relog raid race where the API transiently reports partyMasterIndex == 0
+        -- before the raid roster loads (in that race numRaid is also 0 but so is numParty -- we
+        -- have no group at all -- which the gate rejects, blocking the ex-ML self-claim).
         if raidMasterIndex and raidMasterIndex > 0 then
             lootMasterName = stripRealm(GetRaidRosterInfo(raidMasterIndex))   -- ML in raid
+        elseif numRaid == 0 and numParty > 0 then
+            if partyMasterIndex == 0 then
+                lootMasterName = playerName                                        -- we are party ML
+            elseif partyMasterIndex and partyMasterIndex > 0 then
+                lootMasterName = stripRealm(UnitName("party" .. partyMasterIndex)) -- party member ML
+            end
         end
     end
 
@@ -171,17 +206,29 @@ function addon:RefreshLootAuthority()
         lootMasterName = playerName
     end
 
-    local wasLootMaster = self.roster.isLootMaster
-    self.roster.lootMasterName = lootMasterName
-    self.roster.isLootMaster = isLootMaster
-
     -- Roster-unreadable detection: GetLootMethod knows master loot is on with the ML at a raid
     -- index, but GetRaidRosterInfo cannot name that index -- a post-relog state the client cannot
     -- recover from without a reload (it is why we, the actual ML, are not recognized). partyMasterIndex
     -- == 0 means the API still flags US as that master looter, so we warn the right person; we do NOT
     -- grant authority from it (raid authority stays gated on the real roster-name match above).
     local nameAtML = (raidMasterIndex and raidMasterIndex > 0) and GetRaidRosterInfo(raidMasterIndex) or nil
-    self.roster.mlRosterUnreadable = self:RosterUnreadableForML(method, partyMasterIndex, raidMasterIndex, nameAtML)
+    local rosterUnreadable = self:RosterUnreadableForML(method, partyMasterIndex, raidMasterIndex, nameAtML)
+
+    -- If the raid roster never resolves the ML's name, Blizzard still self-flags the real ML with
+    -- partyMasterIndex == 0. Trust that degraded signal only for the raid leader/assistants: they
+    -- are the only players who can legitimately hold master loot, and this keeps ordinary raiders
+    -- from self-granting authority during the relog race this guard was introduced to block.
+    if not isLootMaster and rosterUnreadable and self:IsPlayerRaidLeaderOrAssistant() then
+        isLootMaster = true
+        lootMasterName = playerName or lootMasterName
+        rosterUnreadable = false
+    end
+
+    local wasLootMaster = self.roster.isLootMaster
+    self.roster.lootMasterName = lootMasterName
+    self.roster.isLootMaster = isLootMaster
+    self.roster.mlRosterUnreadable = rosterUnreadable
+
     if self.roster.mlRosterUnreadable then
         -- Suppress the chat warning until bags settle (~5s after login). During the login/zone
         -- window the roster is legitimately not yet populated, so the predicate is transiently true

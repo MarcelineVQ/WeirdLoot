@@ -126,6 +126,8 @@ local function makeWorld(playerName, isML)
     end
     env.GetLootMethod = function() return "master", 0, 1 end
     env.IsPartyLeader = function() return isML end
+    env.UnitIsRaidLeader = function(unit) return unit == "player" and isML end
+    env.UnitIsRaidOfficer = function(unit) return unit == "player" and isML end
     env.SendChatMessage = function() end
     env.SendAddonMessage = function() end
     env.ChatThrottleLib = { SendChatMessage = function() end }
@@ -1166,6 +1168,36 @@ test("unreadable raid roster detection: flags the would-be ML, not raiders or he
     -- not master loot, or no raid ML index
     eq(f:RosterUnreadableForML("group", 0, 0, nil), false, "not master loot -> not flagged")
     eq(f:RosterUnreadableForML("master", 0, nil, nil), false, "no raid ML index -> not flagged")
+end)
+
+test("unreadable raid roster: the actual ML recovers authority from the self-flag", function()
+    local w = makeWorld("Masterlooter", true)
+    w.env.GetRaidRosterInfo = function(i)
+        if i == 1 then return nil, nil end
+        return "SomeoneElse", 0
+    end
+    w.env.GetLootMethod = function() return "master", 0, 1 end
+
+    w.addon:RefreshLootAuthority()
+
+    eq(w.addon.roster.isLootMaster, true, "real ML stays authorized when the roster cannot name the ML index")
+    eq(w.addon.roster.lootMasterName, "Masterlooter", "fallback records the local player as the ML")
+    eq(w.addon.roster.mlRosterUnreadable, false, "recovered state does not keep the controls locked")
+end)
+
+test("slash export commands stay available without loot-master authority", function()
+    local w = makeWorld("Raider", false)
+    local winners, logs = 0, 0
+    w.addon.ExportWinners = function() winners = winners + 1 end
+    w.addon.ExportLog = function() logs = logs + 1 end
+
+    w.addon:HandleSlashCommand("winners")
+    w.addon:HandleSlashCommand("export winner")
+    w.addon:HandleSlashCommand("log")
+    w.addon:HandleSlashCommand("export log")
+
+    eq(winners, 2, "winner export aliases dispatch without ML authority")
+    eq(logs, 2, "log export aliases dispatch without ML authority")
 end)
 
 test("roll resolution hands the raider a result popup, not an instant vanish (sync race)", function()
@@ -2415,14 +2447,26 @@ test("Q2: in a raid, an unresolved master-index does not self-claim loot master"
     eq(w.addon.roster.isLootMaster, false, "did not self-claim ML in a raid")
 end)
 
--- WeirdLoot is a raid tool: a 5-man party (even with master loot pointed at us) must never drive it.
-test("ML gating: a 5-man party never grants loot-master authority", function()
-    local w = makeWorld("Bystander", false)
+-- A 5-man party with master loot pointed at us legitimately makes us the loot master. The relog
+-- race that the raid-only gate was guarding against has numParty == 0 too (no group has loaded),
+-- so this branch's numParty > 0 gate keeps the race from co-opting it.
+test("ML gating: in a 5-man party with master loot pointed at self, we ARE the loot master", function()
+    local w = makeWorld("Masterlooter", true)
     w.env.GetNumRaidMembers = function() return 0 end
     w.env.GetNumPartyMembers = function() return 4 end
     w.env.GetLootMethod = function() return "master", 0, nil end   -- party master loot pointed at self
     w.addon:RefreshLootAuthority()
-    eq(w.addon.roster.isLootMaster, false, "party master loot does not activate WeirdLoot")
+    eq(w.addon.roster.isLootMaster, true, "party master loot self-grants ML authority")
+end)
+
+test("ML gating: in a 5-man party with master loot pointed at someone else, we are NOT the ML", function()
+    local w = makeWorld("Masterlooter", true)
+    w.env.GetNumRaidMembers = function() return 0 end
+    w.env.GetNumPartyMembers = function() return 4 end
+    w.env.UnitName = function(unit) if unit == "party1" then return "OtherPlayer" end return "Masterlooter" end
+    w.env.GetLootMethod = function() return "master", 1, nil end   -- party master loot pointed at party1
+    w.addon:RefreshLootAuthority()
+    eq(w.addon.roster.isLootMaster, false, "party master loot pointed elsewhere does NOT grant authority")
 end)
 
 -- The original incident, reproduced deterministically. A is the real ML and B mirrors A. C was a

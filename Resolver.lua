@@ -144,6 +144,24 @@ local RESPONSE_PRIORITY_RANKS = {
     pass = 1,
 }
 
+local function rollerSortValue(candidate)
+    if candidate.auto or candidate.rollText == "AUTO" then
+        return 101
+    end
+    return tonumber(candidate.roll) or tonumber(candidate.rollText) or -1
+end
+
+local function sortGroupedRollers(entries)
+    table.sort(entries, function(left, right)
+        local leftRoll = rollerSortValue(left)
+        local rightRoll = rollerSortValue(right)
+        if leftRoll == rightRoll then
+            return string.lower(left.name or "") < string.lower(right.name or "")
+        end
+        return leftRoll > rightRoll
+    end)
+end
+
 local function appendGroupedRollers(lines, candidates)
     local grouped = {}
     for _, group in ipairs(RESULT_RESPONSE_GROUPS) do
@@ -162,6 +180,7 @@ local function appendGroupedRollers(lines, candidates)
     for _, group in ipairs(RESULT_RESPONSE_GROUPS) do
         local entries = grouped[group.key] or {}
         if #entries > 0 then
+            sortGroupedRollers(entries)
             if renderedGroups > 0 then
                 lines[#lines + 1] = ""
             end

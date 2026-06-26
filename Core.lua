@@ -3843,6 +3843,10 @@ function addon:HandleSlashCommand(msg)
     local command = string.lower(string.trim(msg or ""))
     if command == "start" then
         self:StartLootSession()
+    elseif command == "winners" or command == "winner" or command == "export winners" or command == "export winner" then
+        self:ExportWinners()
+    elseif command == "log" or command == "export log" then
+        self:ExportLog()
     elseif command == "end" or command == "stop" or command == "clear" then
         self:ClearSession()
         self:Print("Loot session ended.")
