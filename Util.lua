@@ -285,6 +285,13 @@ function util:ColorPlayerName(name, className)
     return (self:GetClassColorCode(className) or "|cffffffff") .. tostring(name or "Unknown") .. "|r"
 end
 
+function util:ColorPlayerText(name, className, text)
+    if self:IsSelfName(name) then
+        return YOU_COLOR .. tostring(text or "You") .. "|r"
+    end
+    return tostring(text or self:ColorPlayerName(name, className))
+end
+
 function util:FindBagItemByLink(itemLink)
     if not itemLink or itemLink == "" then
         return nil
