@@ -2726,6 +2726,10 @@ function addon:GetSortedResults()
         if r.winners and r.winners[1] then return r.winners[1] end
         return r.winnersText or r.winner or ""
     end
+    local function isNoWinnerResult(r)
+        local winner = string.lower(string.trim(winnerNameOf(r) or ""))
+        return winner == "" or winner == "no winner"
+    end
     if mode == "name" then
         table.sort(out, function(a, b)
             local an = string.lower(a.r.itemName or "")
@@ -2735,6 +2739,11 @@ function addon:GetSortedResults()
         end)
     elseif mode == "winner" then
         table.sort(out, function(a, b)
+            local aNoWinner = isNoWinnerResult(a.r)
+            local bNoWinner = isNoWinnerResult(b.r)
+            if aNoWinner ~= bNoWinner then
+                return not aNoWinner
+            end
             local aw = string.lower(winnerNameOf(a.r))
             local bw = string.lower(winnerNameOf(b.r))
             if aw == bw then return a._idx < b._idx end
