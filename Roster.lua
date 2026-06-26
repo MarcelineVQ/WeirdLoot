@@ -109,35 +109,6 @@ local function stripRealm(name)
     return name and string.match(name, "^[^-]+") or name
 end
 
-local function unitFlagTrue(fn, unit)
-    if type(fn) ~= "function" then
-        return false
-    end
-
-    local ok, value = pcall(fn, unit)
-    return ok and value and true or false
-end
-
-function addon:IsPlayerRaidLeaderOrAssistant()
-    if (GetNumRaidMembers() or 0) <= 0 then
-        return false
-    end
-
-    if unitFlagTrue(UnitIsRaidLeader, "player") or unitFlagTrue(UnitIsRaidOfficer, "player") then
-        return true
-    end
-
-    local playerName = util:GetPlayerName("player")
-    for index = 1, (GetNumRaidMembers() or 0) do
-        local name, rank = GetRaidRosterInfo(index)
-        if playerName and name and util:NormalizeKey(stripRealm(name)) == util:NormalizeKey(playerName) then
-            return (rank == 2) or (rank == 1)
-        end
-    end
-
-    return false
-end
-
 -- Determine the master looter's name and whether *we* drive WeirdLoot, robustly across
 -- every group shape (mirrors RCLootCouncil's GetML): raid master-loot, party master-loot,
 -- raid leader/assistant, party leader, and solo. The leadership fallback only applies when
@@ -206,35 +177,24 @@ function addon:RefreshLootAuthority()
         lootMasterName = playerName
     end
 
-    -- Roster-unreadable detection: GetLootMethod knows master loot is on with the ML at a raid
-    -- index, but GetRaidRosterInfo cannot name that index -- a post-relog state the client cannot
-    -- recover from without a reload (it is why we, the actual ML, are not recognized). partyMasterIndex
-    -- == 0 means the API still flags US as that master looter, so we warn the right person; we do NOT
-    -- grant authority from it (raid authority stays gated on the real roster-name match above).
+    -- "Roster unreadable": master loot is on with partyMasterIndex == 0 (the API flags US as ML), but
+    -- GetRaidRosterInfo cannot name our raid index yet, so the name-match above cannot confirm us and
+    -- isLootMaster stays false. We flag and warn on this, but never self-grant from it: partyMasterIndex
+    -- == 0 cannot tell the real ML from a relogging ex-ML, and raid-leader/assistant is a different role
+    -- from master-looter (the ML can be a plain member). Authority stays on the roster name-match alone.
     local nameAtML = (raidMasterIndex and raidMasterIndex > 0) and GetRaidRosterInfo(raidMasterIndex) or nil
-    local rosterUnreadable = self:RosterUnreadableForML(method, partyMasterIndex, raidMasterIndex, nameAtML)
-
-    -- If the raid roster never resolves the ML's name, Blizzard still self-flags the real ML with
-    -- partyMasterIndex == 0. Trust that degraded signal only for the raid leader/assistants: they
-    -- are the only players who can legitimately hold master loot, and this keeps ordinary raiders
-    -- from self-granting authority during the relog race this guard was introduced to block.
-    if not isLootMaster and rosterUnreadable and self:IsPlayerRaidLeaderOrAssistant() then
-        isLootMaster = true
-        lootMasterName = playerName or lootMasterName
-        rosterUnreadable = false
-    end
 
     local wasLootMaster = self.roster.isLootMaster
     self.roster.lootMasterName = lootMasterName
     self.roster.isLootMaster = isLootMaster
-    self.roster.mlRosterUnreadable = rosterUnreadable
+    self.roster.mlRosterUnreadable = self:RosterUnreadableForML(method, partyMasterIndex, raidMasterIndex, nameAtML)
 
     if self.roster.mlRosterUnreadable then
-        -- Suppress the chat warning until bags settle (~5s after login). During the login/zone
-        -- window the roster is legitimately not yet populated, so the predicate is transiently true
-        -- even when the roster will load fine a moment later -- a false positive. The bag-settle
-        -- window is our "data has had time to arrive" signal, and the authRetry loop re-runs this at
-        -- 6/9/12/15s (past settle), so a genuinely-stuck post-relog state still warns.
+        -- The unreadable flag is true on EVERY login for a moment (the roster simply hasn't arrived
+        -- yet), so suppress the warning until bags settle (~5s) -- by then a normal login has recovered
+        -- and the flag is gone. If it is STILL set past settle, the server has genuinely failed to send
+        -- our roster row this session (rare). There is no API to re-request the member roster, so the
+        -- only repair is /reload, which reconnects the UI and pulls a fresh roster. Hence the message.
         local settled = self.bagSettleAt and (GetTime() >= self.bagSettleAt)
         if settled and not self._rosterReloadWarned then
             self._rosterReloadWarned = true
