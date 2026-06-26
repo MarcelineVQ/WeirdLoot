@@ -1095,9 +1095,9 @@ function addon:BuildLootTab()
                 GameTooltip:AddLine("No active rollers", 1, 1, 1)
             else
                 for _, entry in ipairs(entries) do
-                    GameTooltip:AddLine(string.format("%s - %s",
-                        util:ColorPlayerName(entry.name, entry.className),
-                        addon:GetResponseLabel(entry.tier)), 1, 1, 1)
+                    local nameText = util:IsSelfName(entry.name) and "You" or util:ColorPlayerName(entry.name, entry.className)
+                    local lineText = string.format("%s - %s", nameText, addon:GetResponseLabel(entry.tier))
+                    GameTooltip:AddLine(util:ColorPlayerText(entry.name, entry.className, lineText), 1, 1, 1)
                 end
             end
 
