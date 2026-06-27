@@ -560,9 +560,11 @@ function addon:BuildBottomTabs()
     self.ui.versionLabel = versionLabel
 end
 
-function addon:SelectTab(tabKey)
+-- transient = show the tab without remembering it as the last-used tab (for the owed-loot minimap
+-- jump, which must not overwrite the user's real last tab).
+function addon:SelectTab(tabKey, transient)
     self.ui.selectedTab = tabKey
-    self.db.ui.selectedTab = tabKey
+    if not transient then self.db.ui.selectedTab = tabKey end
 
     for key, panel in pairs(self.ui.panels) do
         if key == tabKey then
@@ -2451,11 +2453,23 @@ function addon:BuildMinimapButton()
     highlight:SetAllPoints(button)
 
     button:SetScript("OnClick", function()
+        -- Opening with loot owed jumps straight to Loot Results; otherwise open the last-used tab as
+        -- normal. Read the remembered tab (db) for the non-owed case so a prior owed jump (which uses a
+        -- transient select) never becomes the "last" tab.
+        if not (addon.ui.frame and addon.ui.frame:IsShown()) then
+            local target = ((addon:CountLootOwedToMe() or 0) > 0) and "results"
+                or (addon.db.ui.selectedTab or "loot")
+            addon:SelectTab(target, true)
+        end
         addon:ToggleMainFrame()
     end)
 
     button:SetScript("OnEnter", function(selfBtn)
-        GameTooltip:SetOwner(selfBtn, "ANCHOR_LEFT")
+        -- Pin the tooltip's top to the button's bottom-left so a growing owed-items list extends
+        -- DOWNWARD (and to the left, where there's room for a top-right minimap) instead of creeping up.
+        GameTooltip:SetOwner(selfBtn, "ANCHOR_NONE")
+        GameTooltip:ClearAllPoints()
+        GameTooltip:SetPoint("TOPRIGHT", selfBtn, "BOTTOMLEFT", 0, 0)
         GameTooltip:AddLine("WeirdLoot " .. tostring(addon.version or "?"), 1, 0.82, 0)
         GameTooltip:AddLine("Click to toggle the main window.", 1, 1, 1)
         GameTooltip:AddLine("Right-drag to reposition.", 0.8, 0.8, 0.8)
@@ -2830,7 +2844,7 @@ function addon:RefreshResultsTab()
             if util:IsSelfName(winnerName) then iWon = true break end
         end
         if iWon then
-            row.bg:SetTexture(0.10, 0.27, 0.38, 0.36)
+            row.bg:SetTexture(0.04, 0.12, 0.17, 0.42)
         else
             row.bg:SetTexture(0, 0, 0, 0)
         end
