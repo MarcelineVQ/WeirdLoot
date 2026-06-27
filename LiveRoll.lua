@@ -627,10 +627,13 @@ local function applyInterestButtonAvailability(self, f, roll)
                 GameTooltip:Show()
             end)
             btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-        elseif key == "pass" and not roll.owner then
-            -- The two-click dismiss is non-obvious, so the Pass hint shows even when the explanation
-            -- tooltips are off. Only the raider's Pass closes the popup; the ML's never does.
-            setButtonTooltip(btn, "Pass on this item.\nClick twice to dismiss the popup.")
+        elseif not roll.owner then
+            -- Every bracket dismisses the popup on a second click for a raider (the ML's never closes).
+            -- The two-click dismiss is non-obvious, so this hint shows even with explanation tooltips off.
+            -- Pass spells itself out; other brackets get their explanation only when those tips are on.
+            local base = (key == "pass") and "Pass on this item."
+                or (getOptions().explanationTooltipsEnabled and CHOICE_TOOLTIPS[key])
+            setButtonTooltip(btn, (base and (base .. "\n") or "") .. "Click twice to dismiss the popup.")
         elseif getOptions().explanationTooltipsEnabled then
             setButtonTooltip(btn, CHOICE_TOOLTIPS[key])
         else
@@ -1344,12 +1347,14 @@ function addon:ChooseInterest(roll, tier)
     end
     self:SendInterest(roll.id, tier)
 
-    -- Pass is a roll choice like any bracket: the first click selects and highlights it. For a raider
-    -- a SECOND click on an already-selected Pass dismisses the loot popup. The two-click guard stops a
-    -- misclick from closing the popup outright. The ML's popup never closes on Pass: for the owner it
-    -- is purely a roll-type choice, so a repeat click just re-asserts the selection (no-op).
-    if tier == "pass" and not roll.owner and roll.choice == "pass" then
-        roll.choice = nil
+    -- Two-click dismiss, any bracket: the first click selects and highlights a bracket; a SECOND click
+    -- on the already-selected bracket dismisses the loot popup for a raider. The two-click guard stops a
+    -- misclick from closing the popup outright. Pass carries no interest, so dismissing clears its choice;
+    -- a real bracket KEEPS the interest it just (re)sent and only hides the window. The ML's popup never
+    -- auto-hides: for the owner a repeat click just re-asserts the selection (no-op), it drives the roll.
+    if not roll.owner and roll.choice == tier then
+        if tier == "pass" then roll.choice = nil end
+        roll.dismissed = true   -- item-22: a resolve can reopen a result popup if showResultAfterHide is set
         self:CloseInterestPopup(roll)
         compactPopups(self)
         return
@@ -1972,11 +1977,15 @@ function addon:OnWinMessage(fields)
     end
 
     -- Do NOT auto-hide a won item. If the player still has the dialog open, convert it to a
-    -- result popup they must OK to dismiss. If they already Passed (popup gone), leave it gone.
+    -- result popup they must OK to dismiss. If they already dismissed it (passed or two-click
+    -- dismissed), leave it gone -- UNLESS they opted into seeing the final roll after hiding
+    -- (item 22), in which case reopen a result popup so they still learn the winner.
     if roll.popup then
         local sections = self:DecodeSections(sectionsText)
         local slot = roll.popup.slot
         self:CloseInterestPopup(roll)
         self:ShowResultPopup(roll, winners, sections, slot)
+    elseif roll.dismissed and getOptions().showResultAfterHide then
+        self:ShowResultPopup(roll, winners, self:DecodeSections(sectionsText))
     end
 end

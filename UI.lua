@@ -1860,7 +1860,7 @@ function addon:BuildOptionsTab()
     local panel = CreateFrame("Frame", nil, scroll)
     elevateInteractiveFrame(panel, scroll, 1)
     panel:SetWidth(920)
-    panel:SetHeight(900)
+    panel:SetHeight(944)   -- includes the showResultAfterHideCB row added to the raider-options column
     scroll:SetScrollChild(panel)
     scroll:EnableMouseWheel(true)
     scroll:SetScript("OnMouseWheel", function(selfFrame, delta)
@@ -2049,16 +2049,25 @@ function addon:BuildOptionsTab()
 
     -- Hide rolls for items this player's class can't use (armor/weapon proficiency only; off by
     -- default). Unique-owned / quest-done items still show -- this is purely class equip-eligibility.
-    local hideUnusableCB = createOptionsCheckbox(panel, "Hide rolls for items my class can't use")
+    local hideUnusableCB = createOptionsCheckbox(panel, "Hide rolls for items my class can't equip")
     hideUnusableCB:SetPoint("TOPLEFT", explanationTipsCB, "BOTTOMLEFT", 0, -20)
     hideUnusableCB:SetChecked(opt.hideUnusableRolls and true or false)
     hideUnusableCB:SetScript("OnClick", function(selfCB)
         getOptions(addon).hideUnusableRolls = selfCB:GetChecked() and true or false
     end)
 
+    -- Still show the winner after you dismiss a roll popup (pass or two-click bracket dismiss). Off by
+    -- default; on, a result popup reopens on resolve so you learn who won even after hiding the loot.
+    local showResultAfterHideCB = createOptionsCheckbox(panel, "Show the final winners for loot popups you closed early")
+    showResultAfterHideCB:SetPoint("TOPLEFT", hideUnusableCB, "BOTTOMLEFT", 0, -20)
+    showResultAfterHideCB:SetChecked(opt.showResultAfterHide and true or false)
+    showResultAfterHideCB:SetScript("OnClick", function(selfCB)
+        getOptions(addon).showResultAfterHide = selfCB:GetChecked() and true or false
+    end)
+
     -- Whitelist
     local whitelistCB = createOptionsCheckbox(panel, "Enable White List |cffff3030(Warning: You will ONLY see loot popups for items on this list)|r")
-    whitelistCB:SetPoint("TOPLEFT", hideUnusableCB, "BOTTOMLEFT", 0, -24)
+    whitelistCB:SetPoint("TOPLEFT", showResultAfterHideCB, "BOTTOMLEFT", 0, -24)
     whitelistCB:SetChecked(opt.whitelistEnabled and true or false)
     whitelistCB:SetScript("OnClick", function(selfCB)
         getOptions(addon).whitelistEnabled = selfCB:GetChecked() and true or false
@@ -2311,6 +2320,7 @@ function addon:BuildOptionsTab()
     --   autoCloseCB
     --   explanationTipsCB
     --   hideUnusableCB             (Hide rolls my class can't use)
+    --   showResultAfterHideCB      (Still show the final roll after hiding)
     --   anchorLabel + anchorDrop   (Roll result tooltip docking)
     --   minimapCB
     --   whitelistCB ... whitelistBox
@@ -2326,8 +2336,11 @@ function addon:BuildOptionsTab()
     hideUnusableCB:ClearAllPoints()
     hideUnusableCB:SetPoint("TOPLEFT", explanationTipsCB, "BOTTOMLEFT", 0, -20)
 
+    showResultAfterHideCB:ClearAllPoints()
+    showResultAfterHideCB:SetPoint("TOPLEFT", hideUnusableCB, "BOTTOMLEFT", 0, -20)
+
     anchorLabel:ClearAllPoints()
-    anchorLabel:SetPoint("TOPLEFT", hideUnusableCB, "BOTTOMLEFT", 0, -22)
+    anchorLabel:SetPoint("TOPLEFT", showResultAfterHideCB, "BOTTOMLEFT", 0, -22)
 
     minimapCB:ClearAllPoints()
     minimapCB:SetPoint("TOPLEFT", anchorLabel, "BOTTOMLEFT", 0, -22)
