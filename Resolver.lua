@@ -71,21 +71,32 @@ function addon:FindMatchingTier(rule, candidates, matcher)
     return nil, candidates
 end
 
-function addon:FilterByStatus(candidates)
-    local highestRank = 0
+-- mergeMainAndAlt: collapses Main (3) and DesignatedAlt (2) to the same effective rank so they
+-- compete equally. Used for non-BiS responses (MS/MU/OS/TM), where status is only meant to gate
+-- "raider on the roster" vs "nil". For BiS, Mains still outrank DesignatedAlts.
+function addon:FilterByStatus(candidates, mergeMainAndAlt)
+    local function effectiveRank(status)
+        local r = util:StatusRank(status)
+        if mergeMainAndAlt and r == 3 then return 2 end
+        return r
+    end
+
+    local highestEffective = 0
     local survivors = {}
+    local highestActual = 0
 
     for _, candidate in ipairs(candidates) do
-        highestRank = math.max(highestRank, util:StatusRank(candidate.status))
+        highestEffective = math.max(highestEffective, effectiveRank(candidate.status))
     end
 
     for _, candidate in ipairs(candidates) do
-        if util:StatusRank(candidate.status) == highestRank then
+        if effectiveRank(candidate.status) == highestEffective then
             survivors[#survivors + 1] = candidate
+            highestActual = math.max(highestActual, util:StatusRank(candidate.status))
         end
     end
 
-    return survivors, highestRank
+    return survivors, highestActual
 end
 
 function addon:RollCandidates(candidates, rollAssignments)
@@ -446,13 +457,13 @@ function addon:SelectWinningRolls(rolls, quantity)
     return winners
 end
 
-function addon:CollectPriorityWinnerCandidates(rule, candidates, matcher, quantity, allRollByName)
+function addon:CollectPriorityWinnerCandidates(rule, candidates, matcher, quantity, allRollByName, mergeMainAndAlt)
     local orderedCandidates = {}
     local chosen = {}
     local maxCount = quantity or 1
 
     local function appendSortedCandidates(tierCandidates)
-        local statusSurvivors = self:FilterByStatus(tierCandidates)
+        local statusSurvivors = self:FilterByStatus(tierCandidates, mergeMainAndAlt)
 
         table.sort(statusSurvivors, function(left, right)
             local leftRoll = allRollByName[util:NormalizeKey(left.name)] and allRollByName[util:NormalizeKey(left.name)].roll or 0
@@ -625,7 +636,10 @@ function addon:ResolveSessionItem(lot)
         end
         local lootRule = self:GetLootRule(item.name)
         local defaultSpecPriorityText = lootRule and lootRule.raw or (self:RuleHasLootCouncil(namedRule) and "LC" or nil)
-        local responsePriorityCandidates = self:FilterByResponsePriority(rollers)
+        local responsePriorityCandidates, responsePriorityKey = self:FilterByResponsePriority(rollers)
+        -- Mains outrank DesignatedAlts only for BiS rolls. For MS/MU/OS/TM (and absent pass-only),
+        -- Mains and DesignatedAlts compete equally; only nil-status raiders sit below them.
+        local mergeMainAndAlt = responsePriorityKey ~= "bis"
 
         local namedTier, prioritized, isLootCouncil = self:FindMatchingNamedTier(namedRule, responsePriorityCandidates)
 
@@ -649,7 +663,7 @@ function addon:ResolveSessionItem(lot)
                 end)
             end
 
-            councilCandidates, rank = self:FilterByStatus(councilCandidates)
+            councilCandidates, rank = self:FilterByStatus(councilCandidates, mergeMainAndAlt)
             for _, player in ipairs(councilCandidates) do
                 prioritizedNames[#prioritizedNames + 1] = player.name
             end
@@ -676,7 +690,7 @@ function addon:ResolveSessionItem(lot)
                 return false
             end)
 
-            local statusSurvivors, rank = self:FilterByStatus(prioritized)
+            local statusSurvivors, rank = self:FilterByStatus(prioritized, mergeMainAndAlt)
             local rolls = {}
             local prioritizedNames = {}
             local rollDetails = {}
@@ -716,7 +730,7 @@ function addon:ResolveSessionItem(lot)
                     end
                 end
                 return false
-            end, item.quantity or 1, allRollByName)
+            end, item.quantity or 1, allRollByName, mergeMainAndAlt)
             if #winnerCandidates == 0 then
                 for _, winnerName in ipairs(self:SelectWinningRolls(rolls, item.quantity or 1)) do
                     local winnerCandidate = survivorByName[util:NormalizeKey(winnerName)]
@@ -750,7 +764,7 @@ function addon:ResolveSessionItem(lot)
                 winnerDetails
             )
         else
-            local statusSurvivors, rank = self:FilterByStatus(prioritized)
+            local statusSurvivors, rank = self:FilterByStatus(prioritized, mergeMainAndAlt)
             local rolls = {}
             local prioritizedNames = {}
             local rollDetails = {}
@@ -785,7 +799,7 @@ function addon:ResolveSessionItem(lot)
             if namedTier and namedRule then
                 winnerCandidates = self:CollectPriorityWinnerCandidates(namedRule, responsePriorityCandidates, function(entry, candidate)
                     return entry.playerKey == util:NormalizeKey(candidate.name)
-                end, item.quantity or 1, allRollByName)
+                end, item.quantity or 1, allRollByName, mergeMainAndAlt)
             else
                 winnerCandidates = {}
                 for _, winnerName in ipairs(self:SelectWinningRolls(rolls, item.quantity or 1)) do
