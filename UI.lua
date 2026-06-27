@@ -1351,6 +1351,12 @@ function addon:BuildResultsTab()
     local list = createScrollList(panel, "WeirdLootResultsList", 21, function(row)
         row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 
+        -- Tinted when the local player is among the winners (set in RefreshResultsTab). Behind the
+        -- content so the item link / "You" text read on top.
+        row.bg = row:CreateTexture(nil, "BACKGROUND")
+        row.bg:SetAllPoints(row)
+        row.bg:SetTexture(0, 0, 0, 0)
+
         row.icon = row:CreateTexture(nil, "ARTWORK")
         row.icon:SetWidth(18)
         row.icon:SetHeight(18)
@@ -2780,6 +2786,17 @@ function addon:RefreshResultsTab()
             itemText = string.format("%s x%d", itemText, result.quantity)
         end
         row.name:SetText(itemText)
+        -- Tint the row when YOU won a copy: an indigo-teal that bridges the epic-purple item link and
+        -- the aqua "You" without washing either out.
+        local iWon = false
+        for _, winnerName in ipairs(result.winners or {}) do
+            if util:IsSelfName(winnerName) then iWon = true break end
+        end
+        if iWon then
+            row.bg:SetTexture(0.10, 0.27, 0.38, 0.36)
+        else
+            row.bg:SetTexture(0, 0, 0, 0)
+        end
         if result.winners and #result.winners > 0 and result.winnerDetails and #result.winnerDetails > 0 then
             local winnerParts = {}
             for winnerIndex, winnerName in ipairs(result.winners) do
