@@ -2799,8 +2799,8 @@ function addon:RefreshMasterTab()
     local panel = self.ui.masterPanel
     local authorized = self:IsAuthorizedLootMaster()
     if not authorized and self.roster.mlRosterUnreadable then
-        -- We ARE the master looter (per GetLootMethod) but the raid roster did not load, so the
-        -- name-match can't confirm it. Only a reload recovers the roster.
+        -- We ARE the master looter (per GetLootMethod) but rarely the server will fail to load
+        -- a roster so the name-match can't confirm it. Only a reload recovers the roster.
         panel.warning:SetText("|cffff4040The raid roster failed to load, so loot-master controls are disabled. Please /reload to fix it.|r")
     else
         panel.warning:SetText(authorized and "" or "You are not the current Loot Master. Controls are locked.")

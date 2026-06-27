@@ -1208,19 +1208,52 @@ test("unreadable raid roster detection: flags the would-be ML, not raiders or he
     eq(f:RosterUnreadableForML("master", 0, nil, nil), false, "no raid ML index -> not flagged")
 end)
 
-test("unreadable raid roster: the actual ML recovers authority from the self-flag", function()
+test("unreadable raid roster: ML is NOT self-granted, recovers when the roster names its index", function()
+    -- Captured in-game (ML 'Saelinen' relog): a transient window where loot method is master,
+    -- partyMasterIndex == 0 (the API flags US), our raid index exists, but GetRaidRosterInfo cannot
+    -- name it yet (a PARTIAL roster load -- other rows named while ours is not). We must NOT self-grant
+    -- here: partyMasterIndex == 0 cannot tell the real ML from a relogging ex-ML, and raid-leader/
+    -- assistant rank is not a proxy for master-looter (our test ML holds master loot while being
+    -- neither). Recovery comes from the roster naming our index, which RAID_ROSTER_UPDATE drives a
+    -- moment later -- verified in-game to self-heal within the same login, no /reload.
     local w = makeWorld("Masterlooter", true)
-    w.env.GetRaidRosterInfo = function(i)
-        if i == 1 then return nil, nil end
-        return "SomeoneElse", 0
-    end
-    w.env.GetLootMethod = function() return "master", 0, 1 end
+    w.env.GetLootMethod = function() return "master", 0, 1 end   -- master loot, API flags us, our index = 1
+
+    -- Stage 1: roster has not named our index yet -> flagged unreadable, but NOT authorized.
+    w.env.GetRaidRosterInfo = function() return nil, nil end
+    w.addon:RefreshLootAuthority()
+    eq(w.addon.roster.isLootMaster, false, "no self-grant while the roster cannot name the ML index")
+    eq(w.addon.roster.mlRosterUnreadable, true, "the unreadable state is detected and flagged")
+
+    -- Stage 2: the roster finishes loading and names our index -> the name-match recovers authority.
+    w.env.GetRaidRosterInfo = function(i) if i == 1 then return "Masterlooter", 0 end return "SomeoneElse", 0 end
+    w.addon:RefreshLootAuthority()
+    eq(w.addon.roster.isLootMaster, true, "name-match recovers authority once the index is named")
+    eq(w.addon.roster.mlRosterUnreadable, false, "no longer flagged once recovered")
+end)
+
+test("raider requests a sync the moment its loot master resolves (no heartbeat wait)", function()
+    -- In-game (raider 'Saeaea' fresh login): the raid roster loads a beat late, so the ML name is
+    -- unresolved at login and resolves only when RAID_ROSTER_UPDATE finally lands. Without an explicit
+    -- request on that transition, the raider sat idle until the ML's next ~30s heartbeat. Resolving the
+    -- ML must pull the session at once, exactly once, and not re-fire on steady re-resolves.
+    local w = makeWorld("Raider", false)
+    w.env.GetLootMethod = function() return "master", 1, 1 end   -- raider: master loot, ML at raid index 1
+    local syncs = 0
+    w.addon.RequestSessionSync = function() syncs = syncs + 1 end
+
+    w.env.GetRaidRosterInfo = function() return nil, nil end      -- roster cannot name the index yet
+    w.addon:RefreshLootAuthority()
+    eq(w.addon.roster.lootMasterName, nil, "ML unresolved while the roster cannot name the index")
+    eq(syncs, 0, "no sync request while we cannot name the loot master")
+
+    w.env.GetRaidRosterInfo = function(i) if i == 1 then return "Masterlooter", 2 end return "Raider", 0 end
+    w.addon:RefreshLootAuthority()
+    eq(w.addon.roster.lootMasterName, "Masterlooter", "ML resolves once the index is named")
+    eq(syncs, 1, "resolving the ML fires exactly one sync request")
 
     w.addon:RefreshLootAuthority()
-
-    eq(w.addon.roster.isLootMaster, true, "real ML stays authorized when the roster cannot name the ML index")
-    eq(w.addon.roster.lootMasterName, "Masterlooter", "fallback records the local player as the ML")
-    eq(w.addon.roster.mlRosterUnreadable, false, "recovered state does not keep the controls locked")
+    eq(syncs, 1, "a steady re-resolve of the same ML does not re-request")
 end)
 
 test("slash export commands stay available without loot-master authority", function()
