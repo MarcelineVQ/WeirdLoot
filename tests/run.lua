@@ -1394,6 +1394,73 @@ test("ML cancel closes the raider's roll popup (the only sync-driven close)", fu
     check(not hasInterest, "no interest popup remains after cancel")
 end)
 
+-- item 10: a second click on the already-selected bracket dismisses a raider's popup (any bracket,
+-- not just Pass). Real brackets keep the interest they sent; Pass clears its choice.
+test("two-click dismiss: a second click on the selected bracket hides a raider's popup", function()
+    local ml, raider, lot = rollWithRaider(40005)
+    raider.addon.IsPlayerAllowedForItem = function() return true end
+    local roll = rollFor(raider, lot.id)
+    check(roll and roll.popup, "raider has an open interest popup")
+
+    raider.addon:ChooseInterest(roll, "ms")             -- first click selects MS
+    check(roll.popup, "one click keeps the popup open")
+    eq(roll.choice, "ms", "MS is selected")
+
+    raider.addon:ChooseInterest(roll, "ms")             -- second click on the same bracket dismisses
+    check(not roll.popup, "second click on the selected bracket closes the popup")
+    check(roll.dismissed, "the roll is marked dismissed")
+    eq(roll.choice, "ms", "a real bracket keeps its interest when dismissed (only Pass clears)")
+end)
+
+test("two-click dismiss: switching to a different bracket does not close the popup", function()
+    local ml, raider, lot = rollWithRaider(40005)
+    raider.addon.IsPlayerAllowedForItem = function() return true end
+    local roll = rollFor(raider, lot.id)
+    raider.addon:ChooseInterest(roll, "ms")             -- select MS
+    raider.addon:ChooseInterest(roll, "os")             -- switch to OS (different bracket)
+    check(roll.popup, "switching brackets keeps the popup open")
+    eq(roll.choice, "os", "selection moved to OS")
+    check(not roll.dismissed, "switching does not dismiss")
+end)
+
+test("two-click dismiss: the ML's own popup never closes on a repeat click", function()
+    local ml, raider, lot = rollWithRaider(40005)
+    ml.addon.IsPlayerAllowedForItem = function() return true end
+    local mlRoll = rollFor(ml, lot.id)
+    check(mlRoll and mlRoll.popup and mlRoll.owner, "ML owns an interest popup")
+    ml.addon:ChooseInterest(mlRoll, "ms")
+    ml.addon:ChooseInterest(mlRoll, "ms")
+    check(mlRoll.popup, "ML popup stays open: it drives the roll")
+    check(not mlRoll.dismissed, "the ML roll is never marked dismissed")
+end)
+
+-- item 22: a dismisser sees the winner on resolve ONLY when showResultAfterHide is opted in.
+test("showResultAfterHide off (default): a dismissed raider gets no result popup on resolve", function()
+    local ml, raider, lot = rollWithRaider(40005)
+    local roll = rollFor(raider, lot.id)
+    raider.addon:ChooseInterest(roll, "pass")
+    raider.addon:ChooseInterest(roll, "pass")           -- two-click dismiss
+    check(not roll.popup and roll.dismissed, "raider dismissed the popup")
+    ml.addon:ResolveLiveRoll(lot.id); flushWireTo(raider)
+    local hasResult = false
+    for _, f in ipairs(raider.addon.live.active) do if f.mode == "result" then hasResult = true end end
+    check(not hasResult, "option off: no result popup reopens for a dismisser")
+end)
+
+test("showResultAfterHide on: a dismissed raider gets the winner popup on resolve", function()
+    local ml, raider, lot = rollWithRaider(40006)
+    raider.addon.db.options = raider.addon.db.options or {}
+    raider.addon.db.options.showResultAfterHide = true
+    local roll = rollFor(raider, lot.id)
+    raider.addon:ChooseInterest(roll, "pass")
+    raider.addon:ChooseInterest(roll, "pass")           -- two-click dismiss
+    check(not roll.popup and roll.dismissed, "raider dismissed the popup")
+    ml.addon:ResolveLiveRoll(lot.id); flushWireTo(raider)
+    local hasResult = false
+    for _, f in ipairs(raider.addon.live.active) do if f.mode == "result" then hasResult = true end end
+    check(hasResult, "option on: a result popup reopens so the dismisser sees the winner")
+end)
+
 test("ineligible class: roll brackets are DISABLED (not just message-guarded)", function()
     clearWire()
     local ml = makeWorld("Masterlooter", true)
