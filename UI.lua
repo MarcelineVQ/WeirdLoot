@@ -25,91 +25,10 @@ local RESPONSE_BUTTONS = {
     { key = "pass", label = "Pass", width = 34 },
 }
 
+-- Equip-eligibility lives in Util (pure logic, needed by the headless tests and LiveRoll's roll
+-- self-block). This file-local alias keeps the usable-sort callers below unchanged.
 local function isItemUsableForPlayer(itemLink)
-    if not itemLink or itemLink == "" then
-        return false
-    end
-
-    local _, _, _, _, _, itemType, itemSubType, _, equipLoc = GetItemInfo(itemLink)
-    local _, classToken = UnitClass("player")
-    local normalizedType = util:NormalizeKey(itemType or "")
-    local normalizedSubType = util:NormalizeKey(itemSubType or "")
-    local normalizedEquipLoc = util:NormalizeKey(equipLoc or "")
-
-    if not classToken then
-        return false
-    end
-
-    local armorByClass = {
-        DEATHKNIGHT = "plate",
-        DRUID = "leather",
-        HUNTER = "mail",
-        MAGE = "cloth",
-        PALADIN = "plate",
-        PRIEST = "cloth",
-        ROGUE = "leather",
-        SHAMAN = "mail",
-        WARLOCK = "cloth",
-        WARRIOR = "plate",
-    }
-
-    local weaponByClass = {
-        DEATHKNIGHT = { ["one-handed axes"] = true, ["two-handed axes"] = true, ["one-handed maces"] = true, ["two-handed maces"] = true, ["one-handed swords"] = true, ["two-handed swords"] = true, polearms = true, sigils = true },
-        DRUID = { daggers = true, ["fist weapons"] = true, ["one-handed maces"] = true, ["two-handed maces"] = true, polearms = true, staves = true, idols = true },
-        HUNTER = { ["one-handed axes"] = true, ["two-handed axes"] = true, daggers = true, ["fist weapons"] = true, polearms = true, staves = true, ["one-handed swords"] = true, ["two-handed swords"] = true, bows = true, guns = true, crossbows = true },
-        MAGE = { daggers = true, ["one-handed swords"] = true, staves = true, wands = true },
-        PALADIN = { ["one-handed axes"] = true, ["two-handed axes"] = true, ["one-handed maces"] = true, ["two-handed maces"] = true, polearms = true, ["one-handed swords"] = true, ["two-handed swords"] = true, shields = true, librams = true },
-        PRIEST = { daggers = true, ["one-handed maces"] = true, staves = true, wands = true },
-        ROGUE = { daggers = true, ["fist weapons"] = true, ["one-handed maces"] = true, ["one-handed swords"] = true, bows = true, guns = true, crossbows = true, thrown = true },
-        SHAMAN = { ["one-handed axes"] = true, ["two-handed axes"] = true, daggers = true, ["fist weapons"] = true, ["one-handed maces"] = true, ["two-handed maces"] = true, staves = true, shields = true, totems = true },
-        WARLOCK = { daggers = true, ["one-handed swords"] = true, staves = true, wands = true },
-        WARRIOR = { ["one-handed axes"] = true, ["two-handed axes"] = true, daggers = true, ["fist weapons"] = true, ["one-handed maces"] = true, ["two-handed maces"] = true, polearms = true, ["one-handed swords"] = true, ["two-handed swords"] = true, bows = true, guns = true, crossbows = true, thrown = true, shields = true },
-    }
-
-    if normalizedType == "armor" then
-        if normalizedSubType == "cloak"
-            or normalizedSubType == "miscellaneous"
-            or normalizedEquipLoc == "invtype_neck"
-            or normalizedEquipLoc == "invtype_finger"
-            or normalizedEquipLoc == "invtype_trinket"
-            or normalizedEquipLoc == "invtype_holdable"
-            or normalizedEquipLoc == "invtype_shield"
-            or normalizedEquipLoc == "invtype_relic" then
-            if normalizedEquipLoc == "invtype_shield" then
-                return weaponByClass[classToken] and weaponByClass[classToken].shields or false
-            end
-            if normalizedEquipLoc == "invtype_relic" then
-                if normalizedSubType == "idol" or normalizedSubType == "idols" then
-                    return classToken == "DRUID"
-                elseif normalizedSubType == "libram" or normalizedSubType == "librams" then
-                    return classToken == "PALADIN"
-                elseif normalizedSubType == "totem" or normalizedSubType == "totems" then
-                    return classToken == "SHAMAN"
-                elseif normalizedSubType == "sigil" or normalizedSubType == "sigils" then
-                    return classToken == "DEATHKNIGHT"
-                end
-            end
-            return true
-        end
-
-        return armorByClass[classToken] == normalizedSubType
-    end
-
-    if normalizedType == "weapon" then
-        local allowed = weaponByClass[classToken]
-        if not allowed then
-            return false
-        end
-
-        return allowed[normalizedSubType] and true or false
-    end
-
-    if type(IsUsableItem) == "function" then
-        local isUsable = IsUsableItem(itemLink)
-        return isUsable and true or false
-    end
-
-    return false
+    return util:IsItemUsableForPlayer(itemLink)
 end
 
 local function getLootItemColumns(itemLink)
@@ -201,7 +120,7 @@ end
 
 local function isPlayerAllowedForLootItem(item, playerName)
     local lookupName = getLootItemLookupName(item)
-    return addon:IsPlayerAllowedForItem(lookupName, playerName)
+    return addon:IsPlayerAllowedForItem(item and item.itemId, lookupName, playerName)
 end
 
 local function createLabel(parent, text, anchor, relativeTo, relativePoint, offsetX, offsetY)
@@ -2120,9 +2039,18 @@ function addon:BuildOptionsTab()
         getOptions(addon).explanationTooltipsEnabled = selfCB:GetChecked() and true or false
     end)
 
+    -- Hide rolls for items this player's class can't use (armor/weapon proficiency only; off by
+    -- default). Unique-owned / quest-done items still show -- this is purely class equip-eligibility.
+    local hideUnusableCB = createOptionsCheckbox(panel, "Hide rolls for items my class can't use")
+    hideUnusableCB:SetPoint("TOPLEFT", explanationTipsCB, "BOTTOMLEFT", 0, -20)
+    hideUnusableCB:SetChecked(opt.hideUnusableRolls and true or false)
+    hideUnusableCB:SetScript("OnClick", function(selfCB)
+        getOptions(addon).hideUnusableRolls = selfCB:GetChecked() and true or false
+    end)
+
     -- Whitelist
     local whitelistCB = createOptionsCheckbox(panel, "Enable White List |cffff3030(Warning: You will ONLY see loot popups for items on this list)|r")
-    whitelistCB:SetPoint("TOPLEFT", explanationTipsCB, "BOTTOMLEFT", 0, -24)
+    whitelistCB:SetPoint("TOPLEFT", hideUnusableCB, "BOTTOMLEFT", 0, -24)
     whitelistCB:SetChecked(opt.whitelistEnabled and true or false)
     whitelistCB:SetScript("OnClick", function(selfCB)
         getOptions(addon).whitelistEnabled = selfCB:GetChecked() and true or false
@@ -2374,6 +2302,7 @@ function addon:BuildOptionsTab()
     --   Options title (already anchored to panel)
     --   autoCloseCB
     --   explanationTipsCB
+    --   hideUnusableCB             (Hide rolls my class can't use)
     --   anchorLabel + anchorDrop   (Roll result tooltip docking)
     --   minimapCB
     --   whitelistCB ... whitelistBox
@@ -2386,8 +2315,11 @@ function addon:BuildOptionsTab()
     explanationTipsCB:ClearAllPoints()
     explanationTipsCB:SetPoint("TOPLEFT", autoCloseCB, "BOTTOMLEFT", 0, -20)
 
+    hideUnusableCB:ClearAllPoints()
+    hideUnusableCB:SetPoint("TOPLEFT", explanationTipsCB, "BOTTOMLEFT", 0, -20)
+
     anchorLabel:ClearAllPoints()
-    anchorLabel:SetPoint("TOPLEFT", explanationTipsCB, "BOTTOMLEFT", 0, -22)
+    anchorLabel:SetPoint("TOPLEFT", hideUnusableCB, "BOTTOMLEFT", 0, -22)
 
     minimapCB:ClearAllPoints()
     minimapCB:SetPoint("TOPLEFT", anchorLabel, "BOTTOMLEFT", 0, -22)
@@ -2418,6 +2350,7 @@ function addon:BuildOptionsTab()
     panel.blacklistSaveBtn = saveBtn
     panel.blacklistDeleteBtn = deleteBtn
     panel.minimapCB = minimapCB
+    panel.hideUnusableCB = hideUnusableCB
     panel.anchorDrop = anchorDrop
 end
 

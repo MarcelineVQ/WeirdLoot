@@ -1238,6 +1238,83 @@ test("slash export commands stay available without loot-master authority", funct
     eq(logs, 2, "log export aliases dispatch without ML authority")
 end)
 
+-- Equip-eligibility self-block (item 11). Test player is a Warrior (UnitClass -> WARRIOR), so:
+-- a wand is unusable -> "class"; plate is usable -> nil; cloth is usable too (a plate class can wear
+-- every lighter armor, option a) -> nil. Class/weapon sets are validated against SkillRaceClassInfo.dbc.
+test("roll self-block: class cannot equip the item", function()
+    local w = makeWorld("Warrior", true)
+    local function setItem(class, sub, equipLoc)
+        w.env.GetItemInfo = function(idOrLink)
+            local id = tonumber(idOrLink) or tonumber(string.match(tostring(idOrLink), "item:(%d+)")) or 0
+            return "TestItem", "|cffa335ee|Hitem:" .. id .. "|h[TestItem]|h|r", 4, 200, 80, class, sub, 1, equipLoc, "tex", 0
+        end
+    end
+
+    setItem("Weapon", "Wands", "INVTYPE_RANGED")
+    eq(w.addon:RollSelfBlockReason(98001), "class", "warrior is blocked from a wand")
+
+    setItem("Weapon", "Staves", "INVTYPE_2HWEAPON")
+    eq(w.addon:RollSelfBlockReason(98002), nil, "warrior can use staves (DBC-confirmed), not blocked")
+
+    setItem("Armor", "Plate", "INVTYPE_CHEST")
+    eq(w.addon:RollSelfBlockReason(98003), nil, "warrior is not blocked from plate")
+
+    setItem("Armor", "Cloth", "INVTYPE_CHEST")
+    eq(w.addon:RollSelfBlockReason(98004), nil, "warrior can wear lower armor (cloth), not blocked")
+
+    -- Non-gear (a Miscellaneous container like Large Satchel of Spoils) has no class gate.
+    setItem("Miscellaneous", "Junk", "")
+    eq(w.addon:RollSelfBlockReason(98005), nil, "a satchel/container is never class-blocked")
+
+    -- Tier set tokens are class-restricted by item id. Warrior is Protector; a Vanquisher token is
+    -- not for them, a Protector token is. (Ids from item_template; id-based so GetItemInfo is moot.)
+    eq(w.addon:RollSelfBlockReason(40612), "class", "warrior blocked from a Vanquisher token (Lost Vanquisher)")
+    eq(w.addon:RollSelfBlockReason(31091), nil, "warrior can use a Protector token (Forgotten Protector)")
+    eq(w.addon:RollSelfBlockReason(29754), "class", "warrior blocked from a TBC Champion token")
+    eq(w.addon:RollSelfBlockReason(29753), nil, "warrior can use a TBC Defender token")
+end)
+
+-- Token roll-eligibility now comes from the item-id table (IsClassAllowedForItem), keyed by itemId,
+-- not the per-name ItemInfo note. (40612 = Lost Vanquisher = Rogue/DK/Mage/Druid; 40611 = Protector.)
+test("token allowed-class gate is driven by the tier-token id table", function()
+    local a = makeWorld("ML", true).addon
+    eq(a:IsClassAllowedForItem(40612, "ignored", "warrior"), false, "warrior not allowed on a Vanquisher token")
+    eq(a:IsClassAllowedForItem(40612, "ignored", "rogue"), true, "rogue allowed on a Vanquisher token")
+    eq(a:IsClassAllowedForItem(40612, "ignored", "death knight"), true, "DK allowed on a Vanquisher token")
+    eq(a:IsClassAllowedForItem(40611, "ignored", "warrior"), true, "warrior allowed on a Protector token")
+    -- a non-token item with no note is unrestricted
+    eq(a:IsClassAllowedForItem(99999, "Some Sword", "warrior"), true, "non-token without a note is unrestricted")
+end)
+
+-- Opt-in "hide rolls my class can't use" (item 11 follow-up). Non-ML Warrior. Off by default; when on,
+-- it suppresses only CLASS-unusable items (a wand) -- NOT items unusable for other reasons.
+test("hide-unusable-rolls option suppresses class-unusable popups for non-ML only", function()
+    local w = makeWorld("Raider", false)   -- not ML; UnitClass -> WARRIOR
+    w.addon.db.options = w.addon.db.options or {}
+    local function wand() w.env.GetItemInfo = function(idOrLink)
+        local id = tonumber(idOrLink) or tonumber(string.match(tostring(idOrLink),"item:(%d+)")) or 0
+        return "Wand","|cffa335ee|Hitem:"..id.."|h[Wand]|h|r",4,200,80,"Weapon","Wands",1,"INVTYPE_RANGED","tex",0 end end
+    wand()
+
+    eq(w.addon:ShouldSuppressRollPopup({ itemId = 97001, name = "Wand" }), false, "off by default: wand roll still shown")
+
+    w.addon.db.options.hideUnusableRolls = true
+    eq(w.addon:ShouldSuppressRollPopup({ itemId = 97001, name = "Wand" }), true, "wand roll hidden for warrior when option on")
+
+    -- a usable weapon (sword) is never hidden
+    w.env.GetItemInfo = function(idOrLink)
+        local id = tonumber(idOrLink) or tonumber(string.match(tostring(idOrLink),"item:(%d+)")) or 0
+        return "Sword","|cffa335ee|Hitem:"..id.."|h[Sword]|h|r",4,200,80,"Weapon","One-Handed Swords",1,"INVTYPE_WEAPONMAINHAND","tex",0 end
+    eq(w.addon:ShouldSuppressRollPopup({ itemId = 97002, name = "Sword" }), false, "usable sword roll still shown")
+
+    -- the ML never has popups suppressed
+    local ml = makeWorld("Masterlooter", true)
+    ml.addon.db.options = ml.addon.db.options or {}
+    ml.addon.db.options.hideUnusableRolls = true
+    ml.env.GetItemInfo = function() return "Wand","|cffa335ee|Hitem:97001|h[Wand]|h|r",4,200,80,"Weapon","Wands",1,"INVTYPE_RANGED","tex",0 end
+    eq(ml.addon:ShouldSuppressRollPopup({ itemId = 97001, name = "Wand" }), false, "ML never has popups suppressed")
+end)
+
 test("roll resolution hands the raider a result popup, not an instant vanish (sync race)", function()
     local ml, raider, lot = rollWithRaider(40005)
     local roll = rollFor(raider, lot.id)

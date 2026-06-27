@@ -292,6 +292,187 @@ function util:ColorPlayerText(name, className, text)
     return tostring(text or self:ColorPlayerName(name, className))
 end
 
+-- Tier set tokens (turned in for set pieces) are class-restricted by the server's AllowableClass
+-- mask, captured here as item id -> the classes that can use it, ordered by tier. Sourced from
+-- item_template; 10- and 25-man are distinct ids, so each tier contributes several. The group
+-- class-sets: Conqueror/Protector/Vanquisher are the WotLK + TBC-T6 scheme (TBC-T6 Vanquisher
+-- predates Death Knights, hence no DK); Champion/Defender/Hero are TBC T4-T5.
+-- Coverage: TBC T4-T6, WotLK Naxxramas (T7), Ulduar (T8). NOT yet covered: WotLK ToC (T9) and ICC
+-- (T10) -- the ICC "X's Mark of Sanctification" tokens (ids ~52000) are absent from our item_template
+-- dump, so they need a complete source before they can be added.
+local CONQUEROR      = { PALADIN = true, PRIEST = true, WARLOCK = true }
+local PROTECTOR      = { WARRIOR = true, HUNTER = true, SHAMAN = true }
+local VANQUISHER     = { ROGUE = true, DEATHKNIGHT = true, MAGE = true, DRUID = true }
+local VANQUISHER_TBC = { ROGUE = true, MAGE = true, DRUID = true }
+local DEFENDER       = { WARRIOR = true, PRIEST = true, DRUID = true }
+local CHAMPION       = { PALADIN = true, ROGUE = true, SHAMAN = true }
+local HERO           = { HUNTER = true, MAGE = true, WARLOCK = true }
+
+local tierTokenClasses = {}
+local function token(classSet, ...)
+    for _, id in ipairs({ ... }) do tierTokenClasses[id] = classSet end
+end
+
+-- ===== TBC Tier 4: Karazhan / Gruul / Magtheridon =====
+token(CHAMPION,       -- Paladin, Rogue, Shaman
+    29754, 29757, 29760, 29763, 29766)
+token(DEFENDER,       -- Warrior, Priest, Druid
+    29753, 29758, 29761, 29764, 29767)
+token(HERO,           -- Hunter, Mage, Warlock
+    29755, 29756, 29759, 29762, 29765)
+
+-- ===== TBC Tier 5: Serpentshrine Cavern / Tempest Keep =====
+token(CHAMPION,       -- Paladin, Rogue, Shaman
+    30236, 30239, 30242, 30245, 30248)
+token(DEFENDER,       -- Warrior, Priest, Druid
+    30237, 30240, 30243, 30246, 30249)
+token(HERO,           -- Hunter, Mage, Warlock
+    30238, 30241, 30244, 30247, 30250)
+
+-- ===== TBC Tier 6: Hyjal / Black Temple / Sunwell =====
+token(CONQUEROR,      -- Paladin, Priest, Warlock
+    31089, 31092, 31097, 31098, 31101, 34848, 34853, 34856)
+token(PROTECTOR,      -- Warrior, Hunter, Shaman
+    31091, 31094, 31095, 31100, 31103, 34851, 34854, 34857)
+token(VANQUISHER_TBC, -- Rogue, Mage, Druid
+    31090, 31093, 31096, 31099, 31102, 34852, 34855, 34858)
+
+-- ===== WotLK Tier 7: Naxxramas / Obsidian Sanctum =====
+token(CONQUEROR,      -- Paladin, Priest, Warlock
+    40610, 40613, 40616, 40619, 40622,   -- 10-man
+    40625, 40628, 40631, 40634, 40637)   -- 25-man
+token(PROTECTOR,      -- Warrior, Hunter, Shaman
+    40611, 40614, 40617, 40620, 40623,   -- 10-man
+    40626, 40629, 40632, 40635, 40638)   -- 25-man
+token(VANQUISHER,     -- Rogue, Death Knight, Mage, Druid
+    40612, 40615, 40618, 40621, 40624,   -- 10-man
+    40627, 40630, 40633, 40636, 40639)   -- 25-man
+
+-- ===== WotLK Tier 8: Ulduar =====
+token(CONQUEROR,      -- Paladin, Priest, Warlock
+    45635, 45644, 45647, 45650, 45659,   -- 10-man
+    45632, 45638, 45641, 45653, 45656)   -- 25-man
+token(PROTECTOR,      -- Warrior, Hunter, Shaman
+    45636, 45645, 45648, 45651, 45660,   -- 10-man
+    45633, 45639, 45642, 45654, 45657)   -- 25-man
+token(VANQUISHER,     -- Rogue, Death Knight, Mage, Druid
+    45637, 45646, 45649, 45652, 45661,   -- 10-man
+    45634, 45640, 45643, 45655, 45658)   -- 25-man
+
+-- The class set (token -> true) a tier token is restricted to, or nil if itemId is not a known
+-- token. This is the authoritative source for "who may roll a token", replacing per-name notes.
+function util:TierTokenClassSet(itemId)
+    return itemId and tierTokenClasses[itemId] or nil
+end
+
+-- Map a class NAME in any form ("Death Knight" / "deathknight" / "dk") to its uppercase class token.
+local CLASS_NAME_TO_TOKEN = {
+    ["death knight"] = "DEATHKNIGHT", deathknight = "DEATHKNIGHT", dk = "DEATHKNIGHT",
+    druid = "DRUID", hunter = "HUNTER", mage = "MAGE", paladin = "PALADIN", priest = "PRIEST",
+    rogue = "ROGUE", shaman = "SHAMAN", warlock = "WARLOCK", warrior = "WARRIOR",
+}
+function util:ClassNameToToken(className)
+    return CLASS_NAME_TO_TOKEN[self:NormalizeKey(className or "")]
+end
+
+-- Equip-eligibility: can the LOCAL player's class use this item at all? Pure logic (GetItemInfo +
+-- UnitClass), so it lives here (loaded headless) and is shared by the Loot-tab usable sort and the
+-- roll self-block. The class->weapon sets are validated 1:1 against the client's
+-- SkillRaceClassInfo.dbc; armor uses cloth<leather<mail<plate, allowing every type AT OR BELOW the
+-- class (a plate class can wear cloth). NOTE: matches GetItemInfo's localized itemType/subType
+-- against English keys, i.e. assumes an enUS client (ChromieCraft is enUS; item 31 tracks locale
+-- independence). Uncached items resolve as usable, so a roll is never false-blocked while loading.
+function util:IsItemUsableForPlayer(itemLink)
+    if not itemLink or itemLink == "" then
+        return false
+    end
+    local _, classToken = UnitClass("player")
+    if not classToken then
+        return false
+    end
+
+    -- Tier set tokens: class-restricted by item id (id-based, so it resolves even before the item's
+    -- data is cached). Class-restricted tokens are treated exactly like gear your class can't use.
+    local itemId = tonumber(string.match(itemLink, "item:(%d+)"))
+    if itemId and tierTokenClasses[itemId] then
+        return tierTokenClasses[itemId][classToken] and true or false
+    end
+
+    local _, _, _, _, _, itemType, itemSubType, _, equipLoc = GetItemInfo(itemLink)
+    if not itemType then
+        return true   -- uncached/unknown item: never claim unusable
+    end
+    local normalizedType = util:NormalizeKey(itemType or "")
+    local normalizedSubType = util:NormalizeKey(itemSubType or "")
+    local normalizedEquipLoc = util:NormalizeKey(equipLoc or "")
+
+    local armorByClass = {
+        DEATHKNIGHT = "plate", DRUID = "leather", HUNTER = "mail", MAGE = "cloth", PALADIN = "plate",
+        PRIEST = "cloth", ROGUE = "leather", SHAMAN = "mail", WARLOCK = "cloth", WARRIOR = "plate",
+    }
+
+    local weaponByClass = {
+        DEATHKNIGHT = { ["one-handed axes"] = true, ["two-handed axes"] = true, ["one-handed maces"] = true, ["two-handed maces"] = true, ["one-handed swords"] = true, ["two-handed swords"] = true, polearms = true, sigils = true },
+        DRUID = { daggers = true, ["fist weapons"] = true, ["one-handed maces"] = true, ["two-handed maces"] = true, polearms = true, staves = true, idols = true },
+        HUNTER = { ["one-handed axes"] = true, ["two-handed axes"] = true, daggers = true, ["fist weapons"] = true, polearms = true, staves = true, ["one-handed swords"] = true, ["two-handed swords"] = true, bows = true, guns = true, crossbows = true, thrown = true },
+        MAGE = { daggers = true, ["one-handed swords"] = true, staves = true, wands = true },
+        PALADIN = { ["one-handed axes"] = true, ["two-handed axes"] = true, ["one-handed maces"] = true, ["two-handed maces"] = true, polearms = true, ["one-handed swords"] = true, ["two-handed swords"] = true, shields = true, librams = true },
+        PRIEST = { daggers = true, ["one-handed maces"] = true, staves = true, wands = true },
+        ROGUE = { ["one-handed axes"] = true, daggers = true, ["fist weapons"] = true, ["one-handed maces"] = true, ["one-handed swords"] = true, bows = true, guns = true, crossbows = true, thrown = true },
+        SHAMAN = { ["one-handed axes"] = true, ["two-handed axes"] = true, daggers = true, ["fist weapons"] = true, ["one-handed maces"] = true, ["two-handed maces"] = true, staves = true, shields = true, totems = true },
+        WARLOCK = { daggers = true, ["one-handed swords"] = true, staves = true, wands = true },
+        WARRIOR = { ["one-handed axes"] = true, ["two-handed axes"] = true, daggers = true, ["fist weapons"] = true, ["one-handed maces"] = true, ["two-handed maces"] = true, polearms = true, staves = true, ["one-handed swords"] = true, ["two-handed swords"] = true, bows = true, guns = true, crossbows = true, thrown = true, shields = true },
+    }
+
+    if normalizedType == "armor" then
+        if normalizedSubType == "cloak"
+            or normalizedSubType == "miscellaneous"
+            or normalizedEquipLoc == "invtype_neck"
+            or normalizedEquipLoc == "invtype_finger"
+            or normalizedEquipLoc == "invtype_trinket"
+            or normalizedEquipLoc == "invtype_holdable"
+            or normalizedEquipLoc == "invtype_shield"
+            or normalizedEquipLoc == "invtype_relic" then
+            if normalizedEquipLoc == "invtype_shield" then
+                return weaponByClass[classToken] and weaponByClass[classToken].shields or false
+            end
+            if normalizedEquipLoc == "invtype_relic" then
+                if normalizedSubType == "idol" or normalizedSubType == "idols" then
+                    return classToken == "DRUID"
+                elseif normalizedSubType == "libram" or normalizedSubType == "librams" then
+                    return classToken == "PALADIN"
+                elseif normalizedSubType == "totem" or normalizedSubType == "totems" then
+                    return classToken == "SHAMAN"
+                elseif normalizedSubType == "sigil" or normalizedSubType == "sigils" then
+                    return classToken == "DEATHKNIGHT"
+                end
+            end
+            return true
+        end
+
+        -- Body armor: a class can equip its own type and every lighter type, so only HEAVIER armor is
+        -- truly unequippable (option a: strict can't-equip, not "off your intended type").
+        local armorRank = { cloth = 1, leather = 2, mail = 3, plate = 4 }
+        local classRank = armorRank[armorByClass[classToken]]
+        local itemArmorRank = armorRank[normalizedSubType]
+        if not itemArmorRank then return true end    -- unknown armor subtype: do not block
+        if not classRank then return false end
+        return itemArmorRank <= classRank
+    end
+
+    if normalizedType == "weapon" then
+        local allowed = weaponByClass[classToken]
+        if not allowed then
+            return false
+        end
+        return allowed[normalizedSubType] and true or false
+    end
+
+    -- Only armor and weapons carry a class equip-proficiency gate. Anything else (containers,
+    -- consumables, quest items, gems, recipes, ...) has no class restriction, so it is always usable.
+    return true
+end
+
 function util:FindBagItemByLink(itemLink)
     if not itemLink or itemLink == "" then
         return nil

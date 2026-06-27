@@ -776,7 +776,16 @@ function addon:GetItemAllowedClasses(itemName)
     return next(allowed) and allowed or nil
 end
 
-function addon:IsClassAllowedForItem(itemName, className)
+function addon:IsClassAllowedForItem(itemId, itemName, className)
+    -- Tier set tokens: the allowed classes come from the authoritative item-id table, not the
+    -- per-name ItemInfo note. Non-token items still fall back to the note.
+    local tokenSet = itemId and util:TierTokenClassSet(itemId)
+    if tokenSet then
+        local token = util:ClassNameToToken(className)
+        if not token then return true end          -- unknown class: do not gate
+        return tokenSet[token] == true
+    end
+
     local allowed = self:GetItemAllowedClasses(itemName)
     if not allowed then
         return true
@@ -790,8 +799,8 @@ function addon:IsClassAllowedForItem(itemName, className)
     return allowed[normalizedClass] == true
 end
 
-function addon:IsPlayerAllowedForItem(itemName, playerName)
-    if not itemName or itemName == "" then
+function addon:IsPlayerAllowedForItem(itemId, itemName, playerName)
+    if not itemId and (not itemName or itemName == "") then
         return true
     end
 
@@ -812,7 +821,7 @@ function addon:IsPlayerAllowedForItem(itemName, playerName)
         className = (attendee and attendee.className) or (rosterProfile and rosterProfile.className) or ""
     end
 
-    return self:IsClassAllowedForItem(itemName, className)
+    return self:IsClassAllowedForItem(itemId, itemName, className)
 end
 
 function addon:SaveImports(rosterText, lootText, namedText)
