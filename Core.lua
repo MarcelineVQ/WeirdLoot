@@ -3869,13 +3869,28 @@ end
 function addon:RAID_ROSTER_UPDATE()
     self:RefreshRoster()
     self:RefreshLootAuthority()
+    self:MaybeRecheckOnJoin()
     self:TriggerCallback("ROSTER_UPDATED")
 end
 
 function addon:PARTY_MEMBERS_CHANGED()
     self:RefreshRoster()
     self:RefreshLootAuthority()
+    self:MaybeRecheckOnJoin()
     self:TriggerCallback("ROSTER_UPDATED")
+end
+
+-- Being added to a raid mid-session does NOT fire PLAYER_ENTERING_WORLD, so the post-login auth-recheck
+-- retry loop never starts. If the raid roster name cache lags on the join event, the ML never resolves
+-- and the raider silently never syncs. Kick the same retry loop on a join while we are a non-ML in a
+-- master-loot raid with the ML still unresolved -- it re-reads the roster until the name lands, then the
+-- resolution transition in RefreshLootAuthority requests the session.
+function addon:MaybeRecheckOnJoin()
+    if self.roster.isLootMaster or self.roster.lootMasterName then return end
+    local method = GetLootMethod()
+    if method == "master" then
+        self:ScheduleAuthorityRecheck()
+    end
 end
 
 function addon:PARTY_LOOT_METHOD_CHANGED()

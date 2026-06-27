@@ -1232,6 +1232,30 @@ test("unreadable raid roster: ML is NOT self-granted, recovers when the roster n
     eq(w.addon.roster.mlRosterUnreadable, false, "no longer flagged once recovered")
 end)
 
+test("raider requests a sync the moment its loot master resolves (no heartbeat wait)", function()
+    -- In-game (raider 'Saeaea' fresh login): the raid roster loads a beat late, so the ML name is
+    -- unresolved at login and resolves only when RAID_ROSTER_UPDATE finally lands. Without an explicit
+    -- request on that transition, the raider sat idle until the ML's next ~30s heartbeat. Resolving the
+    -- ML must pull the session at once, exactly once, and not re-fire on steady re-resolves.
+    local w = makeWorld("Raider", false)
+    w.env.GetLootMethod = function() return "master", 1, 1 end   -- raider: master loot, ML at raid index 1
+    local syncs = 0
+    w.addon.RequestSessionSync = function() syncs = syncs + 1 end
+
+    w.env.GetRaidRosterInfo = function() return nil, nil end      -- roster cannot name the index yet
+    w.addon:RefreshLootAuthority()
+    eq(w.addon.roster.lootMasterName, nil, "ML unresolved while the roster cannot name the index")
+    eq(syncs, 0, "no sync request while we cannot name the loot master")
+
+    w.env.GetRaidRosterInfo = function(i) if i == 1 then return "Masterlooter", 2 end return "Raider", 0 end
+    w.addon:RefreshLootAuthority()
+    eq(w.addon.roster.lootMasterName, "Masterlooter", "ML resolves once the index is named")
+    eq(syncs, 1, "resolving the ML fires exactly one sync request")
+
+    w.addon:RefreshLootAuthority()
+    eq(syncs, 1, "a steady re-resolve of the same ML does not re-request")
+end)
+
 test("slash export commands stay available without loot-master authority", function()
     local w = makeWorld("Raider", false)
     local winners, logs = 0, 0

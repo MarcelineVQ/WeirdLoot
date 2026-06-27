@@ -185,6 +185,7 @@ function addon:RefreshLootAuthority()
     local nameAtML = (raidMasterIndex and raidMasterIndex > 0) and GetRaidRosterInfo(raidMasterIndex) or nil
 
     local wasLootMaster = self.roster.isLootMaster
+    local prevMasterName = self.roster.lootMasterName
     self.roster.lootMasterName = lootMasterName
     self.roster.isLootMaster = isLootMaster
     self.roster.mlRosterUnreadable = self:RosterUnreadableForML(method, partyMasterIndex, raidMasterIndex, nameAtML)
@@ -212,6 +213,15 @@ function addon:RefreshLootAuthority()
     -- out-rank us). Only a false->true transition fires it, so the event/retry re-runs do not re-mint.
     if isLootMaster and not wasLootMaster then
         self:AssumeLootMasterSession()
+    end
+
+    -- A raider that just learned (or changed) who the loot master is -- e.g. the raid roster finally
+    -- loaded a beat after a fresh login -- must pull the session at once. Without this it sits idle
+    -- until the ML's next heartbeat (up to the ~30s heartbeat period) reveals it is behind. Only the
+    -- nil/changed transition fires it, so steady re-resolves on roster churn do not re-request.
+    if not isLootMaster and lootMasterName and lootMasterName ~= ""
+        and util:NormalizeKey(lootMasterName) ~= util:NormalizeKey(prevMasterName or "") then
+        self:RequestSessionSync()
     end
 
     self:TriggerCallback("AUTHORITY_UPDATED")
