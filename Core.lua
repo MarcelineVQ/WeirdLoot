@@ -3432,6 +3432,8 @@ function addon:PLAYER_LOGIN()
                                     -- broadcasts the DROP immediately (NEW -> ROLLING, no popup gate).
             autoSkipRoll = false,   -- LM only; mutex with db.autoRoll and autoStartRoll. New loot
                                     -- moves straight to SKIPPED (auto-resurfaces on the next scan).
+            hideUnusableRolls = false,   -- raider opt-in: hide roll popups for items your CLASS can't use
+                                         -- (armor/weapon proficiency only; unique-owned/quest-done still show)
             whitelistEnabled = false,
             whitelistText = "",
             blacklistEnabled = false,

@@ -340,10 +340,23 @@ local function parseItemList(text)
 end
 
 -- Returns true if the (non-loot-master) popup should be suppressed for this item name.
-local function shouldSuppressPopup(self, itemName)
+-- Should a NON-ML raider's popup for this roll be hidden? (The ML always sees everything.) Covers the
+-- whitelist/blacklist filters and the opt-in "hide rolls my class can't use" option (off by default).
+function addon:ShouldSuppressRollPopup(roll)
     if self:IsAuthorizedLootMaster() then return false end
     local opt = getOptions()
-    local name = string.lower(itemName or "")
+
+    -- Opt-in: hide rolls for items this player's class can never equip, using the same equip-
+    -- eligibility check as the roll self-block. Uncached items resolve as usable, so nothing is
+    -- hidden while the item is still loading.
+    if opt.hideUnusableRolls and roll and roll.itemId then
+        local _, link = util:ItemRender(roll.itemId)
+        if link and not util:IsItemUsableForPlayer(link) then
+            return true
+        end
+    end
+
+    local name = string.lower((roll and roll.name) or "")
     if name == "" then return false end
 
     if opt.whitelistEnabled then
@@ -570,8 +583,7 @@ local function positionInterestButtons(f, isOwner)
 end
 
 local function isPlayerAllowedForRoll(self, roll, playerName)
-    local itemName = (roll and roll.name) or ""
-    return self:IsPlayerAllowedForItem(itemName, playerName)
+    return self:IsPlayerAllowedForItem(roll and roll.itemId, (roll and roll.name) or "", playerName)
 end
 
 -- Hover text for a disabled bracket, by the reason util:RollTierAvailability returns.
@@ -1096,6 +1108,11 @@ function addon:RollSelfBlockReason(itemId)
     if not itemId then return nil end
     if self:OwnsQuestReward(itemId) then return "quest" end
     if self:OwnsBlockingUnique(itemId) then return "unique" end
+    -- Class equip-eligibility. IsItemUsableForPlayer matches GetItemInfo's localized subtype against
+    -- English tables, i.e. it assumes an enUS client (ChromieCraft is enUS); item 31 tracks making the
+    -- match locale-independent. Uncached items resolve as usable, so a still-loading item is never blocked.
+    local _, link = util:ItemRender(itemId)
+    if link and not util:IsItemUsableForPlayer(link) then return "class" end
     return nil
 end
 
@@ -1184,7 +1201,7 @@ end
 -- interest popup
 -- ---------------------------------------------------------------------------
 function addon:ShowInterestPopup(roll, slot)
-    if not roll.owner and shouldSuppressPopup(self, roll.name) then
+    if not roll.owner and self:ShouldSuppressRollPopup(roll) then
         return
     end
     -- Reuse-or-acquire: an existing popup tied to this lot id (either a pending popup
@@ -1419,7 +1436,7 @@ end
 -- result popup
 -- ---------------------------------------------------------------------------
 function addon:ShowResultPopup(roll, winners, sections, slot)
-    if shouldSuppressPopup(self, roll.name) then
+    if self:ShouldSuppressRollPopup(roll) then
         return
     end
     local f = acquirePopup(self)

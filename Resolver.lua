@@ -12,11 +12,13 @@ end
 function addon:BuildRollerList(lot)
     local rollers = {}
     local responses = lot and lot.responses or {}
-    -- gate-tokens-by-class needs the item name; render it from the lot's itemId.
-    local itemName = lot and select(1, util:ItemRender(lot.itemId)) or nil
+    -- gate-tokens-by-class: tier tokens resolve by itemId (authoritative table); the name is the
+    -- fallback for any note-gated non-token item.
+    local itemId = lot and lot.itemId or nil
+    local itemName = itemId and select(1, util:ItemRender(itemId)) or nil
 
     for playerKey, choice in pairs(responses) do
-        if self:IsResponseActive(choice) and self:IsPlayerAllowedForItem(itemName, playerKey) then
+        if self:IsResponseActive(choice) and self:IsPlayerAllowedForItem(itemId, itemName, playerKey) then
             local attendee = self:GetAttendee(playerKey) or self:GetRosterProfile(playerKey)
             rollers[#rollers + 1] = {
                 name = attendee and attendee.name or playerKey,
