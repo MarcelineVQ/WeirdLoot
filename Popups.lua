@@ -13,106 +13,77 @@
 --   WEIRDLOOT_START_SESSION           -- zone-in prompt when becoming ML with no session
 --   WEIRDLOOT_RESTART_SESSION         -- confirm before restarting mid-session
 --
--- See REFACTOR_PLAN.md Phase 3 for the planned dedupe of the 4 near-identical whitelist/blacklist
+-- see REFACTOR_PLAN.md Phase 3 for the planned dedupe of the 4 near-identical whitelist/blacklist
 -- save+delete dialogs (they share OnShow / OnAccept / EditBoxOnEnterPressed / EditBoxOnEscapePressed
 -- and differ only in text, the source box, the save/delete call, and the dropdown refresh).
 
 local addon = WeirdLoot
 
-StaticPopupDialogs["WEIRDLOOT_SAVE_WHITELIST_PRESET"] = {
-    text = "Save whitelist as preset. Enter a name:",
-    button1 = ACCEPT or "Save",
-    button2 = CANCEL or "Cancel",
-    hasEditBox = 1,
-    editBoxWidth = 200,
-    maxLetters = 40,
-    OnShow = function(self)
-        if self.editBox then self.editBox:SetText("") self.editBox:SetFocus() end
-    end,
-    OnAccept = function(self)
-        local name = self.editBox and self.editBox:GetText() or ""
-        name = string.match(name, "^%s*(.-)%s*$") or ""
-        if name == "" then return end
-        -- The Options "panel" is a ScrollFrame; the multi-line text widgets live on the scroll
-        -- child stashed at addon.ui.optionsPanel. Reading from addon.ui.panels.options here returns
-        -- nil for the box and silently saves an empty preset.
+-- Helper: build the SAVE + DELETE preset dialog pair for one list kind ("whitelist" or "blacklist").
+-- Each kind reads its text from a different editBox on the options panel, saves/deletes into a
+-- different SavedVariable, and refreshes a different dropdown. The dialog plumbing (the editBox,
+-- the OnAccept handlers, the common flags) is identical.
+local function buildPresetDialogs(kind)
+    local cap   = kind:sub(1, 1):upper() .. kind:sub(2)         -- "Whitelist" / "Blacklist"
+    local box   = kind .. "Box"                                  -- "whitelistBox" / "blacklistBox"
+    local save  = "SaveCustom"   .. cap .. "Preset"
+    local del   = "DeleteCustom" .. cap .. "Preset"
+    local refr  = "Refresh"      .. cap .. "PresetDropdown"
+
+    -- The Options "panel" is a ScrollFrame; the multi-line text widgets live on the scroll child
+    -- stashed at addon.ui.optionsPanel. Reading from addon.ui.panels.options here returns nil for
+    -- the box and silently saves an empty preset.
+    local function readBodyText()
         local inner = addon.ui and addon.ui.optionsPanel
-        local box = inner and inner.whitelistBox and inner.whitelistBox.editBox
-        local text = (box and box:GetText()) or ""
-        if addon:SaveCustomWhitelistPreset(name, text) then
-            if addon.RefreshWhitelistPresetDropdown then addon:RefreshWhitelistPresetDropdown(name) end
-        end
-    end,
-    EditBoxOnEnterPressed = function(self)
-        local parent = self:GetParent()
-        if parent and parent.button1 then parent.button1:Click() end
-    end,
-    EditBoxOnEscapePressed = function(self) self:GetParent():Hide() end,
-    timeout = 0,
-    whileDead = 1,
-    hideOnEscape = 1,
-}
+        local widget = inner and inner[box] and inner[box].editBox
+        return (widget and widget:GetText()) or ""
+    end
 
-StaticPopupDialogs["WEIRDLOOT_DELETE_WHITELIST_PRESET"] = {
-    text = "Delete custom whitelist preset \"%s\"?",
-    button1 = YES,
-    button2 = NO,
-    OnAccept = function(self, data)
-        if addon:DeleteCustomWhitelistPreset(data) then
-            if addon.RefreshWhitelistPresetDropdown then addon:RefreshWhitelistPresetDropdown(nil) end
-        end
-    end,
-    timeout = 0,
-    whileDead = 1,
-    hideOnEscape = 1,
-}
+    StaticPopupDialogs["WEIRDLOOT_SAVE_" .. kind:upper() .. "_PRESET"] = {
+        text = "Save " .. kind .. " as preset. Enter a name:",
+        button1 = ACCEPT or "Save",
+        button2 = CANCEL or "Cancel",
+        hasEditBox = 1,
+        editBoxWidth = 200,
+        maxLetters = 40,
+        OnShow = function(self)
+            if self.editBox then self.editBox:SetText("") self.editBox:SetFocus() end
+        end,
+        OnAccept = function(self)
+            local name = self.editBox and self.editBox:GetText() or ""
+            name = string.match(name, "^%s*(.-)%s*$") or ""
+            if name == "" then return end
+            if addon[save](addon, name, readBodyText()) then
+                if addon[refr] then addon[refr](addon, name) end
+            end
+        end,
+        EditBoxOnEnterPressed = function(self)
+            local parent = self:GetParent()
+            if parent and parent.button1 then parent.button1:Click() end
+        end,
+        EditBoxOnEscapePressed = function(self) self:GetParent():Hide() end,
+        timeout = 0,
+        whileDead = 1,
+        hideOnEscape = 1,
+    }
 
-StaticPopupDialogs["WEIRDLOOT_SAVE_BLACKLIST_PRESET"] = {
-    text = "Save blacklist as preset. Enter a name:",
-    button1 = ACCEPT or "Save",
-    button2 = CANCEL or "Cancel",
-    hasEditBox = 1,
-    editBoxWidth = 200,
-    maxLetters = 40,
-    OnShow = function(self)
-        if self.editBox then self.editBox:SetText("") self.editBox:SetFocus() end
-    end,
-    OnAccept = function(self)
-        local name = self.editBox and self.editBox:GetText() or ""
-        name = string.match(name, "^%s*(.-)%s*$") or ""
-        if name == "" then return end
-        -- See the whitelist save dialog for context: addon.ui.panels.options is the ScrollFrame;
-        -- the multi-line text widgets live on the scroll child at addon.ui.optionsPanel.
-        local inner = addon.ui and addon.ui.optionsPanel
-        local box = inner and inner.blacklistBox and inner.blacklistBox.editBox
-        local text = (box and box:GetText()) or ""
-        if addon:SaveCustomBlacklistPreset(name, text) then
-            if addon.RefreshBlacklistPresetDropdown then addon:RefreshBlacklistPresetDropdown(name) end
-        end
-    end,
-    EditBoxOnEnterPressed = function(self)
-        local parent = self:GetParent()
-        if parent and parent.button1 then parent.button1:Click() end
-    end,
-    EditBoxOnEscapePressed = function(self) self:GetParent():Hide() end,
-    timeout = 0,
-    whileDead = 1,
-    hideOnEscape = 1,
-}
+    StaticPopupDialogs["WEIRDLOOT_DELETE_" .. kind:upper() .. "_PRESET"] = {
+        text = "Delete custom " .. kind .. " preset \"%s\"?",
+        button1 = YES,
+        button2 = NO,
+        OnAccept = function(self, data)
+            if addon[del](addon, data) then
+                if addon[refr] then addon[refr](addon, nil) end
+            end
+        end,
+        timeout = 0,
+        whileDead = 1,
+        hideOnEscape = 1,
+    }
+end
 
-StaticPopupDialogs["WEIRDLOOT_DELETE_BLACKLIST_PRESET"] = {
-    text = "Delete custom blacklist preset \"%s\"?",
-    button1 = YES,
-    button2 = NO,
-    OnAccept = function(self, data)
-        if addon:DeleteCustomBlacklistPreset(data) then
-            if addon.RefreshBlacklistPresetDropdown then addon:RefreshBlacklistPresetDropdown(nil) end
-        end
-    end,
-    timeout = 0,
-    whileDead = 1,
-    hideOnEscape = 1,
-}
+buildPresetDialogs("whitelist")
+buildPresetDialogs("blacklist")
 
 StaticPopupDialogs["WEIRDLOOT_SET_LC_OVERRIDE"] = {
     text = "Session LC priority for %s\nFormat:  player1/player2  or  player1 > player2 > LC\nLeave blank to clear.",

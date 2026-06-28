@@ -2848,7 +2848,7 @@ end)
 -- This file's own tests ran inline above; their pass/fail counts are already folded into F.
 -- The final summary below totals everything.
 -- ===========================================================================
-local suites = { "tests/unit_util.lua", "tests/unit_config.lua", "tests/unit_lootcore.lua", "tests/unit_resolver.lua", "tests/unit_iteminfo.lua" }
+local suites = { "tests/unit_util.lua", "tests/unit_config.lua", "tests/unit_lootcore.lua", "tests/unit_resolver.lua", "tests/unit_iteminfo.lua", "tests/unit_preset_registry.lua" }
 for _, path in ipairs(suites) do
     print(string.format("\n--- running %s ---", path))
     local ok, err = pcall(dofile, path)

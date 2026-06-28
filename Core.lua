@@ -61,81 +61,62 @@ end
 
 local defaultRosterImportText = ""
 
-function addon:GetWhitelistPresets()
-    local list = {}
-    for _, preset in ipairs(self.whitelistPresets or {}) do
-        list[#list + 1] = { name = preset.name, text = preset.text, builtin = true }
-    end
-    local custom = (self.db and self.db.options and self.db.options.customWhitelistPresets) or {}
-    for name, text in pairs(custom) do
-        list[#list + 1] = { name = name, text = text or "", builtin = false }
-    end
-    table.sort(list, function(a, b) return string.lower(a.name or "") < string.lower(b.name or "") end)
-    return list
-end
+-- PresetRegistry: the 6 functions GetWhitelistPresets / SaveCustomWhitelistPreset /
+-- DeleteCustomWhitelistPreset + the same 3 for blacklists differ only in which built-in
+-- table they read from and which SavedVariable sub-table they write to. Build all 6 from one
+-- helper to keep the wiring in one place; new kinds (e.g. "watchlist") are one line.
+local function installPresetRegistry(kind)
+    local cap          = kind:sub(1, 1):upper() .. kind:sub(2)   -- "Whitelist" / "Blacklist"
+    local builtinKey   = kind .. "Presets"                       -- self.whitelistPresets / self.blacklistPresets
+    local customField  = "custom" .. cap .. "Presets"            -- db.options.customWhitelistPresets / customBlacklistPresets
 
-function addon:SaveCustomWhitelistPreset(name, text)
-    if type(name) ~= "string" or name == "" then return false end
-    self.db.options = self.db.options or {}
-    self.db.options.customWhitelistPresets = self.db.options.customWhitelistPresets or {}
-    for _, preset in ipairs(self.whitelistPresets or {}) do
-        if preset.name == name then
-            self:Print("Cannot overwrite built-in preset: " .. name)
-            return false
+    -- Get(kind)Presets: union of built-in presets (from the data files) and user-saved
+    -- custom presets, sorted case-insensitively by name.
+    addon["Get" .. cap .. "Presets"] = function(self)
+        local list = {}
+        for _, preset in ipairs(self[builtinKey] or {}) do
+            list[#list + 1] = { name = preset.name, text = preset.text, builtin = true }
         end
-    end
-    self.db.options.customWhitelistPresets[name] = text or ""
-    self:Print("Saved whitelist preset: " .. name)
-    return true
-end
-
-function addon:DeleteCustomWhitelistPreset(name)
-    if type(name) ~= "string" or name == "" then return false end
-    self.db.options = self.db.options or {}
-    self.db.options.customWhitelistPresets = self.db.options.customWhitelistPresets or {}
-    if self.db.options.customWhitelistPresets[name] == nil then return false end
-    self.db.options.customWhitelistPresets[name] = nil
-    self:Print("Deleted whitelist preset: " .. name)
-    return true
-end
-
-function addon:GetBlacklistPresets()
-    local list = {}
-    for _, preset in ipairs(self.blacklistPresets or {}) do
-        list[#list + 1] = { name = preset.name, text = preset.text, builtin = true }
-    end
-    local custom = (self.db and self.db.options and self.db.options.customBlacklistPresets) or {}
-    for name, text in pairs(custom) do
-        list[#list + 1] = { name = name, text = text or "", builtin = false }
-    end
-    table.sort(list, function(a, b) return string.lower(a.name or "") < string.lower(b.name or "") end)
-    return list
-end
-
-function addon:SaveCustomBlacklistPreset(name, text)
-    if type(name) ~= "string" or name == "" then return false end
-    self.db.options = self.db.options or {}
-    self.db.options.customBlacklistPresets = self.db.options.customBlacklistPresets or {}
-    for _, preset in ipairs(self.blacklistPresets or {}) do
-        if preset.name == name then
-            self:Print("Cannot overwrite built-in preset: " .. name)
-            return false
+        local custom = (self.db and self.db.options and self.db.options[customField]) or {}
+        for name, text in pairs(custom) do
+            list[#list + 1] = { name = name, text = text or "", builtin = false }
         end
+        table.sort(list, function(a, b) return string.lower(a.name or "") < string.lower(b.name or "") end)
+        return list
     end
-    self.db.options.customBlacklistPresets[name] = text or ""
-    self:Print("Saved blacklist preset: " .. name)
-    return true
+
+    -- SaveCustom(kind)Preset: validates the name, refuses to overwrite a built-in, writes
+    -- to the custom field, and prints a confirmation. Returns true on success.
+    addon["SaveCustom" .. cap .. "Preset"] = function(self, name, text)
+        if type(name) ~= "string" or name == "" then return false end
+        self.db.options = self.db.options or {}
+        self.db.options[customField] = self.db.options[customField] or {}
+        for _, preset in ipairs(self[builtinKey] or {}) do
+            if preset.name == name then
+                self:Print("Cannot overwrite built-in preset: " .. name)
+                return false
+            end
+        end
+        self.db.options[customField][name] = text or ""
+        self:Print("Saved " .. kind .. " preset: " .. name)
+        return true
+    end
+
+    -- DeleteCustom(kind)Preset: refuses to delete a missing or empty entry. Returns true on
+    -- success.
+    addon["DeleteCustom" .. cap .. "Preset"] = function(self, name)
+        if type(name) ~= "string" or name == "" then return false end
+        self.db.options = self.db.options or {}
+        self.db.options[customField] = self.db.options[customField] or {}
+        if self.db.options[customField][name] == nil then return false end
+        self.db.options[customField][name] = nil
+        self:Print("Deleted " .. kind .. " preset: " .. name)
+        return true
+    end
 end
 
-function addon:DeleteCustomBlacklistPreset(name)
-    if type(name) ~= "string" or name == "" then return false end
-    self.db.options = self.db.options or {}
-    self.db.options.customBlacklistPresets = self.db.options.customBlacklistPresets or {}
-    if self.db.options.customBlacklistPresets[name] == nil then return false end
-    self.db.options.customBlacklistPresets[name] = nil
-    self:Print("Deleted blacklist preset: " .. name)
-    return true
-end
+installPresetRegistry("whitelist")
+installPresetRegistry("blacklist")
 
 local function onEvent(self, event, ...)
     if addon[event] then
