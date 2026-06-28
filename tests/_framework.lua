@@ -114,10 +114,15 @@ function self.makeWorld(playerName, isML)
                 return function(_, st) return self.__scripts[st] end
             elseif k == "NumLines" then
                 return function() return 0 end
-            elseif k == "GetStringHeight" or k == "GetHeight" or k == "GetWidth" then
-                -- measurement methods feed arithmetic (e.g. math.ceil in the popup-height
-                -- helpers); return a number, not the chainable frame.
+            elseif k == "GetStringHeight" or k == "GetHeight" or k == "GetWidth"
+                or k == "GetFrameLevel" or k == "GetNumPoints" or k == "GetID" then
+                -- measurement / numeric getters feed arithmetic (e.g. frame-level + offset,
+                -- math.ceil in the popup-height helpers); return a number, not the chainable frame.
                 return function() return 0 end
+            elseif k == "GetFrameStrata" then
+                return function() return "DIALOG" end
+            elseif k == "GetName" then
+                return function(s) return s.__name end
             elseif k == "Enable" then
                 return function(s) s.__disabled = false; return s end
             elseif k == "Disable" then
@@ -178,7 +183,7 @@ function self.makeWorld(playerName, isML)
     local SCAN_TIP_NAMES = { TradeDeliverScanTip = true, WeirdLootScanTooltip = true }
     env.CreateFrame = function(_, name)
         local f = SCAN_TIP_NAMES[name] and newScanTip(name) or newFrame()
-        if name then env[name] = f end
+        if name then env[name] = f; f.__name = name end
         return f
     end
     env.UIParent = newFrame()
@@ -297,6 +302,26 @@ function self.makeWorld(playerName, isML)
     env.GetInstanceInfo = function() return "none", "none" end
     env.InCombatLockdown = function() return false end
 
+    -- ---- UI globals (only consumed when a suite loads UI.lua; harmless otherwise) ----
+    env.tinsert = table.insert
+    env.tremove = table.remove
+    env.wipe = function(t) for k in pairs(t) do t[k] = nil end return t end
+    env.format = string.format
+    env.Minimap = newFrame()
+    env.UISpecialFrames = {}
+    env.GetCursorPosition = function() return 0, 0 end
+    env.FauxScrollFrame_Update = function() end
+    env.FauxScrollFrame_GetOffset = function() return 0 end
+    env.FauxScrollFrame_OnVerticalScroll = function() end
+    env.UIDropDownMenu_Initialize = function() end
+    env.UIDropDownMenu_CreateInfo = function() return {} end
+    env.UIDropDownMenu_AddButton = function() end
+    env.UIDropDownMenu_SetText = function() end
+    env.UIDropDownMenu_SetWidth = function() end
+    env.UIDropDownMenu_JustifyText = function() end
+    env.UIDropDownMenu_EnableDropDown = function() end
+    env.UIDropDownMenu_DisableDropDown = function() end
+
     -- ---- LibStub + libs ----
     local libs = {}
     -- Fake WeirdComm: pass-through transport for the WeirdSync (WLSYNC) lane. Records the logical
@@ -397,6 +422,19 @@ self.ADDON_FILES = {
     "Config.lua", "Roster.lua", "Session.lua", "Comm.lua", "Resolver.lua", "Payout.lua",
     "LiveRoll.lua", "AutoLoot.lua",
 }
+
+-- UI is normally omitted (heavy FrameXML, irrelevant to loot accounting), but the UI-load smoke
+-- suite loads it into the same mocked env to prove it loads + InitializeUI runs. Keep this list in
+-- the toc's UI load order; when UI.lua is split into UI/<tab>.lua files, list them all here.
+self.UI_FILES = { "UI.lua" }
+
+function self.loadUI(w)
+    for _, path in ipairs(self.UI_FILES) do
+        local chunk = assert(loadfile(path), "loadfile failed: " .. path)
+        setfenv(chunk, w.env)
+        chunk()
+    end
+end
 
 -- ---------------------------------------------------------------------------
 -- drivers shared across the integration tests
