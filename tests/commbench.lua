@@ -3,12 +3,16 @@
 -- Quantifies the win from sending session state as ONE serialized+compressed blob
 -- (LibSerialize + LibDeflate, the WeirdComm payload codec) versus the current
 -- per-line wire (WeirdSync emits M + one A per attendee + one L per lot, each a
--- separate AceComm message). Measures messages-sent and bytes-on-wire, and models
+-- separate addon-channel message). Measures messages-sent and bytes-on-wire, and models
 -- the REAL ChromieCraft/AzerothCore limits (see WEIRDCOMM_PLAN.md):
 --   * 255-byte hard cap per addon message (ChatHandler.cpp:279)
 --   * ~99 addon msgs/sec sustained, 100+ in one second -> 10s mute
 --   * counted per SENT message, before distribution (RAID = 1 regardless of size)
 --   * no packet-level anti-DOS, no per-tick receive cap
+--
+-- The 254/255-byte ceiling is the WoW addon-channel server limit (it hard-rejects
+-- anything larger); it is NOT an AceComm limit -- the addon no longer uses AceComm.
+-- Chat traffic (whispers, RAID_WARNING) is paced by ChatThrottleLib separately.
 --
 -- Run from the addon dir:  luajit tests/commbench.lua
 -- It also round-trips the new codec and asserts equality, so it doubles as a
@@ -32,10 +36,11 @@ local WeirdComm = loadlib("Libs/WeirdComm-1.0/WeirdComm-1.0.lua")
 -- real-server transport + limit model
 -- ---------------------------------------------------------------------------
 local PREFIX = "WLSYNC"              -- WeirdSync/WeirdComm prefix (6 bytes)
-local WIRE_MAX = 254                 -- AceComm's safe prefix+text ceiling (server hard-rejects >255)
+local WIRE_MAX = 254                 -- Addon-channel server limit: hard-rejects anything >255 bytes
+                                     -- (NOT an AceComm limit; the addon no longer uses AceComm).
 local SERVER_ADDON_MSGS_PER_SEC = 99 -- 100+ in one second -> 10s mute (AddonMessageCount=100)
 
--- Chunk a logical payload exactly as AceComm does: one message if it fits under
+-- Chunk a logical payload with the same shape WeirdComm uses: one message if it fits under
 -- (WIRE_MAX - #prefix), else multipart with 1 extra prefix byte per chunk.
 -- Returns (messageCount, bytesOnWire) where bytesOnWire counts prefix+chunk per message.
 local function chunkize(payloadLen, prefixLen)
@@ -136,7 +141,9 @@ end
 -- ---------------------------------------------------------------------------
 -- OLD scheme: faithful model of the current per-line wire
 --   M line + one A line per attendee + one L line per lot, fields joined by
---   char(30), each line its own AceComm message (WeirdSync _send per line).
+--   char(30), each line its own addon-channel message (WeirdSync _send per line).
+--   The wire was originally an AceComm channel; it is now WeirdComm over
+--   SendAddonMessage, but the per-line send model is the same shape.
 -- ---------------------------------------------------------------------------
 local SEP = string.char(30)
 local function encodeLine(fields) return table.concat(fields, SEP) end

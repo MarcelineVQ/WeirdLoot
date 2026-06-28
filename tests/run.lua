@@ -14,446 +14,33 @@
 -- or the shorthand { bound = true, win = secs }. The authoritative line strings are REAL in-game
 -- captures kept in `tests/tooltip_fixtures.lua` -- use those for any tradeability test instead of
 -- inventing tooltip text (e.g. the "tooltip ground truth" test drives every fixture through the engine).
-
+--
 -- UI.lua is intentionally omitted: it is pure presentation and pulls in heavy FrameXML
 -- (FauxScrollFrame_*, templates) irrelevant to loot accounting. The projections the tests
 -- assert on (lootView.items / lootView.results) are built in Session, not UI.
-local ADDON_FILES = {
-    "Libs/WeirdSync-1.0/WeirdSync-1.0.lua",
-    "TradeDeliver.lua", "Core.lua", "LootPrios.lua", "LootCore.lua", "Util.lua", "Config.lua",
-    "Roster.lua", "Session.lua", "Comm.lua", "Resolver.lua", "Payout.lua",
-    "LiveRoll.lua", "AutoLoot.lua",
-}
+--
+-- This file is now a thin orchestrator over the per-module suites. The shared harness
+-- (makeWorld, setBag, flushWireTo, syncView, ...) lives in tests/_framework.lua, and each suite
+-- in tests/unit_*.lua / tests/integration_*.lua calls F = framework:get() then drives the same
+-- helpers. New tests should prefer adding a focused suite rather than appending here.
+local F = dofile("tests/_framework.lua").get()
+local check, eq, test = F.check, F.eq, F.test
+local makeWorld, setBag, bagUpdate, startSession = F.makeWorld, F.setBag, F.bagUpdate, F.startSession
+local lotsFor, openLot, owedCount = F.lotsFor, F.openLot, F.owedCount
+local flushWireTo, clearWire, syncView = F.flushWireTo, F.clearWire, F.syncView
+local makeRng, putBag, fillBagsExcept = F.makeRng, F.putBag, F.fillBagsExcept
+local fireEvent, pump, setPartner = F.fireEvent, F.pump, F.setPartner
+local runTrade, runManualTrade, resolveOwedTo = F.runTrade, F.runManualTrade, F.resolveOwedTo
+local linkFor = F.linkFor
+-- All mutable test state lives on the framework: WIRE (the recorded wire queue) and CLOCK
+-- (the simulated clock). Tests read F.WIRE / F.CLOCK directly so they always see the current
+-- queue/clock even after flushWireTo reassigns F.WIRE to a fresh table.
 
--- ---------------------------------------------------------------------------
--- tiny test framework
--- ---------------------------------------------------------------------------
-local pass, fail, failures = 0, 0, {}
-local current = "?"
-local function check(cond, label)
-    if cond then pass = pass + 1
-    else fail = fail + 1; failures[#failures + 1] = current .. ": " .. label; print("  FAIL " .. label) end
-end
-local function eq(a, b, label) check(a == b, (label or "") .. " (got " .. tostring(a) .. ", want " .. tostring(b) .. ")") end
-local function test(name, fn)
-    current = name
-    print("[" .. name .. "]")
-    local ok, err = pcall(fn)
-    if not ok then fail = fail + 1; failures[#failures + 1] = name .. ": ERROR " .. tostring(err); print("  ERROR " .. tostring(err)) end
-end
-
--- ---------------------------------------------------------------------------
--- shared wire (AceComm transport) between simulated clients
--- ---------------------------------------------------------------------------
-local WIRE = {}        -- queue of { prefix, msg, dist, target, sender }
-local CLOCK = 1000     -- controllable GetTime()/time()
-
--- ---------------------------------------------------------------------------
--- a fake fixed item database: itemId -> name. Links embed the itemId (3.3.5 format).
--- ---------------------------------------------------------------------------
-local ITEMS = {
-    [40001] = "Mantle of Test", [40002] = "Helm of Test", [40003] = "Ring of Test",
-    [40004] = "Token of Test",  [40005] = "Blade of Test",
-}
-local function linkFor(itemId) return "|cffa335ee|Hitem:" .. itemId .. ":0:0:0:0:0:0:0|h[" .. (ITEMS[itemId] or ("Item" .. itemId)) .. "]|h|r" end
-
--- ---------------------------------------------------------------------------
--- build a fresh mocked environment + load the addon into it
--- ---------------------------------------------------------------------------
-local function makeWorld(playerName, isML)
-    local env = setmetatable({}, { __index = _G })
-    env._G = env
-    env.__onUpdates = {}    -- captured OnUpdate handlers, driven by pump()
-    env.__closeTrade = 0    -- count of CloseTrade() calls (autoCancel assertions)
-
-    -- frame mock: methods are chainable no-ops EXCEPT SetScript/GetScript (real, so we can
-    -- drive OnUpdate timers + OnEvent) and NumLines (numeric, so tooltip scans don't blow up).
-    local function newFrame()
-        local f = { __scripts = {} }
-        return setmetatable(f, { __index = function(self, k)
-            if k == "SetScript" then
-                return function(_, st, fn) self.__scripts[st] = fn; if st == "OnUpdate" then env.__onUpdates[self] = fn end end
-            elseif k == "GetScript" then
-                return function(_, st) return self.__scripts[st] end
-            elseif k == "NumLines" then
-                return function() return 0 end
-            elseif k == "GetStringHeight" or k == "GetHeight" or k == "GetWidth" then
-                -- measurement methods feed arithmetic (e.g. math.ceil in the popup-height
-                -- helpers); return a number, not the chainable frame.
-                return function() return 0 end
-            elseif k == "Enable" then
-                return function(s) s.__disabled = false; return s end
-            elseif k == "Disable" then
-                return function(s) s.__disabled = true; return s end
-            elseif k == "IsEnabled" then
-                return function(s) return not s.__disabled end
-            end
-            -- WoW frame methods are CamelCase; the addon's data fields are lowercase. Return a
-            -- chainable no-op for methods, but nil for an UNSET data field (e.g. frame.elapsed),
-            -- so `(frame.elapsed or 0) + dt` doesn't try arithmetic on a function.
-            if type(k) == "string" and k:match("^%u") then return function(s) return s end end
-            return nil
-        end })
-    end
-    env.__newFrame = newFrame
-
-    -- deterministic-ish rng (seeded per world); resolution asserts are invariant-based anyway
-    local seed = 0
-    for i = 1, #playerName do seed = seed + string.byte(playerName, i) end
-    local function rng(m, n)
-        seed = (seed * 1103515245 + 12345) % 2147483648
-        local r = seed / 2147483648
-        if m and n then return m + math.floor(r * (n - m + 1)) end
-        return r
-    end
-
-    -- Scan-tooltip mock for the TradeDeliver lib's hidden GameTooltip. A bag item may declare
-    -- { bound = true, win = secs }; SetBagItem then exposes the matching ITEM_SOULBOUND / trade-window
-    -- lines so the engine's isSoulbound / tradeWindowSeconds read real data (default: no extra lines).
-    local function newScanTip()
-        local tip, cur = newFrame(), nil
-        local function rebuild()
-            local lines
-            if cur and cur.lines then
-                lines = cur.lines                       -- verbatim real tooltip (see tooltip_fixtures.lua)
-            else
-                lines = { "ItemName" }
-                if cur and cur.bound then lines[#lines + 1] = env.ITEM_SOULBOUND end
-                if cur and cur.win   then lines[#lines + 1] = string.format(env.BIND_TRADE_TIME_REMAINING, cur.win .. " sec") end
-            end
-            tip.__lines = lines
-            for i = 1, 32 do
-                env["TradeDeliverScanTipTextLeft" .. i] = (lines[i] and lines[i] ~= "") and { GetText = function() return lines[i] end } or nil
-            end
-        end
-        tip.ClearLines = function() end
-        tip.SetBagItem = function(_, bag, slot) cur = env.__bags[bag] and env.__bags[bag][slot]; rebuild() end
-        tip.SetHyperlink = function() cur = nil; rebuild() end
-        tip.NumLines = function() return tip.__lines and #tip.__lines or 0 end
-        rebuild()
-        return tip
-    end
-
-    -- ---- WoW API stubs ----
-    env.CreateFrame = function(_, name)
-        local f = (name == "TradeDeliverScanTip") and newScanTip() or newFrame()
-        if name then env[name] = f end
-        return f
-    end
-    env.UIParent = newFrame()
-    env.WorldFrame = newFrame()
-    env.GameTooltip = newFrame()
-    env.DEFAULT_CHAT_FRAME = setmetatable({ AddMessage = function() end }, { __index = function() return function() end end })
-    env.GetTime = function() return CLOCK end
-    env.time = function() return CLOCK end
-    env.random = rng
-    env.randomseed = function() end
-    env.math = setmetatable({ random = rng }, { __index = math })
-    env.UnitName = function(unit) if unit == "NPC" then return env.__tradePartner end return playerName end
-    env.GetUnitName = function() return playerName end
-    env.UnitGUID = function() return "Player-0-000000" .. tostring(#playerName) end
-    env.GetRealmName = function() return "TestRealm" end
-    env.UnitClass = function() return "Warrior", "WARRIOR" end
-    env.GetNumRaidMembers = function() return 5 end
-    env.GetNumPartyMembers = function() return 0 end
-    -- index 1 is the loot master so a peer's roster-aware sync (isInRaid(authority)) can see it;
-    -- every other slot reports the running player. Self is matched by name regardless.
-    env.GetRaidRosterInfo = function(i)
-        if i == 1 then return "Masterlooter", 2 end
-        return playerName, (isML and 2 or 0)
-    end
-    env.GetLootMethod = function() return "master", 0, 1 end
-    env.IsPartyLeader = function() return isML end
-    env.UnitIsRaidLeader = function(unit) return unit == "player" and isML end
-    env.UnitIsRaidOfficer = function(unit) return unit == "player" and isML end
-    env.SendChatMessage = function() end
-    env.SendAddonMessage = function() end
-    env.ChatThrottleLib = { SendChatMessage = function() end }
-    env.ITEM_QUALITY_COLORS = { [4] = { hex = "|cffa335ee" } }
-    env.ITEM_SOULBOUND = "Soulbound"
-    env.ITEM_BIND_ON_EQUIP = "Binds when equipped"
-    env.ERR_TRADE_COMPLETE = "Trade complete."
-    -- This client emits the unique-count pair backwards: the GIVER (the ML running the addon) sees
-    -- ERR_TRADE_MAX_COUNT_EXCEEDED even though it's the recipient who holds the dupe.
-    env.ERR_TRADE_MAX_COUNT_EXCEEDED = "You have too many of a unique item."
-    env.ERR_TRADE_TARGET_MAX_COUNT_EXCEEDED = "Your trade partner has too many of a unique item."
-    env.ERR_TRADE_TARGET_BAG_FULL = "Trade failed, target doesn't have enough space."
-    env.UI_INFO_MESSAGE = "UI_INFO_MESSAGE"
-    env.MAX_TRADABLE_ITEMS = 6
-    env.CloseTrade = function() env.__closeTrade = env.__closeTrade + 1 end
-    env.AcceptTrade = function() end
-    env.__tradePlaced = {}     -- slot -> { id, count }: what the ML hand-placed in the trade window
-    env.GetTradePlayerItemLink = function(slot) local it = env.__tradePlaced[slot]; return it and linkFor(it.id) or nil end
-    env.GetTradePlayerItemInfo = function(slot)
-        local it = env.__tradePlaced[slot]
-        if not it then return nil end
-        return "Item" .. it.id, "Interface\\Icons\\inv_test", it.count or 1
-    end
-    env.GetItemInfo = function(idOrLink)
-        local id = tonumber(idOrLink) or tonumber(string.match(tostring(idOrLink), "item:(%d+)"))
-        if not id then return nil end
-        local name = ITEMS[id] or ("Item" .. id)
-        -- name, link, quality, ilvl, reqLevel, class, subclass, stack, equipLoc, texture, sell
-        return name, linkFor(id), 4, 200, 80, "Armor", "Cloth", 1, "INVTYPE_SHOULDER", "Interface\\Icons\\inv_test", 0
-    end
-    -- ---- bag + trade-window model (drives the real TradeDeliver engine) ----
-    env.__bags = {}                                  -- [bag] = { size=N, [slot]={id,count,link} }
-    for b = 0, 4 do env.__bags[b] = { size = 16 } end
-    -- equipped slots (gear 1..19, equipped bags 20..23) + keyring for the roll-block checks
-    env.NUM_BAG_SLOTS = 4
-    env.__equipped = {}                              -- [invSlot] = itemId
-    env.GetInventoryItemID = function(_, slot) return env.__equipped[slot] end
-    env.ContainerIDToInventoryID = function(bag) return 19 + bag end   -- bag1->20 .. bag4->23
-    env.KEYRING_CONTAINER = -2
-    env.__keyring = {}                               -- [slot] = itemId (reward keys live here)
-    env.GetKeyRingSize = function() return 12 end
-    env.__cursor = nil                               -- item held on the cursor
-    env.__tradePartner = nil                         -- UnitName("NPC")
-    env.__tradeSlots = 0                             -- placed trade slots this window
-    -- real 3.3.5a/ChromieCraft wording (captured in-game): one %s, the remaining duration
-    env.BIND_TRADE_TIME_REMAINING = "You may trade this item with players that were also eligible to loot this item for the next %s."
-
-    env.GetContainerNumSlots = function(bag) local B = env.__bags[bag]; return B and B.size or 0 end
-    env.GetContainerItemID = function(bag, slot)
-        if bag == env.KEYRING_CONTAINER then return env.__keyring[slot] end
-        local it = env.__bags[bag] and env.__bags[bag][slot]; return it and it.id or nil
-    end
-    env.GetContainerItemInfo = function(bag, slot)
-        local it = env.__bags[bag] and env.__bags[bag][slot]
-        if not it then return nil end
-        return "Interface\\Icons\\inv_test", it.count, nil, 4   -- texture, count, locked, quality
-    end
-    env.GetContainerItemLink = function(bag, slot) local it = env.__bags[bag] and env.__bags[bag][slot]; return it and (it.link or linkFor(it.id)) or nil end
-    env.GetContainerNumFreeSlots = function(bag)
-        local B = env.__bags[bag]; if not B then return 0, 0 end
-        local used = 0; for s = 1, B.size do if B[s] then used = used + 1 end end
-        return B.size - used, 0
-    end
-    env.ClearCursor = function() env.__cursor = nil end
-    env.SplitContainerItem = function(bag, slot, qty)
-        local it = env.__bags[bag] and env.__bags[bag][slot]
-        if not it then return end
-        env.__cursor = { id = it.id, count = qty, link = it.link }
-        it.count = it.count - qty
-        if it.count <= 0 then env.__bags[bag][slot] = nil end
-    end
-    env.PickupContainerItem = function(bag, slot)
-        if env.__cursor then env.__bags[bag][slot] = env.__cursor; env.__cursor = nil
-        else env.__cursor = env.__bags[bag] and env.__bags[bag][slot]; if env.__bags[bag] then env.__bags[bag][slot] = nil end end
-    end
-    env.TradeFrame_GetAvailableSlot = function() if env.__tradeSlots >= 6 then return nil end; env.__tradeSlots = env.__tradeSlots + 1; return env.__tradeSlots end
-    env.ClickTradeButton = function() env.__cursor = nil end   -- item moves into the trade window
-    env.SlashCmdList = {}
-    env.StaticPopupDialogs = {}
-    env.StaticPopup_Show = function() return newFrame() end
-    env.StaticPopup_Hide = function() end
-    env.PlaySound = function() end
-    env.IsInInstance = function() return false, "none" end
-    env.GetInstanceInfo = function() return "none", "none" end
-    env.InCombatLockdown = function() return false end
-
-    -- ---- LibStub + libs ----
-    local libs = {}
-    -- Fake WeirdComm: pass-through transport for the WeirdSync (WLSYNC) lane. Records the logical
-    -- VALUE on the wire (deep-copied to mimic serialize-on-send). The real codec/chunk/pace is
-    -- covered by tests/weirdcomm.lua; the real-lib seam by tests/integration.lua.
-    local function wcDeepcopy(v)
-        if type(v) ~= "table" then return v end
-        local o = {}; for k, val in pairs(v) do o[k] = wcDeepcopy(val) end; return o
-    end
-    libs["WeirdComm-1.0"] = {
-        NewChannel = function(_, prefix, opts)
-            return {
-                Send = function(_, value, dist, target, prio)
-                    WIRE[#WIRE + 1] = { prefix = prefix, value = wcDeepcopy(value), dist = dist, target = target, sender = playerName, prio = prio }
-                end,
-                Tick = function() end,
-            }
-        end,
-    }
-    local LibStub = setmetatable({
-        NewLibrary = function(_, name) libs[name] = libs[name] or {}; return libs[name] end,
-        GetLibrary = function(_, name) return libs[name] end,
-    }, { __call = function(_, name) return libs[name] end })
-    env.LibStub = LibStub
-
-    -- ---- load the addon files into this env ----
-    local private = {}
-    for _, file in ipairs(ADDON_FILES) do
-        local chunk = assert(loadfile(file))
-        setfenv(chunk, env)
-        chunk("WeirdLoot", private)
-    end
-
-    if os.getenv("WLDEBUG") then
-        env.DEFAULT_CHAT_FRAME = setmetatable({ AddMessage = function(_, m) io.stderr:write(tostring(m) .. "\n") end }, { __index = function() return function() end end })
-    end
-    local addon = env.WeirdLoot
-    addon.InitializeUI = function() end       -- UI not loaded in the harness
-    addon:PLAYER_LOGIN()
-    if os.getenv("WLDEBUG") then env.WeirdLootDB.payoutDebug = true end
-    local shippedDefaults = {
-        rollDuration = addon.db and addon.db.options and addon.db.options.rollDuration,
-        resultPopupAutoCloseEnabled = addon.db and addon.db.options and addon.db.options.resultPopupAutoCloseEnabled,
-        resultPopupAutoCloseSeconds = addon.db and addon.db.options and addon.db.options.resultPopupAutoCloseSeconds,
-        autoStartRoll = addon.db and addon.db.options and addon.db.options.autoStartRoll,
-    }
-
-    -- ---- force the loot-authority + scan into a deterministic test state ----
-    addon.roster = addon.roster or {}
-    addon.roster.isLootMaster = isML
-    addon.roster.lootMasterName = "Masterlooter"
-    addon.lootCore:SetML("Masterlooter")
-    addon.bagSettleAt = 0                     -- bags considered settled
-    addon.db.autoRoll = true
-    addon.db.options = addon.db.options or {}
-    addon.db.options.autoStartRoll = false    -- harness baseline: fresh loot stays pending unless a test opts in
-
-    -- inject eligible bag counts directly (skip tooltip scraping)
-    addon.__bag = {}                          -- itemId -> count (test-controlled)
-    local function bagLinkCounts(self)
-        local out = {}
-        for id, n in pairs(self.__bag) do if n > 0 then out[linkFor(id)] = n end end
-        return out
-    end
-    addon.BuildTradeableEpicCounts = bagLinkCounts
-    addon.BuildBagSnapshot = bagLinkCounts
-    addon.BuildManualScanCounts = bagLinkCounts
-
-    -- give every responder a 'main' roster profile so resolution is pure roll (no status cut).
-    -- Responses are keyed by normalized (lowercase) name; the real roster maps that back to a
-    -- display name, so we capitalize here to mirror that (winners come out proper-cased).
-    local function cap(s) return (tostring(s):gsub("^%l", string.upper)) end
-    addon.GetRosterProfile = function(_, name) return { name = cap(name), className = "Warrior", specName = "Arms", status = "main" } end
-    addon.GetAttendee = function(_, name) return { name = cap(name), className = "Warrior", specName = "Arms", status = "main" } end
-    addon.GetAttendees = function() return {} end
-
-    return { addon = addon, env = env, player = playerName, shippedDefaults = shippedDefaults }
-end
-
--- ---------------------------------------------------------------------------
--- helpers to drive a world
--- ---------------------------------------------------------------------------
-local function setBag(w, itemId, count) w.addon.__bag[itemId] = count end
-local function bagUpdate(w) w.addon:OnBagUpdate() end
-
-local function startSession(w)
-    w.addon:StartLootSession()
-end
-
-local function lotsFor(w, itemId) return w.addon.lootCore:lotsForItem(itemId) end
-local function openLot(w, itemId) return w.addon.lootCore:openLotForItem(itemId) end
-
-local function owedCount(w)
-    local n = 0
-    local owed = w.addon.payout and w.addon.payout.db and w.addon.payout.db.owed or {}
-    for _, entry in pairs(owed) do for _, it in ipairs(entry.items or {}) do n = n + (it.count or 0) end end
-    return n
-end
-
--- deliver the shared wire from one world to another (raider mirror). All WeirdLoot traffic (session
--- mirror + live roll) now rides ONE WeirdComm channel as a decoded VALUE; the addon's RouteComm
--- dispatcher routes by tag (sync -> WeirdSync, else -> live-roll). Honour WHISPER targeting.
-local function flushWireTo(target, fromSender)
-    local msgs = WIRE; WIRE = {}
-    for _, m in ipairs(msgs) do
-        if m.value and m.sender ~= target.player then
-            local sender = m.sender or fromSender or "Masterlooter"
-            if m.dist ~= "WHISPER" or m.target == target.player then
-                target.addon:RouteComm(m.value, sender, m.dist or "RAID")
-            end
-        end
-    end
-end
-local function clearWire() WIRE = {} end
-
--- canonical "what a client should see" view of the synced ledger: every lot the ML would
--- broadcast (resolved or live, not removed), as id|itemId|state|liveCount|responses|winners.
--- The ML reads its authoritative awards/LiveCount; a raider reads the fields it received.
-local function syncView(w)
-    local core = w.addon.lootCore
-    local isML = w.addon:IsAuthorizedLootMaster()
-    local rows = {}
-    for _, lot in ipairs(core:All()) do
-        local live = isML and core:LiveCount(lot.id) or (lot.count or 0)
-        if (not lot.removed) and (lot.state == core.STATE.RESOLVED or live > 0) then
-            local resp = {}
-            for k, v in pairs(lot.responses or {}) do resp[#resp + 1] = k .. "=" .. v end
-            table.sort(resp)
-            local winners = {}
-            if isML then
-                for _, a in ipairs(lot.awards or {}) do if a.winner then winners[#winners + 1] = a.winner end end
-            elseif lot.record then
-                for _, win in ipairs(lot.record.winners or {}) do winners[#winners + 1] = win end
-            end
-            rows[#rows + 1] = table.concat({ lot.id, tostring(lot.itemId), lot.state, tostring(live),
-                table.concat(resp, ","), table.concat(winners, ",") }, "|")
-        end
-    end
-    table.sort(rows)
-    return table.concat(rows, "\n")
-end
-
--- deterministic, reproducible PRNG for the fuzz sequence (independent of any world's rng)
-local function makeRng(seed)
-    return function(m, n)
-        seed = (seed * 1103515245 + 12345) % 2147483648
-        local r = seed / 2147483648
-        if m and n then return m + math.floor(r * (n - m + 1)) end
-        return r
-    end
-end
-
--- physical bag (drives TradeDeliver), distinct from the eligible-count model (drives reconcile)
--- opts (optional): drive the scan-tooltip mock for this slot. { bound = true, win = secs } synthesizes
--- soulbound / trade-window lines; { lines = {...} } supplies a verbatim real tooltip (tooltip_fixtures).
--- Default: a plain tradeable item.
-local function putBag(w, bag, slot, id, count, opts)
-    w.env.__bags[bag][slot] = { id = id, count = count, link = linkFor(id),
-                                bound = opts and opts.bound, win = opts and opts.win,
-                                lines = opts and opts.lines }
-end
-local function fillBagsExcept(w)             -- occupy every empty slot so no split target exists
-    for b = 0, 4 do local B = w.env.__bags[b]; for s = 1, B.size do if not B[s] then B[s] = { id = 99999, count = 1, link = linkFor(99999) } end end end
-end
-local function fireEvent(w, event, arg1, arg2)
-    local fr = w.addon.payout and w.addon.payout.frame
-    local fn = fr and fr.__scripts and fr.__scripts.OnEvent
-    if fn then fn(fr, event, arg1, arg2) end
-end
-local function pump(w, dt) for f, fn in pairs(w.env.__onUpdates) do fn(f, dt or 1.0) end end
-local function setPartner(w, name) w.env.__tradePartner = name; w.env.__tradeSlots = 0 end
-
--- full trade sequence the engine reacts to: partner opens trade -> (bag updates for any splits)
--- -> settle timer fires the fill -> the trade completes.
-local function runTrade(w, partner)
-    setPartner(w, partner)
-    fireEvent(w, "TRADE_SHOW")
-    for b = 0, 4 do fireEvent(w, "BAG_UPDATE", b) end   -- satisfy any split's wait
-    pump(w, 1.0)                                         -- SETTLE/FALLBACK -> finalize + place
-    fireEvent(w, "UI_INFO_MESSAGE", w.env.ERR_TRADE_COMPLETE)
-end
-
--- a manual hand-trade: partner opens, the ML drags the item in itself (no auto-fill), both accept,
--- the trade completes. Mirrors what happens when the ML trades an owed item by hand.
-local function runManualTrade(w, partner, itemId, count)
-    setPartner(w, partner)
-    fireEvent(w, "TRADE_SHOW")
-    w.env.__tradePlaced = { { id = itemId, count = count or 1 } }
-    fireEvent(w, "TRADE_ACCEPT_UPDATE", 1, 1)
-    fireEvent(w, "UI_INFO_MESSAGE", w.env.ERR_TRADE_COMPLETE)
-    w.env.__tradePlaced = {}
-end
-
--- resolve a single-copy lot to a non-ML winner and return its lot id (commonly-needed setup)
-local function resolveOwedTo(w, itemId, winner)
-    setBag(w, itemId, 1); bagUpdate(w)
-    local lot = openLot(w, itemId)
-    w.addon:StartLiveRoll(lot.id)
-    w.addon:RegisterInterest(lot.id, winner, "ms")
-    w.addon:ResolveLiveRoll(lot.id)
-    return lot.id
-end
+-- ===========================================================================
+-- INTEGRATION BATTERY (the original 147 end-to-end tests, migrated verbatim to the framework)
+-- ===========================================================================
+-- back-compat: original tests used locals named `pass`/`fail`; the framework owns these now,
+-- so we read through F after the battery completes.
 
 -- ===========================================================================
 -- BATTERY
@@ -769,7 +356,7 @@ test("delivery records per-copy disposition", function()
     w.addon:StartLiveRoll(lot.id)
     w.addon:RegisterInterest(lot.id, "Alice", "ms")
     w.addon:ResolveLiveRoll(lot.id)
-    local ok = w.addon.lootCore:MarkDeliveredFor("Alice", 40005, CLOCK)
+    local ok = w.addon.lootCore:MarkDeliveredFor("Alice", 40005, F.CLOCK)
     check(ok, "MarkDeliveredFor succeeded")
     eq(w.addon.lootCore:Get(lot.id).awards[1].state, "delivered", "award marked delivered")
     eq(w.addon.lootCore:Get(lot.id).awards[1].recipient, "Alice", "recipient recorded")
@@ -791,7 +378,7 @@ test("owed-to-me queries: a non-ML winner is owed their item until delivery", fu
     eq(items[1].itemId, 40005, "the owed itemId is listed")
     eq(items[1].count, 1, "count of one")
 
-    w.addon.lootCore:MarkDeliveredFor("Alice", 40005, CLOCK)
+    w.addon.lootCore:MarkDeliveredFor("Alice", 40005, F.CLOCK)
     eq(w.addon.lootCore:OwedCountFor("Alice"), 0, "delivery clears the owed count")
 end)
 
@@ -913,7 +500,7 @@ test("delta sync: a single change sends a LOTD delta, not a full snapshot", func
     clearWire()
     ml.addon:StartLiveRoll(lot.id)
     local snaps, deltas = 0, 0
-    for _, m in ipairs(WIRE) do
+    for _, m in ipairs(F.WIRE) do
         local cmd = m.value and m.value[1]
         if cmd == "SNAP" then snaps = snaps + 1 end
         if cmd == "D" then deltas = deltas + 1 end
@@ -993,7 +580,7 @@ test("rejoin mid-roll: raider restores the roll popup with the ML's remaining ti
     local mlRoll = ml.addon.live.rolls[lot.id]
     check(mlRoll and mlRoll.deadline, "ML recorded a roll deadline")
 
-    CLOCK = CLOCK + 6                              -- 6s elapse on the ML's roll (34s left)
+    F.advanceClock(6)                              -- 6s elapse on the ML's roll (34s left)
     clearWire()
     ml.addon:BroadcastSession()                   -- a freshly-reloaded raider pulls the full snapshot
     flushWireTo(raider)
@@ -1001,14 +588,14 @@ test("rejoin mid-roll: raider restores the roll popup with the ML's remaining ti
     local rr = raider.addon.live.rolls[lot.id]
     check(rr ~= nil, "raider restored a roll record for the rolling lot")
     check(raider.addon:HasOpenRollForLot(lot.id), "raider has an open roll popup")
-    local remaining = rr and rr.deadline and (rr.deadline - CLOCK) or nil
+    local remaining = rr and rr.deadline and (rr.deadline - F.CLOCK) or nil
     check(remaining ~= nil and remaining >= 33.5 and remaining <= 34.5,
         "restored countdown reflects the ML's remaining ~34s, not a fresh 40s (got " .. tostring(remaining) .. ")")
 end)
 
 -- ---- live pick list (RSTATE): raiders see who is rolling, in real time ----
 local function countKeys(t) local n = 0 for _ in pairs(t or {}) do n = n + 1 end return n end
-local function countWire(tag) local n = 0 for _, m in ipairs(WIRE) do if m.value and m.value[1] == tag then n = n + 1 end end return n end
+local function countWire(tag) local n = 0 for _, m in ipairs(F.WIRE) do if m.value and m.value[1] == tag then n = n + 1 end end return n end
 local function rollFor(w, lotId) return w.addon.live and w.addon.live.rolls and w.addon.live.rolls[lotId] end
 
 -- shared setup: ML opens a lot, starts a roll, raider receives the DROP -> open roll popup.
@@ -1239,7 +826,7 @@ end)
 test("trade-expiry timer arms 5s after the soonest window, clears when nothing is windowed", function()
     local w = makeWorld("Masterlooter", true)
     w.addon:ArmTradeExpiryTimer(120)
-    eq(w.addon._tradeExpiryAt, CLOCK + 125, "armed for 5s after the 120s window lapses")
+    eq(w.addon._tradeExpiryAt, F.CLOCK + 125, "armed for 5s after the 120s window lapses")
     w.addon:ArmTradeExpiryTimer(nil)
     eq(w.addon._tradeExpiryAt, nil, "cleared when no windowed items remain")
 end)
@@ -1249,12 +836,12 @@ test("payout resume defers until bags settle, then reconciles owes before whispe
     startSession(w)
     w.addon.payout:Owe("Ghost", 49623, 1, "|cffffffff|Hitem:49623|h[Sand-worn Band]|h|r")  -- stale, not held
     -- bags NOT settled yet: a half-loaded bag could look empty, so resume DEFERS (no whisper, no forgive)
-    w.addon.bagSettleAt = CLOCK + 100
+    w.addon.bagSettleAt = F.CLOCK + 100
     w.addon:ResumePayoutMode()
     eq(w.addon._payoutResumePending, true, "deferred while bags load")
     eq(owedCount(w), 1, "not forgiven yet -- never act on an unsettled bag")
     -- bags settle: resume reconciles owes against bag truth (forgives the unheld one) THEN whispers
-    w.addon.bagSettleAt = CLOCK - 1
+    w.addon.bagSettleAt = F.CLOCK - 1
     w.addon:ResumePayoutMode()
     eq(w.addon._payoutResumePending, false, "no longer pending once settled")
     eq(owedCount(w), 0, "the unheld owe was reconciled away before the login whisper went out")
@@ -1607,9 +1194,9 @@ test("resync retry defers (no nil-target whisper) while the loot master is unres
     -- request (still under maxAttempts), so a transient outage doesn't drop the resync.
     raider.addon.roster.lootMasterName = nil
     clearWire()
-    ch:Tick(CLOCK + 1000)
-    ch:Tick(CLOCK + 2000)
-    for _, m in ipairs(WIRE) do
+    ch:Tick(F.CLOCK + 1000)
+    ch:Tick(F.CLOCK + 2000)
+    for _, m in ipairs(F.WIRE) do
         check(not (m.dist == "WHISPER" and m.target == nil), "no whisper queued with a nil target")
     end
     check(ch.pendingRequest ~= nil, "request held (deferring) while no authority resolves")
@@ -1618,9 +1205,9 @@ test("resync retry defers (no nil-target whisper) while the loot master is unres
     -- no dependency on a heartbeat). The target is read fresh each tick, never cached on the request.
     raider.addon.roster.lootMasterName = "Masterlooter"
     clearWire()
-    ch:Tick(CLOCK + 3000)
+    ch:Tick(F.CLOCK + 3000)
     local whispered = false
-    for _, m in ipairs(WIRE) do
+    for _, m in ipairs(F.WIRE) do
         if m.dist == "WHISPER" and m.target == "Masterlooter" then whispered = true end
     end
     check(whispered, "retry resumes whispering the loot master once it resolves again")
@@ -1640,10 +1227,10 @@ test("resync retry gives up on a bounded horizon when no authority ever resolves
     -- Drive many retries; each deferred tick still counts against maxAttempts, so it must stop.
     for i = 1, 20 do
         if not ch.pendingRequest then break end
-        ch:Tick(CLOCK + i * 1000)
+        ch:Tick(F.CLOCK + i * 1000)
     end
     eq(ch.pendingRequest, nil, "deferred retries are bounded by maxAttempts, not an infinite poll")
-    for _, m in ipairs(WIRE) do
+    for _, m in ipairs(F.WIRE) do
         check(not (m.dist == "WHISPER" and m.target == nil), "never whispered a nil target while deferring")
     end
 
@@ -1664,12 +1251,12 @@ test("resync retry still fires normally while the loot master is present", funct
     ch:RequestSync()
     local firstAttempts = ch.pendingRequest.attempts
     clearWire()
-    ch:Tick(CLOCK + 1000)                                 -- ML still in the raid: retry must proceed
+    ch:Tick(F.CLOCK + 1000)                                 -- ML still in the raid: retry must proceed
 
     eq(ch.pendingRequest ~= nil, true, "request stays in flight while the authority is present")
     check(ch.pendingRequest.attempts > firstAttempts, "retry counted (resend happened, not a give-up)")
     local whispered = false
-    for _, m in ipairs(WIRE) do
+    for _, m in ipairs(F.WIRE) do
         if m.dist == "WHISPER" and m.target == "Masterlooter" then whispered = true end
     end
     check(whispered, "retry whispered the resolved loot master")
@@ -2642,9 +2229,12 @@ local function loadReport()
     local function drain(label)
         local byCmd, byPrio = {}, { ALERT = 0, BULK = 0 }
         local logical, chunks, bytes = 0, 0, 0
-        for _, m in ipairs(WIRE) do
-            -- live-roll lane is AceComm strings (m.msg, modelled by CTL); sync lane is now WeirdComm
-            -- values (m.value) and does NOT use CTL, so it contributes its tag but 0 CTL bytes here.
+        for _, m in ipairs(F.WIRE) do
+            -- All WeirdLoot traffic rides ONE WeirdComm channel over SendAddonMessage. m.value is
+            -- the serialized logical message (always present now); m.msg is a legacy field kept
+            -- for backward compat with older test stubs that captured raw strings, and is nil for
+            -- everything WeirdComm produces. The 254-byte ceiling is the addon-channel server
+            -- hard limit, not an AceComm limit.
             local cmd = (m.value and m.value[1]) or string.match(m.msg or "", "^[^|" .. string.char(30) .. "]+") or "?"
             byCmd[cmd] = (byCmd[cmd] or 0) + 1
             local prio = m.prio or "BULK"
@@ -2653,7 +2243,7 @@ local function loadReport()
             local c = m.msg and math.max(1, math.ceil(len / MAXLEN)) or 0
             logical = logical + 1; chunks = chunks + c; bytes = bytes + len + c * OVERHEAD
         end
-        WIRE = {}
+        clearWire()                                -- alias: clears F.WIRE, which the local WIRE reads
         return { label = label, logical = logical, chunks = chunks, bytes = bytes,
                  secs = bytes / CPS, byCmd = byCmd, byPrio = byPrio }
     end
@@ -2723,7 +2313,7 @@ local function bossDropReport()
     local MAXLEN, CPS, OVERHEAD = 254 - #PREFIX, 800, 40
     local function tally(filter)
         local logical, chunks, bytes, byCmd = 0, 0, 0, {}
-        for _, m in ipairs(WIRE) do
+        for _, m in ipairs(F.WIRE) do
             local prio = m.prio or "BULK"
             if (not filter) or prio == filter then
                 local cmd = (m.value and m.value[1]) or string.match(m.msg or "", "^[^|" .. string.char(30) .. "]+") or "?"
@@ -2768,7 +2358,7 @@ local function bossDropReport()
     print(string.format("  total on wire this tick: %d msg / %d chunks / %dB (%.2fs if drained serially)", tL, tC, tB, tB / CPS))
 
     clearWire(); ml.addon:BroadcastSession()
-    local sL, sC, sB = tally(nil); WIRE = {}
+    local sL, sC, sB = tally(nil); clearWire()        -- alias: clears F.WIRE
     print(string.format("  (worst case -- a raider ZONING IN right then pulls a full 35-lot snapshot: %d chunks / %dB -> %.2fs, BULK)", sC, sB, sB / CPS))
     print("")
 end
@@ -2810,7 +2400,7 @@ test("handoff: a disk-restored leftover session is not rebroadcast on ML gain", 
     clearWire()
     w.addon:AssumeLootMasterSession()
     eq(w.addon.session.id, "5", "epoch left untouched (no takeover)")
-    eq(#WIRE, 0, "nothing broadcast")
+    eq(#F.WIRE, 0, "nothing broadcast")
 end)
 
 -- The feature: gaining ML over a session we were actively mirroring continues it -- a fresh, higher
@@ -2834,7 +2424,7 @@ test("handoff: gaining ML over a live mirror continues it under a higher epoch, 
     check(tonumber(promotee.addon.session.id) > epBefore, "epoch bumped above the mirrored one (got "
         .. tostring(promotee.addon.session.id) .. " vs " .. tostring(epBefore) .. ")")
     eq(#promotee.addon.lootCore:All(), mirrored, "ledger preserved across the takeover")
-    check(#WIRE > 0, "a snapshot was broadcast at the new epoch")
+    check(#F.WIRE > 0, "a snapshot was broadcast at the new epoch")
 end)
 
 -- Q2: a fresh login transiently reports partyMasterIndex==0 (self) before the raid roster loads.
@@ -2905,7 +2495,7 @@ test("regression: a demoted ex-ML relogging in the login window never broadcasts
 
     eq(C.addon.roster.isLootMaster, false, "C did not self-claim loot master in the login window")
     local cAuthorityTraffic = 0
-    for _, m in ipairs(WIRE) do
+    for _, m in ipairs(F.WIRE) do
         if m.sender == "Exmaster" and m.value and (m.value[1] == "SNAP" or m.value[1] == "H") then
             cAuthorityTraffic = cAuthorityTraffic + 1
         end
@@ -3252,10 +2842,27 @@ test("resolver: 2x MS, 2 DesAlts + 1 Main -> roll order across Main+DesAlt fills
 end)
 
 -- ===========================================================================
+-- ORCHESTRATOR: run the unit suites, then report the whole battery.
+--
+-- The unit suites (tests/unit_*.lua) are self-contained and each calls F.report on its own.
+-- This file's own tests ran inline above; their pass/fail counts are already folded into F.
+-- The final summary below totals everything.
+-- ===========================================================================
+local suites = { "tests/unit_util.lua", "tests/unit_config.lua", "tests/unit_lootcore.lua", "tests/unit_resolver.lua", "tests/unit_iteminfo.lua", "tests/unit_preset_registry.lua", "tests/unit_bagslots.lua", "tests/unit_itemfilter.lua", "tests/unit_toc.lua", "tests/unit_perchar.lua", "tests/unit_uiload.lua" }
+for _, path in ipairs(suites) do
+    print(string.format("\n--- running %s ---", path))
+    local ok, err = pcall(dofile, path)
+    if not ok then
+        print("ERROR loading " .. path .. ": " .. tostring(err))
+        F.fail = F.fail + 1
+        F.failures[#F.failures + 1] = path .. ": " .. tostring(err)
+    end
+end
+
 print("")
-print(string.format("=== WeirdLoot battery: %d passed, %d failed ===", pass, fail))
-if fail > 0 then
+print(string.format("=== WeirdLoot battery: %d passed, %d failed ===", F.pass, F.fail))
+if F.fail > 0 then
     print("FAILURES:")
-    for _, f in ipairs(failures) do print("  - " .. f) end
+    for _, f in ipairs(F.failures) do print("  - " .. f) end
     os.exit(1)
 end
