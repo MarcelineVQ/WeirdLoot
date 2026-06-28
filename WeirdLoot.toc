@@ -44,3 +44,4 @@ LiveRoll.lua
 AutoLoot.lua
 UI.lua
 UI\Export.lua
+UI\Minimap.lua

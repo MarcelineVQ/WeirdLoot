@@ -1,0 +1,243 @@
+-- WeirdLoot minimap button + the circular "loot owed to you" sparkle glow. Pure presentation;
+-- pulls getOptions from the addon.UI namespace defined in UI.lua.
+local addon = WeirdLoot
+local util = addon.util
+local UI = addon.UI
+local getOptions = UI.getOptions
+
+-- Circular sparkle orbit for the "loot owed to you" minimap glow. Self-contained (no AutoCastShine,
+-- which orbits the square button edge, and no WeakAuras/LibCustomGlow, whose sparkle path is also
+-- rectangular and whose texture ships under the WeakAuras addon). We place N sparkles on a CIRCLE via
+-- cos/sin and spin the ring; each sparkle twinkles in size/alpha. Sparkle art is the Blizzard autocast
+-- shine sub-region of UI-ItemSockets, always present.
+local SHINE_TEXTURE = "Interface\\ItemSocketingFrame\\UI-ItemSockets"
+local SHINE_TCOORD  = { 0.3984375, 0.4453125, 0.40234375, 0.44921875 }
+local SHINE_COUNT   = 10
+local SHINE_COLOR   = { 0.95, 0.9, 0.35 }   -- warm gold ("loot")
+local SHINE_REV_PER_SEC = 0.32              -- ring spin speed
+local TWO_PI = math.pi * 2
+
+local function shineOnUpdate(shine, elapsed)
+    shine.angle = (shine.angle + elapsed * SHINE_REV_PER_SEC * TWO_PI) % TWO_PI
+    local radius = (shine:GetWidth() or 31) / 2 + 1
+    local now = (GetTime and GetTime()) or 0
+    local n = #shine.sparkles
+    for i = 1, n do
+        local a = shine.angle + (i - 1) * (TWO_PI / n)
+        local s = shine.sparkles[i]
+        s:SetPoint("CENTER", shine, "CENTER", math.cos(a) * radius, math.sin(a) * radius)
+        local tw = 0.5 + 0.5 * math.sin(now * 3 + i)   -- per-sparkle twinkle
+        s:SetAlpha(0.35 + 0.65 * tw)
+        local sz = 7 + 4 * tw
+        s:SetWidth(sz); s:SetHeight(sz)
+    end
+end
+
+local function positionMinimapButton(button)
+    local opt = getOptions(addon)
+    local angle = tonumber(opt.minimapButtonAngle) or 200
+    local rad = math.rad(angle)
+    local radius = 80
+    local x = math.cos(rad) * radius
+    local y = math.sin(rad) * radius
+    button:ClearAllPoints()
+    button:SetPoint("CENTER", Minimap, "CENTER", x, y)
+end
+
+function addon:BuildMinimapButton()
+    if self.ui.minimapButton then return end
+    if not Minimap then return end
+
+    local button = CreateFrame("Button", "WeirdLootMinimapButton", Minimap)
+    button:SetFrameStrata("MEDIUM")
+    button:SetFrameLevel((Minimap:GetFrameLevel() or 0) + 8)
+    button:SetWidth(31)
+    button:SetHeight(31)
+    button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    button:RegisterForDrag("RightButton")    -- left-click trades (when owed) else toggles; right-click toggles; right-drag repositions
+    button:SetMovable(true)
+
+    local overlay = button:CreateTexture(nil, "OVERLAY")
+    overlay:SetWidth(53)
+    overlay:SetHeight(53)
+    overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    overlay:SetPoint("TOPLEFT", button, "TOPLEFT", 0, 0)
+
+    local icon = button:CreateTexture(nil, "ARTWORK")
+    icon:SetWidth(20)
+    icon:SetHeight(20)
+    icon:SetTexture("Interface\\AddOns\\WeirdLoot\\Textures\\weirdloot")
+    icon:SetPoint("TOPLEFT", button, "TOPLEFT", 7, -6)
+    icon:SetTexCoord(0, 1, 0, 1)
+
+    local highlight = button:CreateTexture(nil, "HIGHLIGHT")
+    highlight:SetTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+    highlight:SetBlendMode("ADD")
+    highlight:SetAllPoints(button)
+
+    button:SetScript("OnClick", function(_, mouseButton)
+        -- Owed raiders: a LEFT-click drives the whole delivery in two presses and never opens the window
+        -- (use a right-click for that). First press opens the trade with the loot master (their side
+        -- auto-fills the owed loot); a second press, once the trade window is up, ACCEPTS it. AcceptTrade
+        -- needs a hardware event -- an OnClick is one -- so the second minimap click completes the trade
+        -- where a timer never could. We can't target by name on 3.3.5a, but InitiateTrade takes a unit
+        -- (the ML's loot-method unit). The ML never gets this path (they hold the loot).
+        if mouseButton == "LeftButton"
+           and not addon:IsAuthorizedLootMaster() and (addon:CountLootOwedToMe() or 0) > 0 then
+            if TradeFrame and TradeFrame:IsShown() then
+                -- only accept when the open trade is actually with the ML, so the loot button never
+                -- accidentally confirms some other trade.
+                if util:NormalizeKey(UnitName("NPC") or "") == util:NormalizeKey(addon:GetLootMasterName() or "") then
+                    AcceptTrade()
+                end
+            else
+                local mlUnit = addon:GetLootMasterUnit()
+                if mlUnit and CheckInteractDistance(mlUnit, 2) then   -- 2 = trade range
+                    InitiateTrade(mlUnit)
+                end
+            end
+            return   -- owed left-click is trade-only; do NOT fall through to the window toggle
+        end
+
+        -- Right-click, or a left-click with nothing owed: toggle the window. Opening with loot owed jumps
+        -- straight to Loot Results; otherwise open the last-used tab. Read the remembered tab (db) for the
+        -- non-owed case so a prior owed jump (which uses a transient select) never becomes the "last" tab.
+        if not (addon.ui.frame and addon.ui.frame:IsShown()) then
+            local target = ((addon:CountLootOwedToMe() or 0) > 0) and "results"
+                or (addon.db.ui.selectedTab or "loot")
+            addon:SelectTab(target, true)
+        end
+        addon:ToggleMainFrame()
+    end)
+
+    button:SetScript("OnEnter", function(selfBtn)
+        -- Pin the tooltip's top to the button's bottom-left so a growing owed-items list extends
+        -- DOWNWARD (and to the left, where there's room for a top-right minimap) instead of creeping up.
+        GameTooltip:SetOwner(selfBtn, "ANCHOR_NONE")
+        GameTooltip:ClearAllPoints()
+        GameTooltip:SetPoint("TOPRIGHT", selfBtn, "BOTTOMLEFT", 0, 0)
+        GameTooltip:AddLine("WeirdLoot " .. tostring(addon.version or "?"), 1, 0.82, 0)
+
+        local owed = addon:GetLootOwedToMe()
+        local ml = addon:GetLootMasterName()
+        local canTrade = owed and #owed > 0 and ml and ml ~= "" and not addon:IsAuthorizedLootMaster()
+        if canTrade then
+            -- when owed, the click trades the ML for your loot; show that instead of the toggle/reposition
+            -- hints, for compactness. Color the ML name by their class.
+            local mlName = ml
+            local mlUnit = addon:GetLootMasterUnit()
+            if mlUnit then
+                -- capture UnitClass's 2nd return (the class token) in its own statement; an `and` guard
+                -- here would truncate the multi-return to one value and lose the token.
+                local _, classToken = UnitClass(mlUnit)
+                local c = classToken and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classToken]
+                if c then
+                    mlName = string.format("|cff%02x%02x%02x%s|r",
+                        math.floor(c.r * 255 + 0.5), math.floor(c.g * 255 + 0.5), math.floor(c.b * 255 + 0.5), ml)
+                end
+            end
+            GameTooltip:AddLine("Move near " .. mlName .. " and left-click to trade.", 0.6, 1, 0.6)
+            GameTooltip:AddLine("Press again to accept the trade.", 0.6, 1, 0.6)
+        else
+            GameTooltip:AddLine("Click to toggle the main window.", 1, 1, 1)
+            GameTooltip:AddLine("Right-drag to reposition.", 0.8, 0.8, 0.8)
+        end
+
+        if owed and #owed > 0 then
+            GameTooltip:AddLine(" ")
+            GameTooltip:AddLine("Owed to you:", 1, 0.82, 0)
+            for _, entry in ipairs(owed) do
+                local name, link = GetItemInfo(entry.itemId)
+                local label = link or name or ("item:" .. tostring(entry.itemId))
+                if entry.count > 1 then label = label .. " x" .. entry.count end
+                GameTooltip:AddLine(label, 1, 1, 1)
+            end
+        end
+        GameTooltip:Show()
+    end)
+    button:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    button:SetScript("OnDragStart", function(selfBtn)
+        selfBtn.isDragging = true
+        selfBtn:SetScript("OnUpdate", function(s)
+            local mx, my = GetCursorPosition()
+            local scale = Minimap:GetEffectiveScale()
+            local cx, cy = Minimap:GetCenter()
+            mx, my = mx / scale, my / scale
+            local angle = math.deg(math.atan2(my - cy, mx - cx))
+            getOptions(addon).minimapButtonAngle = angle
+            positionMinimapButton(s)
+        end)
+    end)
+    button:SetScript("OnDragStop", function(selfBtn)
+        selfBtn.isDragging = false
+        selfBtn:SetScript("OnUpdate", nil)
+    end)
+
+    self.ui.minimapButton = button
+    -- "Loot owed to you" indicator: a circular sparkle orbit (see shineOnUpdate), hidden until the
+    -- mirrored ledger shows a copy we won but have not yet received.
+    local shine = CreateFrame("Frame", nil, button)
+    shine:SetAllPoints(button)
+    shine:SetFrameLevel((button:GetFrameLevel() or 0) + 1)
+    shine.angle = 0
+    shine.sparkles = {}
+    for i = 1, SHINE_COUNT do
+        local s = shine:CreateTexture(nil, "OVERLAY")
+        s:SetTexture(SHINE_TEXTURE)
+        s:SetTexCoord(SHINE_TCOORD[1], SHINE_TCOORD[2], SHINE_TCOORD[3], SHINE_TCOORD[4])
+        s:SetBlendMode("ADD")
+        s:SetVertexColor(SHINE_COLOR[1], SHINE_COLOR[2], SHINE_COLOR[3])
+        s:SetWidth(6); s:SetHeight(6)
+        s:Hide()
+        shine.sparkles[i] = s
+    end
+    self.ui.minimapShine = shine
+
+    positionMinimapButton(button)
+
+    local opt = getOptions(self)
+    if opt.minimapButtonHidden then
+        button:Hide()
+    else
+        button:Show()
+    end
+    self:UpdateMinimapOwedGlow()
+end
+
+-- Copies the local player has won but not yet received, from the (raider-mirrored) ledger.
+function addon:CountLootOwedToMe()
+    if not self.lootCore then return 0 end
+    return self.lootCore:OwedCountFor(util:GetPlayerName("player"))
+end
+
+-- Aggregated { itemId, count } the local player is owed, for the minimap tooltip.
+function addon:GetLootOwedToMe()
+    if not self.lootCore then return {} end
+    return self.lootCore:OwedItemsFor(util:GetPlayerName("player"))
+end
+
+function addon:SetMinimapOwedGlow(shown)
+    local shine = self.ui and self.ui.minimapShine
+    if not shine then return end
+    if shown then
+        for _, s in ipairs(shine.sparkles) do s:Show() end
+        shine:SetScript("OnUpdate", shineOnUpdate)
+    else
+        shine:SetScript("OnUpdate", nil)
+        for _, s in ipairs(shine.sparkles) do s:Hide() end
+    end
+end
+
+function addon:UpdateMinimapOwedGlow()
+    self:SetMinimapOwedGlow((self:CountLootOwedToMe() or 0) > 0)
+end
+
+function addon:SetMinimapButtonShown(shown)
+    if not self.ui or not self.ui.minimapButton then return end
+    if shown then
+        self.ui.minimapButton:Show()
+    else
+        self.ui.minimapButton:Hide()
+    end
+end

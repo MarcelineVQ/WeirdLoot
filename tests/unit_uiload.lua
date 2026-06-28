@@ -57,4 +57,17 @@ H.test("export/import entry points are defined and run", function()
     H.check(true, "ExportWinners + ExportLog build their windows without error")
 end)
 
+-- UI/Minimap.lua: the extracted minimap button + owed-loot glow.
+H.test("minimap entry points are defined and run", function()
+    local w = uiWorld()
+    for _, m in ipairs({ "BuildMinimapButton", "UpdateMinimapOwedGlow", "SetMinimapButtonShown", "CountLootOwedToMe" }) do
+        H.eq(type(w.addon[m]), "function", m .. " is defined")
+    end
+    w.addon:InitializeUI()
+    w.addon:BuildMinimapButton()
+    w.addon:UpdateMinimapOwedGlow()
+    w.addon:SetMinimapButtonShown(true)
+    H.check(true, "minimap build + glow + toggle run without error")
+end)
+
 F.endSuite()
