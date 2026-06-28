@@ -110,8 +110,8 @@ function addon:RouteComm(value, sender, distribution)
 end
 
 -- Live-roll send. The message is a VALUE { command, arg1, arg2, ... } carried by the shared WeirdComm
--- channel (no manual string codec, no separate AceComm lane). Args are stringified to preserve the
--- string semantics the handlers were written against.
+-- channel over SendAddonMessage (no manual string codec, no separate addon-channel lane). Args are
+-- stringified to preserve the string semantics the handlers were written against.
 function addon:SendLargeMessage(command, values, distribution, target, prio)
     if not self.comm then return end
     local value = { command }
