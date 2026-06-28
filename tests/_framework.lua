@@ -373,8 +373,8 @@ end
 -- ---------------------------------------------------------------------------
 self.ADDON_FILES = {
     "Libs/WeirdSync-1.0/WeirdSync-1.0.lua",
-    "TradeDeliver.lua", "Core.lua", "LootPrios.lua", "LootCore.lua", "Util.lua", "Config.lua",
-    "Roster.lua", "Session.lua", "Comm.lua", "Resolver.lua", "Payout.lua",
+    "TradeDeliver.lua", "Core.lua", "LootPrios.lua", "LootCore.lua", "Util.lua", "ItemInfo.lua",
+    "Config.lua", "Roster.lua", "Session.lua", "Comm.lua", "Resolver.lua", "Payout.lua",
     "LiveRoll.lua", "AutoLoot.lua",
 }
 
