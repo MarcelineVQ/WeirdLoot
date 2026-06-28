@@ -539,15 +539,13 @@ function addon:HandleSlashCommand(msg)
     elseif command == "autoroll" then
         self.db.autoRoll = not self.db.autoRoll
         if self.db.autoRoll then
-            self.db.options = self.db.options or {}
-            self.db.options.autoStartRoll = false  -- mutex with auto-start
+            self.db.options.autoStartRoll = false  -- mutex with auto-start (also enforced in the Options UI)
             self.db.options.autoSkipRoll = false   -- mutex with auto-skip
         end
         self:Print("Auto-roll (auto-open the Start/Skip pending popup) on new loot "
             .. (self.db.autoRoll and "ON." or "OFF (lots stay in the loot tab; start them manually)."))
         if self.RefreshOptionsTab then self:RefreshOptionsTab() end
     elseif command == "autostart" then
-        self.db.options = self.db.options or {}
         self.db.options.autoStartRoll = not self.db.options.autoStartRoll
         if self.db.options.autoStartRoll then
             self.db.autoRoll = false               -- mutex with auto-roll
@@ -557,7 +555,6 @@ function addon:HandleSlashCommand(msg)
             and "ON (broadcasts the DROP immediately, no Start/Skip popup)." or "OFF."))
         if self.RefreshOptionsTab then self:RefreshOptionsTab() end
     elseif command == "autoskip" then
-        self.db.options = self.db.options or {}
         self.db.options.autoSkipRoll = not self.db.options.autoSkipRoll
         if self.db.options.autoSkipRoll then
             self.db.autoRoll = false               -- mutex with auto-roll

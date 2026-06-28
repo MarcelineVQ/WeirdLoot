@@ -1732,6 +1732,31 @@ local function createOptionsCheckbox(parent, label)
     return cb
 end
 
+-- Make a set of checkboxes mutually exclusive (radio-style, but all-off is allowed). Each member is
+--   { cb = <checkbox>, get = function() return on end, set = function(on) end, onToggle = optional }
+-- Clicking one persists via its set(); if it turned ON, every other member is set(false). Then all
+-- checkboxes re-sync from their get(). Shared by the new-loot auto modes and the whitelist/blacklist
+-- filter so the mutex is wired once here instead of in each checkbox's own handler.
+local function bindExclusiveCheckboxes(members)
+    local function resync()
+        for _, m in ipairs(members) do m.cb:SetChecked(m.get() and true or false) end
+    end
+    for _, m in ipairs(members) do
+        m.cb:SetScript("OnClick", function(selfCB)
+            local on = selfCB:GetChecked() and true or false
+            m.set(on)
+            if on then
+                for _, other in ipairs(members) do
+                    if other ~= m then other.set(false) end
+                end
+            end
+            resync()
+            if m.onToggle then m.onToggle(on) end
+        end)
+    end
+    return resync
+end
+
 local function createNumberEditBox(parent, width)
     local w = width or 50
     local h = 20
@@ -1988,41 +2013,23 @@ function addon:BuildOptionsTab()
     autoSkipCB:SetPoint("TOPLEFT", autoStartCB, "BOTTOMLEFT", 0, -8)
     autoSkipCB:SetChecked(opt.autoSkipRoll and true or false)
 
-    autoRollCB:SetScript("OnClick", function(selfCB)
-        local checked = selfCB:GetChecked() and true or false
-        addon.db.autoRoll = checked
-        if checked then
-            getOptions(addon).autoStartRoll = false
-            getOptions(addon).autoSkipRoll = false
-            autoStartCB:SetChecked(false)
-            autoSkipCB:SetChecked(false)
-        end
-        addon:Print("Auto-roll (auto-open the Start/Skip pending popup) on new loot "
-            .. (checked and "ON." or "OFF (lots stay in the loot tab; start them manually)."))
-    end)
-    autoStartCB:SetScript("OnClick", function(selfCB)
-        local checked = selfCB:GetChecked() and true or false
-        getOptions(addon).autoStartRoll = checked
-        if checked then
-            addon.db.autoRoll = false
-            getOptions(addon).autoSkipRoll = false
-            autoRollCB:SetChecked(false)
-            autoSkipCB:SetChecked(false)
-        end
-        addon:Print("Auto-start a live roll on new loot " .. (checked
-            and "ON (broadcasts the DROP immediately, no Start/Skip popup)." or "OFF."))
-    end)
-    autoSkipCB:SetScript("OnClick", function(selfCB)
-        local checked = selfCB:GetChecked() and true or false
-        getOptions(addon).autoSkipRoll = checked
-        if checked then
-            addon.db.autoRoll = false
-            getOptions(addon).autoStartRoll = false
-            autoRollCB:SetChecked(false)
-            autoStartCB:SetChecked(false)
-        end
-        addon:Print("Auto-skip new loot " .. (checked and "ON (new loot lands as Skipped; revisit from the loot tab)." or "OFF."))
-    end)
+    bindExclusiveCheckboxes({
+        { cb = autoRollCB,
+          get = function() return addon.db.autoRoll end,
+          set = function(on) addon.db.autoRoll = on end,
+          onToggle = function(on) addon:Print("Auto-roll (auto-open the Start/Skip pending popup) on new loot "
+              .. (on and "ON." or "OFF (lots stay in the loot tab; start them manually).")) end },
+        { cb = autoStartCB,
+          get = function() return getOptions(addon).autoStartRoll end,
+          set = function(on) getOptions(addon).autoStartRoll = on end,
+          onToggle = function(on) addon:Print("Auto-start a live roll on new loot " .. (on
+              and "ON (broadcasts the DROP immediately, no Start/Skip popup)." or "OFF.")) end },
+        { cb = autoSkipCB,
+          get = function() return getOptions(addon).autoSkipRoll end,
+          set = function(on) getOptions(addon).autoSkipRoll = on end,
+          onToggle = function(on) addon:Print("Auto-skip new loot "
+              .. (on and "ON (new loot lands as Skipped; revisit from the loot tab)." or "OFF.")) end },
+    })
 
     -- Designated disenchanter (loot master). Mirrors /wl deer <name>. Non-epic BoE items
     -- routed through Master Loot go to this player's bags via GiveMasterLoot.
@@ -2072,9 +2079,7 @@ function addon:BuildOptionsTab()
     local whitelistCB = createOptionsCheckbox(panel, "Enable White List |cffff3030(Warning: You will ONLY see loot popups for items on this list)|r")
     whitelistCB:SetPoint("TOPLEFT", showResultAfterHideCB, "BOTTOMLEFT", 0, -24)
     whitelistCB:SetChecked(opt.whitelistEnabled and true or false)
-    whitelistCB:SetScript("OnClick", function(selfCB)
-        getOptions(addon).whitelistEnabled = selfCB:GetChecked() and true or false
-    end)
+    -- OnClick is wired below via bindExclusiveCheckboxes, once blacklistCB also exists (mutually exclusive).
 
     local wlPresetLabel = createLabel(panel, "Preset:", "TOPLEFT", whitelistCB, "BOTTOMLEFT", 4, -10)
     local wlPresetDropdown = CreateFrame("Frame", "WeirdLootWhitelistPresetDropdown", panel, "UIDropDownMenuTemplate")
@@ -2182,9 +2187,15 @@ function addon:BuildOptionsTab()
     blacklistCB:SetPoint("TOP", whitelistBox, "BOTTOM", 0, -16)
     blacklistCB:SetPoint("LEFT", panel, "LEFT", 12, 0)
     blacklistCB:SetChecked(opt.blacklistEnabled and true or false)
-    blacklistCB:SetScript("OnClick", function(selfCB)
-        getOptions(addon).blacklistEnabled = selfCB:GetChecked() and true or false
-    end)
+
+    -- Whitelist and blacklist are mutually exclusive: an "only these" list and an "all but these"
+    -- list contradict, so wire the pair as an exclusive group now that both checkboxes exist.
+    bindExclusiveCheckboxes({
+        { cb = whitelistCB, get = function() return getOptions(addon).whitelistEnabled end,
+          set = function(on) getOptions(addon).whitelistEnabled = on end },
+        { cb = blacklistCB, get = function() return getOptions(addon).blacklistEnabled end,
+          set = function(on) getOptions(addon).blacklistEnabled = on end },
+    })
 
     local presetLabel = createLabel(panel, "Preset:", "TOPLEFT", blacklistCB, "BOTTOMLEFT", 4, -10)
     local presetDropdown = CreateFrame("Frame", "WeirdLootBlacklistPresetDropdown", panel, "UIDropDownMenuTemplate")
