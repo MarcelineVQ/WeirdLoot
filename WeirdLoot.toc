@@ -2,7 +2,7 @@
 ## Title: WeirdLoot
 ## Notes: End-of-raid loot coordination for Wrath 3.3.5a raids
 ## Author: Volcker
-## Version: 1.1.8
+## Version: 1.1.9
 ## IconTexture: Interface\AddOns\WeirdLoot\Textures\weirdloot
 ## SavedVariables: WeirdLootDB, WeirdLootSessionDB
 ## SavedVariablesPerCharacter: WeirdLootDebugLog
@@ -16,6 +16,19 @@ Libs\WeirdSync-1.0\WeirdSync-1.0.lua
 TradeDeliver.lua
 
 Core.lua
+Data/RosterDefaults.lua
+Data/BlacklistPresets.lua
+Data/BlacklistPresets/Priest.lua
+Data/BlacklistPresets/Mage.lua
+Data/BlacklistPresets/Warrior.lua
+Data/BlacklistPresets/DeathKnight.lua
+Data/BlacklistPresets/Hunter.lua
+Data/BlacklistPresets/Rogue.lua
+Data/BlacklistPresets/Shaman.lua
+Data/BlacklistPresets/Druid.lua
+Data/BlacklistPresets/Paladin.lua
+Data/BlacklistPresets/Warlock.lua
+Popups.lua
 LootPrios.lua
 LootCore.lua
 Debug.lua

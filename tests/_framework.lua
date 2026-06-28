@@ -373,7 +373,14 @@ end
 -- ---------------------------------------------------------------------------
 self.ADDON_FILES = {
     "Libs/WeirdSync-1.0/WeirdSync-1.0.lua",
-    "TradeDeliver.lua", "Core.lua", "LootPrios.lua", "LootCore.lua", "Util.lua", "ItemInfo.lua",
+    "TradeDeliver.lua", "Core.lua",
+    "Data/RosterDefaults.lua", "Data/BlacklistPresets.lua",
+    "Data/BlacklistPresets/Priest.lua", "Data/BlacklistPresets/Mage.lua",
+    "Data/BlacklistPresets/Warrior.lua", "Data/BlacklistPresets/DeathKnight.lua",
+    "Data/BlacklistPresets/Hunter.lua", "Data/BlacklistPresets/Rogue.lua",
+    "Data/BlacklistPresets/Shaman.lua", "Data/BlacklistPresets/Druid.lua",
+    "Data/BlacklistPresets/Paladin.lua", "Data/BlacklistPresets/Warlock.lua",
+    "Popups.lua", "LootPrios.lua", "LootCore.lua", "Util.lua", "ItemInfo.lua",
     "Config.lua", "Roster.lua", "Session.lua", "Comm.lua", "Resolver.lua", "Payout.lua",
     "LiveRoll.lua", "AutoLoot.lua",
 }
