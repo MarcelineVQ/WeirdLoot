@@ -222,18 +222,17 @@ end)
 
 H.test("util:StripRealm: nil and non-string inputs pass through", function()
     H.eq(util:StripRealm(nil), nil, "nil -> nil")
-    H.eq(util:StripRealm(42), 42, "number -> number")
+    -- The new contract: non-strings return nil (callers normalize via `or ""` downstream).
+    H.eq(util:StripRealm(42), nil, "number -> nil")
 end)
 
 H.test("util:StripRealm: empty string and empty-realm edge cases", function()
-    -- Documenting current behavior (matches the original Roster.lua stripRealm): the regex
-    -- "[^-]+" matches zero characters at the start of "-Moonrunner", yielding an empty string.
-    -- But Lua's `or` short-circuits on falsy values: an empty string is truthy in Lua, so
-    -- `emptyString or "-Moonrunner"` evaluates to `""` ... except `string.match` actually returns
-    -- nil for zero-width matches (not an empty string), so the `or name` fallback fires. Verify
-    -- the actual behavior matches the original (both return the input unchanged).
-    H.eq(util:StripRealm(""), "", "empty string -> empty (matches [])")
-    H.eq(util:StripRealm("-Moonrunner"), "-Moonrunner", "no short name -> input unchanged (regex matches zero-width, returns nil, fallback fires)")
+    -- The new regex "[^-]*" matches zero-or-more non-dash chars, so leading-dash input
+    -- returns "" (the actual short-form prefix is empty). This is the real fix; the previous
+    -- version returned the input unchanged via an `or name` fallback, which contradicted
+    -- the function's intent.
+    H.eq(util:StripRealm(""), "", "empty string -> empty")
+    H.eq(util:StripRealm("-Moonrunner"), "", "leading dash -> empty (no short name)")
 end)
 
 ------------------------------------------------------------------------

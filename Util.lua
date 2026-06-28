@@ -207,10 +207,14 @@ end
 -- Drop the "-RealmName" suffix from a player-realm string ("Bob-Moonrunner" -> "Bob"). Pure:
 -- does not call UnitName. Use when you already have the name in hand (e.g. from
 -- GetRaidRosterInfo / UnitName / chat-message sender) and just want the short form.
+--
+-- The regex "[^-]*" matches zero-or-more non-dash chars, so it returns the empty string for
+-- edge inputs like "-Moonrunner" or "" (where there's no short form to keep) instead of the
+-- original input. Callers normalize downstream via NormalizeKey(name or ""), which treats ""
+-- identically to nil, so this is a no-op for real input but more honest about intent.
 function util:StripRealm(name)
-    if type(name) ~= "string" then return name end
-    local shortName = string.match(name, "^[^-]+")
-    return shortName or name
+    if type(name) ~= "string" then return nil end
+    return string.match(name, "^[^-]*")
 end
 
 function util:GetUnitTokenByPlayerName(playerName)
