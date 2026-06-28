@@ -24,11 +24,19 @@ local self = {}
 -- ---------------------------------------------------------------------------
 -- assertions
 -- ---------------------------------------------------------------------------
+-- pass/fail count SCENARIOS (test() blocks), not individual assertions: a property test that loops
+-- over hundreds of random inputs is one scenario, pass or fail, not hundreds of "tests". check()
+-- only records assertion failures (the FAIL line + the per-scenario failed flag); test() tallies one
+-- pass or fail per block. Assertion failures outside any test() block still count directly.
 self.pass, self.fail, self.failures = 0, 0, {}
 self.current = "?"
+self._inTest = false
+self._curFailed = false
 function self.check(cond, label)
-    if cond then self.pass = self.pass + 1
-    else self.fail = self.fail + 1; self.failures[#self.failures + 1] = self.current .. ": " .. label; print("  FAIL " .. label) end
+    if cond then return end
+    print("  FAIL " .. label)
+    self.failures[#self.failures + 1] = self.current .. ": " .. label
+    if self._inTest then self._curFailed = true else self.fail = self.fail + 1 end
 end
 function self.eq(a, b, label)
     self.check(a == b, (label or "") .. " (got " .. tostring(a) .. ", want " .. tostring(b) .. ")")
@@ -46,9 +54,17 @@ end
 
 function self.test(name, fn)
     self.current = name
+    self._inTest = true
+    self._curFailed = false
     print("[" .. name .. "]")
     local ok, err = pcall(fn)
-    if not ok then self.fail = self.fail + 1; self.failures[#self.failures + 1] = name .. ": ERROR " .. tostring(err); print("  ERROR " .. tostring(err)) end
+    self._inTest = false
+    if not ok then
+        self._curFailed = true
+        self.failures[#self.failures + 1] = name .. ": ERROR " .. tostring(err)
+        print("  ERROR " .. tostring(err))
+    end
+    if self._curFailed then self.fail = self.fail + 1 else self.pass = self.pass + 1 end
 end
 
 function self.report(suiteName)
