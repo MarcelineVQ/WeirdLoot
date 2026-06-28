@@ -44,4 +44,17 @@ H.test("RefreshUI and SelectTab run across every tab on an empty session", funct
     H.check(true, "no error through RefreshUI + SelectTab across all tabs")
 end)
 
+-- UI/Export.lua: the extracted export/import block. Defined + runnable means its re-localize header
+-- resolved the shared widgets it needs from addon.UI.
+H.test("export/import entry points are defined and run", function()
+    local w = uiWorld()
+    for _, m in ipairs({ "ExportWinners", "ExportLog", "BuildWinnersExportText", "BuildDetailedExportLogText", "ImportRoster", "ImportNamedItems" }) do
+        H.eq(type(w.addon[m]), "function", m .. " is defined")
+    end
+    w.addon:InitializeUI()
+    w.addon:ExportWinners()
+    w.addon:ExportLog()
+    H.check(true, "ExportWinners + ExportLog build their windows without error")
+end)
+
 F.endSuite()
