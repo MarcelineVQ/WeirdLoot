@@ -485,18 +485,38 @@ function util:IsItemUsableForPlayer(itemLink)
     return true
 end
 
+-- Stateless iterator over every (bag, slot) coordinate in the player's carried bags: the backpack
+-- (container 0) plus the equipped bags (1 .. NUM_BAG_SLOTS). Yields raw coordinates only; the caller
+-- reads the link/id/count it needs and decides whether to skip empty slots or stop early. A `break`
+-- or early `return` in the loop body works, since this is an ordinary Lua for-iterator. Centralizes
+-- the bag range so the scans that used to hardcode `0, 4` / MAX_BAG_ID / NUM_BAG_SLOTS share one
+-- definition and cannot drift. Does NOT cover equipped gear, the equipped bags, or the keyring.
+--   Usage:  for bag, slot in util:BagSlots() do ... end
+function util:BagSlots()
+    local maxBag = NUM_BAG_SLOTS or 4
+    local bag, slot, slots = 0, 0, GetContainerNumSlots(0) or 0
+    return function()
+        while bag <= maxBag do
+            if slot < slots then
+                slot = slot + 1
+                return bag, slot
+            end
+            bag = bag + 1
+            slot = 0
+            slots = (bag <= maxBag) and (GetContainerNumSlots(bag) or 0) or 0
+        end
+        return nil
+    end
+end
+
 function util:FindBagItemByLink(itemLink)
     if not itemLink or itemLink == "" then
         return nil
     end
 
-    for bag = 0, 4 do
-        local slots = GetContainerNumSlots(bag) or 0
-        for slot = 1, slots do
-            local link = GetContainerItemLink(bag, slot)
-            if link == itemLink then
-                return bag, slot
-            end
+    for bag, slot in self:BagSlots() do
+        if GetContainerItemLink(bag, slot) == itemLink then
+            return bag, slot
         end
     end
 

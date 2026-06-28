@@ -74,8 +74,17 @@ local function installPresetRegistry(kind)
     -- custom presets, sorted case-insensitively by name.
     addon["Get" .. cap .. "Presets"] = function(self)
         local list = {}
+        local playerClass = select(2, UnitClass("player"))   -- "DRUID"; class token gates built-ins
         for _, preset in ipairs(self[builtinKey] or {}) do
-            list[#list + 1] = { name = preset.name, text = preset.text, builtin = true }
+            -- Class-gated: a built-in tagged with a class only shows for that class (a personal
+            -- filter, so a Druid is never offered Mage presets). Classless built-ins always show.
+            if not preset.class or preset.class == playerClass then
+                -- Built-ins hold their item names as an array (`items`); join to the newline string
+                -- the editor expects here, at the single boundary that consumes it. Tolerate a legacy
+                -- `text` field too so a built-in defined either way still renders.
+                local text = preset.text or table.concat(preset.items or {}, "\n")
+                list[#list + 1] = { name = preset.name, text = text, builtin = true }
+            end
         end
         local custom = (self.db and self.db.options and self.db.options[customField]) or {}
         for name, text in pairs(custom) do
@@ -178,6 +187,13 @@ function addon:PLAYER_LOGIN()
             namedRules = {},
             revision = 0,
         },
+    })
+
+    -- Options + UI state are PER-CHARACTER: different characters want different filters, popup
+    -- positions, and sort prefs. They live in WeirdLootCharDB (## SavedVariablesPerCharacter); the
+    -- self.db proxy below routes .options/.ui here, so the rest of the addon still reads
+    -- self.db.options / self.db.ui unchanged. config + session stay account-wide (see PLAYER_LOGIN).
+    WeirdLootCharDB = ensureDefaults(WeirdLootCharDB, {
         options = {
             resultPopupAutoCloseEnabled = true,
             resultPopupAutoCloseSeconds = 10,
@@ -227,6 +243,12 @@ function addon:PLAYER_LOGIN()
             },
         },
     })
+
+    -- Older versions stored options/ui account-wide. They are per-character now (fresh defaults, no
+    -- migration), so drop any legacy account-side copy rather than re-serialize it into the account
+    -- WTF forever. After this, options/ui touch the per-character file ONLY.
+    WeirdLootDB.options = nil
+    WeirdLootDB.ui = nil
 
     WeirdLootSessionDB = ensureDefaults(WeirdLootSessionDB, {
         activeSession = nil,
@@ -285,13 +307,25 @@ function addon:PLAYER_LOGIN()
     -- One-time flip to newest-mint-first Loot ordering for characters created before it existed
     -- (their saved lootSortMode is "name"). Stamp so a later manual header click is not re-clobbered
     -- each login; fresh installs ship with the stamp already set.
-    if WeirdLootDB.ui and not WeirdLootDB.ui.lootSortRecentApplied then
-        WeirdLootDB.ui.lootSortMode = "recent"
-        WeirdLootDB.ui.lootSortDir = "asc"
-        WeirdLootDB.ui.lootSortRecentApplied = true
+    if WeirdLootCharDB.ui and not WeirdLootCharDB.ui.lootSortRecentApplied then
+        WeirdLootCharDB.ui.lootSortMode = "recent"
+        WeirdLootCharDB.ui.lootSortDir = "asc"
+        WeirdLootCharDB.ui.lootSortRecentApplied = true
     end
 
-    self.db = WeirdLootDB
+    -- self.db reads account fields (testMode/autoRoll/config) straight through, but routes .options
+    -- and .ui to the per-character WeirdLootCharDB. Keeping the field names means every existing
+    -- self.db.options / self.db.ui access is unchanged, and the account DB never carries an options/ui
+    -- copy (no stale duplicate). config/session stay account-wide.
+    self.db = setmetatable({}, {
+        __index = function(_, k)
+            if k == "options" or k == "ui" then return WeirdLootCharDB[k] end
+            return WeirdLootDB[k]
+        end,
+        __newindex = function(_, k, v)
+            if k == "options" or k == "ui" then WeirdLootCharDB[k] = v else WeirdLootDB[k] = v end
+        end,
+    })
     self.sessionDb = WeirdLootSessionDB
     self.bagSettleAt = GetTime() + 5   -- ignore bag deltas (staged loading) until bags settle this login
 

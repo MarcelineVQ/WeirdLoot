@@ -7,7 +7,6 @@ local util = addon.util
 -- drift-prone copy of loot state to the SavedVariables. The core is the one persisted source of truth.
 addon.lootView = addon.lootView or { items = {}, results = {} }
 
-local MAX_BAG_ID = 4
 local SCAN_TOOLTIP_NAME = "WeirdLootScanTooltip"
 local tradeScanTooltip
 
@@ -235,14 +234,11 @@ function addon:BuildBagSnapshot()
     local snapshot = {}
     local minQuality = (self.db and self.db.testMode) and 0 or 4   -- test mode: any item
 
-    for bag = 0, MAX_BAG_ID do
-        local slots = GetContainerNumSlots(bag) or 0
-        for slot = 1, slots do
-            local link = GetContainerItemLink(bag, slot)
-            local count, quality = getBagItemCountAndQuality(bag, slot, link)
-            if link and count > 0 and quality and quality >= minQuality then
-                snapshot[link] = (snapshot[link] or 0) + count
-            end
+    for bag, slot in util:BagSlots() do
+        local link = GetContainerItemLink(bag, slot)
+        local count, quality = getBagItemCountAndQuality(bag, slot, link)
+        if link and count > 0 and quality and quality >= minQuality then
+            snapshot[link] = (snapshot[link] or 0) + count
         end
     end
 
@@ -307,69 +303,66 @@ function addon:BuildTradeableEpicCounts()
     local minQuality = testMode and 0 or 4
     local tooltip = getTradeScanTooltip()
 
-    for bag = 0, MAX_BAG_ID do
-        local slots = GetContainerNumSlots(bag) or 0
-        for slot = 1, slots do
-            local link = GetContainerItemLink(bag, slot)
-            local count, quality = getBagItemCountAndQuality(bag, slot, link)
-            -- Cold cache: a freshly-looted item can sit in the bag before its template data (quality,
-            -- name) has arrived from the server. GetItemInfo is nil until then, so the eligibility test
-            -- below cannot classify it and it would not surface until the next loot or the 60s reconcile.
-            -- The call also nudges the client to fetch it; OnBagUpdate re-scans shortly (see loading).
-            local itemId = GetContainerItemID(bag, slot)
-            if itemId and not GetItemInfo(itemId) then loading = true end
-            if testMode and link and count > 0 and quality and quality >= minQuality then
-                -- city testing: any bag item is eligible EXCEPT soulbound ones (those
-                -- can't be traded). A trade-window item is soulbound but tradeable, so
-                -- still allow it.
-                tooltip:ClearLines()
-                tooltip:SetOwner(WorldFrame or UIParent, "ANCHOR_NONE")
-                tooltip:SetBagItem(bag, slot)
-                tooltip:Show()
-                local soulbound = tooltipHasLine(tooltip, ITEM_SOULBOUND, "soulbound")
-                local tradeWindow = tooltipHasLine(tooltip, nil, "you may trade this item")
-                if (not soulbound) or tradeWindow then
-                    counts[link] = (counts[link] or 0) + count
-                    if tradeWindow then
-                        local rem = tooltipTradeWindowSeconds(tooltip)
-                        if rem and (not soonest or rem < soonest) then soonest = rem end
-                    end
+    for bag, slot in util:BagSlots() do
+        local link = GetContainerItemLink(bag, slot)
+        local count, quality = getBagItemCountAndQuality(bag, slot, link)
+        -- Cold cache: a freshly-looted item can sit in the bag before its template data (quality,
+        -- name) has arrived from the server. GetItemInfo is nil until then, so the eligibility test
+        -- below cannot classify it and it would not surface until the next loot or the 60s reconcile.
+        -- The call also nudges the client to fetch it; OnBagUpdate re-scans shortly (see loading).
+        local itemId = GetContainerItemID(bag, slot)
+        if itemId and not GetItemInfo(itemId) then loading = true end
+        if testMode and link and count > 0 and quality and quality >= minQuality then
+            -- city testing: any bag item is eligible EXCEPT soulbound ones (those
+            -- can't be traded). A trade-window item is soulbound but tradeable, so
+            -- still allow it.
+            tooltip:ClearLines()
+            tooltip:SetOwner(WorldFrame or UIParent, "ANCHOR_NONE")
+            tooltip:SetBagItem(bag, slot)
+            tooltip:Show()
+            local soulbound = tooltipHasLine(tooltip, ITEM_SOULBOUND, "soulbound")
+            local tradeWindow = tooltipHasLine(tooltip, nil, "you may trade this item")
+            if (not soulbound) or tradeWindow then
+                counts[link] = (counts[link] or 0) + count
+                if tradeWindow then
+                    local rem = tooltipTradeWindowSeconds(tooltip)
+                    if rem and (not soonest or rem < soonest) then soonest = rem end
                 end
-            elseif link and count > 0 and quality and quality >= minQuality then
-                -- 3.3.5a GetItemInfo exposes no bind type (only the tooltip lines below do), so bind-on-
-                -- equip is read from the tooltip, not the item info.
-                local isBindOnEquip = false
-                local isTemporarilyTradeable = false
-                local isSoulbound = false
-                local windowSecs
+            end
+        elseif link and count > 0 and quality and quality >= minQuality then
+            -- 3.3.5a GetItemInfo exposes no bind type (only the tooltip lines below do), so bind-on-
+            -- equip is read from the tooltip, not the item info.
+            local isBindOnEquip = false
+            local isTemporarilyTradeable = false
+            local isSoulbound = false
+            local windowSecs
 
-                tooltip:ClearLines()
-                tooltip:SetOwner(WorldFrame or UIParent, "ANCHOR_NONE")
-                tooltip:SetBagItem(bag, slot)
-                tooltip:Show()
-                if tooltipHasLine(tooltip, nil, "you may trade this item") then
-                    isTemporarilyTradeable = true
-                    windowSecs = tooltipTradeWindowSeconds(tooltip)   -- read now, before SetHyperlink overwrites the tooltip
-                end
-                if tooltipHasLine(tooltip, ITEM_SOULBOUND, "soulbound") then
-                    isSoulbound = true
-                end
-                if tooltipHasLine(tooltip, ITEM_BIND_ON_EQUIP, "binds when equipped") then
-                    isBindOnEquip = true
-                end
+            tooltip:ClearLines()
+            tooltip:SetOwner(WorldFrame or UIParent, "ANCHOR_NONE")
+            tooltip:SetBagItem(bag, slot)
+            tooltip:Show()
+            if tooltipHasLine(tooltip, nil, "you may trade this item") then
+                isTemporarilyTradeable = true
+                windowSecs = tooltipTradeWindowSeconds(tooltip)   -- read now, before SetHyperlink overwrites the tooltip
+            end
+            if tooltipHasLine(tooltip, ITEM_SOULBOUND, "soulbound") then
+                isSoulbound = true
+            end
+            if tooltipHasLine(tooltip, ITEM_BIND_ON_EQUIP, "binds when equipped") then
+                isBindOnEquip = true
+            end
 
-                tooltip:ClearLines()
-                tooltip:SetOwner(WorldFrame or UIParent, "ANCHOR_NONE")
-                tooltip:SetHyperlink(link)
-                tooltip:Show()
-                if tooltipHasLine(tooltip, ITEM_BIND_ON_EQUIP, "binds when equipped") then
-                    isBindOnEquip = true
-                end
+            tooltip:ClearLines()
+            tooltip:SetOwner(WorldFrame or UIParent, "ANCHOR_NONE")
+            tooltip:SetHyperlink(link)
+            tooltip:Show()
+            if tooltipHasLine(tooltip, ITEM_BIND_ON_EQUIP, "binds when equipped") then
+                isBindOnEquip = true
+            end
 
-                if isTemporarilyTradeable or (isBindOnEquip and not isSoulbound) then
-                    counts[link] = (counts[link] or 0) + count
-                    if windowSecs and (not soonest or windowSecs < soonest) then soonest = windowSecs end
-                end
+            if isTemporarilyTradeable or (isBindOnEquip and not isSoulbound) then
+                counts[link] = (counts[link] or 0) + count
+                if windowSecs and (not soonest or windowSecs < soonest) then soonest = windowSecs end
             end
         end
     end

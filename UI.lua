@@ -2105,25 +2105,39 @@ function addon:BuildOptionsTab()
     whitelistBox:SetPoint("TOPLEFT", wlPresetDropdown, "BOTTOMLEFT", 16, -2)
     whitelistBox.editBox:SetText(opt.whitelistText or "")
     whitelistBox.editBox:SetScript("OnEditFocusLost", function(selfBox)
-        getOptions(addon).whitelistText = selfBox:GetText() or ""
+        addon:SetItemFilterText("whitelist", selfBox:GetText())
     end)
 
-    local function applyWhitelistPreset(preset)
-        if not preset then
+    local function wlShowSelectedPreset(name)
+        if not name or name == "" or name == "<none>" then
             UIDropDownMenu_SetText(wlPresetDropdown, "<none>")
+            wlDeleteBtn.currentPresetName = nil
             wlDeleteBtn:Disable()
             return
         end
-        whitelistBox.editBox:SetText(preset.text or "")
-        getOptions(addon).whitelistText = preset.text or ""
-        UIDropDownMenu_SetText(wlPresetDropdown, preset.name)
-        if preset.builtin then
-            wlDeleteBtn:Disable()
-        else
-            wlDeleteBtn:Enable()
+        local builtin = true
+        for _, p in ipairs(addon:GetWhitelistPresets()) do
+            if p.name == name then builtin = p.builtin; break end
         end
-        wlDeleteBtn.currentPresetName = preset.name
-        wlDeleteBtn.currentPresetBuiltin = preset.builtin
+        UIDropDownMenu_SetText(wlPresetDropdown, name)
+        wlDeleteBtn.currentPresetName = name
+        wlDeleteBtn.currentPresetBuiltin = builtin
+        if builtin then wlDeleteBtn:Disable() else wlDeleteBtn:Enable() end
+    end
+
+    local function applyWhitelistPreset(preset)
+        if not preset then
+            wlShowSelectedPreset(nil)
+            getOptions(addon).whitelistPresetName = nil
+            return
+        end
+        whitelistBox.editBox:SetText(preset.text or "")
+        addon:SetItemFilterText("whitelist", preset.text)
+        -- Remember the chosen name across reloads; never re-apply its items on load (saved
+        -- whitelistText is authoritative and may have been edited).
+        local chosen = preset.isNone and nil or preset.name
+        getOptions(addon).whitelistPresetName = chosen
+        wlShowSelectedPreset(chosen)
     end
 
     local function wlInitDropdown()
@@ -2141,7 +2155,7 @@ function addon:BuildOptionsTab()
         end
     end
     UIDropDownMenu_Initialize(wlPresetDropdown, wlInitDropdown)
-    UIDropDownMenu_SetText(wlPresetDropdown, "<none>")
+    wlShowSelectedPreset(opt.whitelistPresetName)
 
     wlDeleteBtn:SetScript("OnClick", function()
         local name = wlDeleteBtn.currentPresetName
@@ -2208,25 +2222,42 @@ function addon:BuildOptionsTab()
     blacklistBox:SetPoint("TOPLEFT", curatedNote, "BOTTOMLEFT", 0, -6)
     blacklistBox.editBox:SetText(opt.blacklistText or "")
     blacklistBox.editBox:SetScript("OnEditFocusLost", function(selfBox)
-        getOptions(addon).blacklistText = selfBox:GetText() or ""
+        addon:SetItemFilterText("blacklist", selfBox:GetText())
     end)
 
-    local function applyPreset(preset)
-        if not preset then
+    -- Show a preset name in the dropdown and set the delete button for it, WITHOUT touching the
+    -- items. Used both for a live selection and to restore the remembered name on load.
+    local function showSelectedPreset(name)
+        if not name or name == "" or name == "<none>" then
             UIDropDownMenu_SetText(presetDropdown, "<none>")
+            deleteBtn.currentPresetName = nil
             deleteBtn:Disable()
             return
         end
-        blacklistBox.editBox:SetText(preset.text or "")
-        getOptions(addon).blacklistText = preset.text or ""
-        UIDropDownMenu_SetText(presetDropdown, preset.name)
-        if preset.builtin then
-            deleteBtn:Disable()
-        else
-            deleteBtn:Enable()
+        local builtin = true
+        for _, p in ipairs(addon:GetBlacklistPresets()) do
+            if p.name == name then builtin = p.builtin; break end
         end
-        deleteBtn.currentPresetName = preset.name
-        deleteBtn.currentPresetBuiltin = preset.builtin
+        UIDropDownMenu_SetText(presetDropdown, name)
+        deleteBtn.currentPresetName = name
+        deleteBtn.currentPresetBuiltin = builtin
+        if builtin then deleteBtn:Disable() else deleteBtn:Enable() end
+    end
+
+    local function applyPreset(preset)
+        if not preset then
+            showSelectedPreset(nil)
+            getOptions(addon).blacklistPresetName = nil
+            return
+        end
+        blacklistBox.editBox:SetText(preset.text or "")
+        addon:SetItemFilterText("blacklist", preset.text)
+        -- Remember the chosen preset name so it survives a reload. We never re-apply its items on
+        -- load (the saved blacklistText is authoritative and may have been edited since); the name is
+        -- purely a label of "what I last picked".
+        local chosen = preset.isNone and nil or preset.name
+        getOptions(addon).blacklistPresetName = chosen
+        showSelectedPreset(chosen)
     end
 
     local function initDropdown()
@@ -2244,7 +2275,9 @@ function addon:BuildOptionsTab()
         end
     end
     UIDropDownMenu_Initialize(presetDropdown, initDropdown)
-    UIDropDownMenu_SetText(presetDropdown, "<none>")
+    -- Restore the last-chosen preset NAME (persisted) as the dropdown label, without re-applying its
+    -- items; the saved blacklistText already populated the box above and is the source of truth.
+    showSelectedPreset(opt.blacklistPresetName)
 
     deleteBtn:SetScript("OnClick", function()
         local name = deleteBtn.currentPresetName

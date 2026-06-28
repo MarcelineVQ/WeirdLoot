@@ -129,6 +129,10 @@ function addon:InitializeLiveRoll()
         self._liveRollWired = true
         self.lootCore:On("ledgerChanged", function() self:SyncPendingPopups(); self:SyncRollPopups() end)
     end
+
+    -- Build the whitelist/blacklist name sets now that self.db is wired; thereafter they are rebuilt
+    -- only on edit (SetItemFilterText), not re-parsed on every popup.
+    self:RefreshItemFilters()
 end
 
 -- Stable-reorder a list of lot ids into three roll-out tiers, keeping the original (mint) order
@@ -339,6 +343,40 @@ local function parseItemList(text)
     return set
 end
 
+-- Cached parse of the whitelist/blacklist option text. parseItemList walks the whole string and
+-- ShouldSuppressRollPopup runs on every popup, so the name sets are built once (RefreshItemFilters,
+-- at init) and rebuilt only when a list is edited or a preset is loaded (SetItemFilterText), instead
+-- of re-parsing on every check. Lazily builds on first read so a lookup before init still sees the
+-- right set rather than nil.
+local function itemFilterSet(self, kind)
+    local filters = self.itemFilters
+    if not filters then filters = {}; self.itemFilters = filters end
+    if filters[kind] == nil then
+        filters[kind] = parseItemList(getOptions()[kind .. "Text"])
+    end
+    return filters[kind]
+end
+
+-- Build both filter sets from the current option text. Called from InitializeLiveRoll (PLAYER_LOGIN,
+-- after self.db is wired) so the sets are ready before the first popup.
+function addon:RefreshItemFilters()
+    local opt = getOptions()
+    self.itemFilters = {
+        whitelist = parseItemList(opt.whitelistText),
+        blacklist = parseItemList(opt.blacklistText),
+    }
+end
+
+-- Set one filter's option text (editor edit or preset load) and rebuild just that set, so the change
+-- takes effect on the next popup without re-parsing every check. The SINGLE mutation path for the
+-- list text, which is why the cache can never drift from opt[kind.."Text"].
+function addon:SetItemFilterText(kind, text)
+    text = text or ""
+    getOptions()[kind .. "Text"] = text
+    self.itemFilters = self.itemFilters or {}
+    self.itemFilters[kind] = parseItemList(text)
+end
+
 -- Returns true if the (non-loot-master) popup should be suppressed for this item name.
 -- Should a NON-ML raider's popup for this roll be hidden? (The ML always sees everything.) Covers the
 -- whitelist/blacklist filters and the opt-in "hide rolls my class can't use" option (off by default).
@@ -360,13 +398,13 @@ function addon:ShouldSuppressRollPopup(roll)
     if name == "" then return false end
 
     if opt.whitelistEnabled then
-        local set = parseItemList(opt.whitelistText)
+        local set = itemFilterSet(self, "whitelist")
         if next(set) and not set[name] then
             return true
         end
     end
     if opt.blacklistEnabled then
-        local set = parseItemList(opt.blacklistText)
+        local set = itemFilterSet(self, "blacklist")
         if set[name] then
             return true
         end
@@ -1057,11 +1095,8 @@ end
 function addon:PlayerHoldsItem(itemId)
     if not itemId then return false end
     local maxBag = NUM_BAG_SLOTS or 4
-    for bag = 0, maxBag do                                  -- bag contents (backpack 0 + bags 1..N)
-        local n = GetContainerNumSlots(bag) or 0
-        for slot = 1, n do
-            if GetContainerItemID(bag, slot) == itemId then return true end
-        end
+    for bag, slot in util:BagSlots() do                     -- bag contents (backpack 0 + bags 1..N)
+        if GetContainerItemID(bag, slot) == itemId then return true end
     end
     for inv = 1, 19 do                                      -- equipped gear (head..tabard)
         if GetInventoryItemID("player", inv) == itemId then return true end

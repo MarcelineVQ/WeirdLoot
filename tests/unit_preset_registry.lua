@@ -24,27 +24,68 @@ H.test("preset registry: both kinds expose Get/Save/Delete methods", function()
 end)
 
 ------------------------------------------------------------------------
--- Built-in blacklist presets are loaded from the Data/BlacklistPresets/*.lua files. With no
--- custom presets saved, GetBlacklistPresets returns ONLY builtins, each with builtin=true.
+-- Built-in blacklist presets are loaded from the Data/BlacklistPresets/*.lua files and are
+-- CLASS-GATED: GetBlacklistPresets returns only the player's class built-ins (a personal popup
+-- filter, so a Druid is never offered Mage presets), each with builtin=true.
 ------------------------------------------------------------------------
-H.test("preset registry: GetBlacklistPresets returns builtins from the data files", function()
+H.test("preset registry: GetBlacklistPresets returns the player-class builtins, all builtin=true", function()
+    H.setClass(w, "DRUID")
     local list = addon:GetBlacklistPresets()
-    H.check(#list > 0, "at least one blacklist preset is loaded (got " .. tostring(#list) .. ")")
-    -- every entry from a data file has builtin=true
-    local all_builtin = true
+    H.check(#list > 0, "at least one Druid preset (got " .. tostring(#list) .. ")")
+    local allBuiltin, allDruid = true, true
     for _, p in ipairs(list) do
-        if p.builtin ~= true then all_builtin = false; break end
+        if p.builtin ~= true then allBuiltin = false end
+        if not p.name:find("^Druid") then allDruid = false end
     end
-    H.check(all_builtin, "all entries are marked builtin=true on a fresh DB")
+    H.check(allBuiltin, "all entries are builtin=true on a fresh DB")
+    H.check(allDruid, "every returned built-in is a Druid preset")
 end)
 
-H.test("preset registry: GetBlacklistPresets includes Priest and Paladin entries", function()
-    local list = addon:GetBlacklistPresets()
+H.test("preset registry: blacklist presets are class-gated (Druid sees Druid, not other classes)", function()
+    H.setClass(w, "DRUID")
     local seen = {}
-    for _, p in ipairs(list) do seen[p.name] = true end
-    H.truthy(seen["Priest"], "Priest preset present")
-    H.truthy(seen["Paladin"], "Paladin preset present")
-    H.truthy(seen["Warlock"], "Warlock preset present")
+    for _, p in ipairs(addon:GetBlacklistPresets()) do seen[p.name] = true end
+    H.truthy(seen["Druid"], "Druid base preset present")
+    H.truthy(seen["Druid Feral"], "Druid Feral preset present")
+    H.truthy(seen["Druid Balance/Resto"], "Druid Balance/Resto preset present")
+    H.eq(seen["Mage"], nil, "Mage preset NOT shown to a Druid")
+    H.eq(seen["Priest"], nil, "Priest preset NOT shown to a Druid")
+    H.eq(seen["Warrior"], nil, "Warrior preset NOT shown to a Druid")
+end)
+
+H.test("preset registry: a Mage sees the Mage preset and no Druid presets", function()
+    H.setClass(w, "MAGE")
+    local seen = {}
+    for _, p in ipairs(addon:GetBlacklistPresets()) do seen[p.name] = true end
+    H.truthy(seen["Mage"], "Mage preset present")
+    H.eq(seen["Druid"], nil, "Druid preset not shown to a Mage")
+end)
+
+-- The data files store item names as a flat array (`items`); the registry joins them to the newline
+-- string the editor consumes only at GetBlacklistPresets. Pin that boundary so a future change can't
+-- silently revert to pre-joined `text` in the data files.
+H.test("preset registry: built-ins store an items array, joined to text only by the registry", function()
+    H.setClass(w, "DEATHKNIGHT")   -- so the Death Knight built-in passes the class gate
+    local entry
+    for _, p in ipairs(addon.blacklistPresets) do
+        if p.name == "Death Knight" then entry = p; break end
+    end
+    H.notNil(entry, "Death Knight built-in is loaded")
+    H.check(type(entry.items) == "table" and #entry.items > 0, "stored as a non-empty items array")
+    H.eq(entry.text, nil, "no pre-joined text on the built-in itself")
+
+    local got
+    for _, p in ipairs(addon:GetBlacklistPresets()) do
+        if p.name == "Death Knight" then got = p; break end
+    end
+    H.notNil(got, "Death Knight returned by GetBlacklistPresets")
+    H.eq(got.text, table.concat(entry.items, "\n"), "registry joins the item array into text")
+
+    -- and the joined text splits back item-for-item the way LiveRoll's parseItemList reads it
+    local lines = {}
+    for line in (got.text .. "\n"):gmatch("(.-)\n") do if line ~= "" then lines[#lines + 1] = line end end
+    H.eq(#lines, #entry.items, "joined text splits back into exactly the item list")
+    H.eq(lines[1], entry.items[1], "first item preserved through join + split")
 end)
 
 ------------------------------------------------------------------------

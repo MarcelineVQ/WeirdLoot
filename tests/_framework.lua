@@ -147,7 +147,10 @@ function self.makeWorld(playerName, isML)
     -- Scan-tooltip mock for the TradeDeliver lib's hidden GameTooltip. A bag item may declare
     -- { bound = true, win = secs }; SetBagItem then exposes the matching ITEM_SOULBOUND / trade-window
     -- lines so the engine's isSoulbound / tradeWindowSeconds read real data (default: no extra lines).
-    local function newScanTip()
+    -- globalPrefix names the TextLeftN globals this tooltip exposes, matching what the scanning code
+    -- reads (TradeDeliver reads TradeDeliverScanTipTextLeftN; Session's eligible-loot scan reads
+    -- WeirdLootScanTooltipTextLeftN). Both engines scrape the SAME line shapes, so one mock serves both.
+    local function newScanTip(globalPrefix)
         local tip, cur = newFrame(), nil
         local function rebuild()
             local lines
@@ -160,7 +163,7 @@ function self.makeWorld(playerName, isML)
             end
             tip.__lines = lines
             for i = 1, 32 do
-                env["TradeDeliverScanTipTextLeft" .. i] = (lines[i] and lines[i] ~= "") and { GetText = function() return lines[i] end } or nil
+                env[globalPrefix .. "TextLeft" .. i] = (lines[i] and lines[i] ~= "") and { GetText = function() return lines[i] end } or nil
             end
         end
         tip.ClearLines = function() end
@@ -172,8 +175,9 @@ function self.makeWorld(playerName, isML)
     end
 
     -- ---- WoW API stubs ----
+    local SCAN_TIP_NAMES = { TradeDeliverScanTip = true, WeirdLootScanTooltip = true }
     env.CreateFrame = function(_, name)
-        local f = (name == "TradeDeliverScanTip") and newScanTip() or newFrame()
+        local f = SCAN_TIP_NAMES[name] and newScanTip(name) or newFrame()
         if name then env[name] = f end
         return f
     end
@@ -190,7 +194,11 @@ function self.makeWorld(playerName, isML)
     env.GetUnitName = function() return playerName end
     env.UnitGUID = function() return "Player-0-000000" .. tostring(#playerName) end
     env.GetRealmName = function() return "TestRealm" end
-    env.UnitClass = function() return "Warrior", "WARRIOR" end
+    -- player class is settable per world (default Warrior) so class-gated behavior is testable;
+    -- UnitClass returns (localizedName, token) like the real API.
+    env.__playerClassName = "Warrior"
+    env.__playerClassToken = "WARRIOR"
+    env.UnitClass = function() return env.__playerClassName, env.__playerClassToken end
     env.GetNumRaidMembers = function() return 5 end
     env.GetNumPartyMembers = function() return 0 end
     -- index 1 is the loot master so a peer's roster-aware sync (isInRaid(authority)) can see it;
@@ -353,6 +361,11 @@ function self.makeWorld(playerName, isML)
         for id, n in pairs(self2.__bag) do if n > 0 then out[self.linkFor(id)] = n end end
         return out
     end
+    -- Keep the REAL bag scans reachable for the bag-walk suite (unit_bagslots) so the iterator
+    -- conversion is characterized against actual GetContainerItemLink/tooltip walking, not the
+    -- injected shortcut. The default world still uses the shortcut for everything else.
+    addon._realBuildBagSnapshot = addon.BuildBagSnapshot
+    addon._realBuildTradeableEpicCounts = addon.BuildTradeableEpicCounts
     addon.BuildTradeableEpicCounts = bagLinkCounts
     addon.BuildBagSnapshot = bagLinkCounts
     addon.BuildManualScanCounts = bagLinkCounts
@@ -389,6 +402,8 @@ self.ADDON_FILES = {
 -- drivers shared across the integration tests
 -- ---------------------------------------------------------------------------
 function self.setBag(w, itemId, count) w.addon.__bag[itemId] = count end
+-- set the world's player class (token like "DRUID"); drives UnitClass for class-gated behavior
+function self.setClass(w, token, name) w.env.__playerClassToken = token; w.env.__playerClassName = name or token end
 function self.bagUpdate(w) w.addon:OnBagUpdate() end
 
 function self.startSession(w) w.addon:StartLootSession() end
