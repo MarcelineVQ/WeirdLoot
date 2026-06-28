@@ -38,10 +38,11 @@
           print(text)  (function) sink for local status lines. Default: chat frame
                     prefixed with name.
           debug(text)  (function) sink for verbose tracing. Default: no-op.
-          autoCancel (bool) while payout is on, decline (and whisper) trades from
-                    players NOT on the owed list. Default TRUE. Runtime-only (not
-                    persisted), so it resets on each session; only matters during
-                    payout, and you can flip it with SetAutoCancel.
+          autoCancel (bool) decline (and whisper) UNSOLICITED incoming trades --
+                    ones a partner opens with us. Trades the loot master STARTS
+                    (the global InitiateTrade: right-click -> Trade, /trade) are
+                    always allowed. Runtime-only (not persisted), resets each
+                    session; flip it with SetAutoCancel.
 
     Ledger:
       engine:Owe(player, itemId, count, link) -> newTotal
@@ -87,7 +88,7 @@
       stays owed for a later trade.
 ============================================================================]]--
 
-local MAJOR, MINOR = "TradeDeliver-1.0", 1
+local MAJOR, MINOR = "TradeDeliver-1.0", 2
 
 local TradeDeliver
 if LibStub then
@@ -124,6 +125,23 @@ local TRADE_FAIL_REASON = {
     [ERR_TRADE_BAG_FULL or "Trade failed, you don't have enough space."] = { ml = "your bags are full", them = "my bags are full" },
     [ERR_TRADE_TARGET_DEAD or "You can't trade with dead players."] = { ml = "recipient is dead", them = "you were dead" },
 }
+
+-- A trade the local player OPENS can fail before any window appears. When it does, the InitiateTrade
+-- hook already armed selfInitiated, so we must disarm it or a failed open would leak "self-initiated"
+-- onto the next (possibly incoming) trade. Every such failure announces itself immediately:
+--   * too far / dead / self -> a UI_ERROR_MESSAGE equal to one of these globals
+--   * BUSY / already trading -> ERR_PLAYER_BUSY_S over CHAT_MSG_SYSTEM (there is NO ERR_TRADE_BUSY)
+-- Keyed on the client's own global strings (with English fallbacks) so the match is locale-independent.
+local INITIATE_FAIL_MSG = {
+    [ERR_TRADE_TOO_FAR or "Trade target is too far away."] = true,
+    [ERR_TRADE_TARGET_DEAD or "You can't trade with dead players."] = true,
+    [ERR_TRADE_SELF or "You can't trade with yourself."] = true,
+}
+-- ERR_PLAYER_BUSY_S carries the target name ("%s is busy right now."), so match it as an anchored
+-- pattern: escape the literal text, then turn the (escaped) %s placeholder into a name wildcard.
+local PLAYER_BUSY_PATTERN = "^" .. ((ERR_PLAYER_BUSY_S or "%s is busy right now.")
+    :gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0")
+    :gsub("%%%%s", ".-")) .. "$"
 
 -- ---------------------------------------------------------------------------
 -- shared "do this in N seconds" scheduler (no C_Timer on 3.3.5a)
@@ -261,9 +279,25 @@ local function isPureUnique(link)
     return false
 end
 
--- snapshot every bag stack of itemID up front, with stack size and trade-window
--- seconds: { {bag, slot, count, window}, ... }. Taken before any moves so we never
--- re-read a slot we have started emptying. window is nil for non-windowed items.
+-- Is this bag item bound to us right now? A held, non-BoE item shows the left-side ITEM_SOULBOUND
+-- line. Paired with tradeWindowSeconds this tells a PERMANENTLY-bound copy (no window line AND
+-- soulbound) apart from a freely-tradeable one (no window line, not soulbound) -- they look identical
+-- by window alone, because an expired BoP-trade window drops the same tooltip line a freebie never had.
+local SOULBOUND_LINE = ITEM_SOULBOUND or "Soulbound"
+local function isSoulbound(bag, slot)
+    local tip = scanner()
+    tip:ClearLines()
+    tip:SetBagItem(bag, slot)
+    for i = 2, tip:NumLines() do
+        local fs = _G["TradeDeliverScanTipTextLeft" .. i]
+        if fs and fs:GetText() == SOULBOUND_LINE then return true end
+    end
+    return false
+end
+
+-- snapshot every bag stack of itemID up front, with stack size, trade-window seconds, and whether the
+-- copy is tradeable AT ALL: { {bag, slot, count, window, tradeable}, ... }. Taken before any moves so
+-- we never re-read a slot we have started emptying. window is nil for non-windowed items.
 local function collectStacks(itemID)
     local stacks = {}
     for bag = 0, 4 do
@@ -271,9 +305,16 @@ local function collectStacks(itemID)
         for slot = 1, n do
             if GetContainerItemID(bag, slot) == itemID then
                 local _, c = GetContainerItemInfo(bag, slot)
+                local win = tradeWindowSeconds(bag, slot)
                 stacks[#stacks + 1] = {
                     bag = bag, slot = slot, count = c or 1,
-                    window = tradeWindowSeconds(bag, slot),
+                    window = win,
+                    -- Tradeable NOW if it still shows a soulbound-trade window line, or is not bound at
+                    -- all (BoE / freely tradeable). A bound copy whose window lapsed reads window==nil
+                    -- (the line is gone) exactly like a freebie, so the soulbound check is what keeps a
+                    -- permanently-bound copy from ever being handed over. (Mirrors Session.lua's
+                    -- eligible-loot rule; a future pass may centralize both.)
+                    tradeable = (win ~= nil) or (not isSoulbound(bag, slot)),
                 }
             end
         end
@@ -323,7 +364,12 @@ local function windowOf(s) return s.window or math.huge end
 local function selectStacks(stacks, need)
     local pool = {}
     for _, st in ipairs(stacks) do
-        pool[#pool + 1] = { bag = st.bag, slot = st.slot, count = st.count, window = st.window }
+        -- Never select a copy we cannot actually trade (a soulbound item whose trade window lapsed).
+        -- The server would reject it, and placing it is the "handed out an item with no trade duration"
+        -- bug. Excluded here so such a copy is never planned or placed; the owe simply stays unfilled.
+        if st.tradeable ~= false then
+            pool[#pool + 1] = { bag = st.bag, slot = st.slot, count = st.count, window = st.window }
+        end
     end
     table.sort(pool, function(a, b)
         local wa, wb = windowOf(a), windowOf(b)
@@ -397,10 +443,12 @@ function TradeDeliver:New(config)
     e._dbg = config.debug or function() end
     e._onDelivered = config.onDelivered or function() end  -- (player, itemId, count) on trade complete
     e._log = config.log or function() end                  -- (ev, data) trade-flow trace (optional)
-    -- autoCancel is a runtime flag (default OFF), not persisted. When ON, EVERY incoming trade
-    -- is declined immediately, regardless of payout state or whether the partner is owed loot.
-    -- Kept out of db on purpose so it always defaults to allow-all each session; the loot master
-    -- can flip it via the toggle.
+    e.isActive = config.isActive                           -- optional () -> bool; false => automated trade mgmt OFF
+    -- autoCancel is a runtime flag (default OFF), not persisted. When ON, every UNSOLICITED incoming
+    -- trade (one a partner opens with us) is declined immediately, regardless of payout state or whether
+    -- the partner is owed; a trade the loot master STARTS (detected via the InitiateTrade hook) is never
+    -- declined. Kept out of db on purpose so it defaults to allow-all each session; the loot master can
+    -- flip it via the toggle.
     e.autoCancel = (config.autoCancel == true)
 
     -- Payout mode is ON by default for every engine lifetime. Owes added while no session
@@ -418,7 +466,8 @@ function TradeDeliver:New(config)
     e.frame:RegisterEvent("TRADE_ACCEPT_UPDATE")
     e.frame:RegisterEvent("BAG_UPDATE")
     e.frame:RegisterEvent("UI_INFO_MESSAGE")    -- carries the yellow "Trade complete." info message
-    e.frame:RegisterEvent("UI_ERROR_MESSAGE")   -- carries the red trade-rejection errors (unique/bags/dead)
+    e.frame:RegisterEvent("UI_ERROR_MESSAGE")   -- red trade-rejection errors (unique/bags/dead) + initiate failures
+    e.frame:RegisterEvent("CHAT_MSG_SYSTEM")    -- the ONLY signal a self-initiated trade failed on a BUSY target
     -- TRADE_CLOSED is watched ONLY to flip the tradeOpen flag. It must NOT touch `pending`,
     -- which a successful trade still needs in _onTradeComplete (TRADE_CLOSED fires around the
     -- same time as ERR_TRADE_COMPLETE); `pending` is cleared fresh on each TRADE_SHOW instead.
@@ -431,6 +480,7 @@ function TradeDeliver:New(config)
             e:_onTradeShow()
         elseif event == "TRADE_CLOSED" then
             e.tradeOpen = false
+            TradeDeliver._selfInitiated = nil   -- safety: never carry a self-initiated arm past a closed window
             e:_trace(("CLOSED pending=%s err=%s"):format(e.pending and "Y" or "N", e.lastTradeError and "Y" or "N"))
             e:_onTradeClosed()
         elseif event == "TRADE_ACCEPT_UPDATE" then
@@ -452,8 +502,28 @@ function TradeDeliver:New(config)
             -- match), which can't false-positive on the many unrelated UI_ERROR_MESSAGE lines.
             if e.pending or e.tradeOpen then e:_trace("UIERR [" .. tostring(arg1) .. "]") end
             e:_noteTradeError(arg1)
+            -- A self-initiate that failed (too far / dead / self) never opens a window; disarm so it
+            -- cannot leak "self-initiated" onto the next (possibly incoming) trade.
+            if arg1 and INITIATE_FAIL_MSG[arg1] then TradeDeliver._selfInitiated = nil end
+        elseif event == "CHAT_MSG_SYSTEM" then
+            -- The busy/already-trading failure announces itself ONLY here (ERR_PLAYER_BUSY_S), never as a
+            -- UI_ERROR. Cheap guard: only pattern-match while a self-initiate is actually armed.
+            if TradeDeliver._selfInitiated and arg1 and arg1:find(PLAYER_BUSY_PATTERN) then
+                TradeDeliver._selfInitiated = nil
+            end
         end
     end)
+
+    -- The discriminator for "Incoming Trades: OFF". ChromieCraft does NOT fire TRADE_REQUEST to the
+    -- recipient, so an incoming and a self-opened trade are identical at TRADE_SHOW by events alone.
+    -- The global InitiateTrade is called only when the LOCAL player opens a trade (right-click -> Trade,
+    -- /trade), never for an incoming one. Arm a flag here; _onTradeShow consumes it. A failed open is
+    -- disarmed by its error (UI_ERROR for too-far/dead/self, CHAT_MSG_SYSTEM for busy) or TRADE_CLOSED.
+    if _G.hooksecurefunc and not TradeDeliver._initiateHooked then
+        TradeDeliver._initiateHooked = true
+        _G.hooksecurefunc("InitiateTrade", function() TradeDeliver._selfInitiated = true end)
+    end
+
     return e
 end
 
@@ -737,11 +807,26 @@ function Engine:_onTradeShow()
     self.fillGen = self.fillGen + 1        -- cancel any settle/fallback from a prior window
     local partner = baseName(UnitName("NPC"))
     if not partner then return end
+
+    -- ACTIVE-ML-ONLY gate. Automated payout (and the incoming-trade decline) must never run for a
+    -- non-ML: only the loot master holds and hands out owed loot. The owe ledger PERSISTS in saved
+    -- vars and autoCancel is runtime state, so without this a raider who was the ML earlier -- or holds
+    -- any stale owe -- would auto-fill a trade with someone else's owed loot. Hard-block it here.
+    -- FUTURE ML WORK: real mid-raid ML-swap handling (handing off / forgiving owes and authority when
+    -- the loot master changes) will revisit this gate. For now the rule is simply: not the active ML
+    -- means do nothing at all on a trade.
+    if self.isActive and not self.isActive() then return end
+
     local entry, key = self:_owedFor(partner, false)
     self._log("td-show", { partner = partner, payoutActive = self.payoutActive and true or false, owed = entry and #entry.items or 0 })
 
-    if self.autoCancel then
-        self._dbg(partner .. " trade declined (Allow All Trades is off)")
+    -- A trade the loot master OPENED (InitiateTrade armed selfInitiated) bypasses autoCancel; the toggle
+    -- declines only UNSOLICITED incoming trades. Consume the arm so it never carries to the next trade.
+    local selfInitiated = TradeDeliver._selfInitiated and true or false
+    TradeDeliver._selfInitiated = nil
+
+    if self.autoCancel and not selfInitiated then
+        self._dbg(partner .. " trade declined (Incoming Trades is off)")
         self:_whisper(partner, "Trades are closed right now - trade declined.")
         CloseTrade()
         return
@@ -765,6 +850,7 @@ end
 -- hand-placing items. Idempotent: if a fill is already in flight for this trade
 -- (e.g. auto-payout already started it), it's a no-op. Returns ok, reason.
 function Engine:FillOpenTrade()
+    if self.isActive and not self.isActive() then return false, "Only the active loot master can fill trades." end
     local partner = baseName(UnitName("NPC"))
     if not partner then return false, "No trade window is open." end
     if self.fillState or self.pending then return true end   -- already filling this trade
