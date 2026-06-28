@@ -249,13 +249,6 @@ function addon:BuildBagSnapshot()
     return snapshot
 end
 
-function addon:BuildManualScanCounts()
-    -- Manual Scan Bags should still only surface loot the master can actually hand out.
-    -- Now that quality is derived reliably from the link colour, the tradeable scan can
-    -- correctly pick up tier tokens without also leaking in permanently non-tradable loot.
-    return self:BuildTradeableEpicCounts()
-end
-
 function addon:HasAddedEpicLoot(currentSnapshot)
     local session = self:GetCurrentSession()
     local previousSnapshot = session.currentSnapshot or {}
@@ -558,7 +551,7 @@ function addon:BuildSessionItemList(includeAllEpics)
         return {}
     end
 
-    local currentSnapshot = includeAllEpics and self:BuildManualScanCounts() or self:BuildBagSnapshot()
+    local currentSnapshot = includeAllEpics and self:BuildTradeableEpicCounts() or self:BuildBagSnapshot()
     -- Do NOT clobber the delta baseline here. At login the bags may not be fully loaded,
     -- so storing this partial scan as session.currentSnapshot makes the next BAG_UPDATE
     -- diff the real bag against an empty baseline and auto-roll already-present loot. The
@@ -639,7 +632,7 @@ function addon:RefreshSessionItems(forceRefresh)
 
     if forceRefresh and self:IsAuthorizedLootMaster() then
         -- manual Scan Bags: pick up all eligible loot and surface every open lot to the ML.
-        local eligible = self:ItemIdCounts(self:BuildManualScanCounts())
+        local eligible = self:ItemIdCounts(self:BuildTradeableEpicCounts())
         local fresh = {}
         for itemId in pairs(eligible) do fresh[itemId] = true end
         session.prevEligible = eligible
