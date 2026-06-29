@@ -403,6 +403,27 @@ function addon:ToggleMainFrame()
     end
 end
 
+-- Master refresh dispatcher: repaints the status line and every data tab. Lives here with the frame
+-- orchestration (it is what ToggleMainFrame calls on open). Note: it intentionally does not refresh the
+-- Options tab, whose widgets re-read state when that tab is selected.
+function addon:RefreshUI()
+    self:UpdateMinimapOwedGlow()
+    if not self.ui or not self.ui.frame then
+        return
+    end
+
+    local session = self:GetCurrentSession()
+    local lootMasterName = self:GetLootMasterName() or "Unknown"
+    local authority = self:IsAuthorizedLootMaster() and "Yes" or "No"
+    local sessionState = session.active and ("Active session " .. (session.id or "")) or "No active session"
+    self.ui.status:SetText(string.format("Loot master: %s | Authorized: %s | %s", lootMasterName, authority, sessionState))
+
+    self:RefreshLootTab()
+    self:RefreshRaidersTab()
+    self:RefreshResultsTab()
+    self:RefreshMasterTab()
+end
+
 function addon:TradeSelectedWinner()
     local result = self.ui and self.ui.selectedResult
     local winner = result and result.winner

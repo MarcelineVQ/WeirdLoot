@@ -612,14 +612,6 @@ local function resetInterestButtons(f)
     end
 end
 
-local function positionInterestButtons(f, isOwner)
-    -- Brackets always sit at the bottom of the popup. The ML's End/Cancel row no longer occupies
-    -- a row at the bottom -- it lives in the top-right corner -- so both owner and raider use the
-    -- same bottom-anchored bracket layout.
-    f.bisBtn:ClearAllPoints()
-    f.bisBtn:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 8, 10)
-end
-
 local function isPlayerAllowedForRoll(self, roll, playerName)
     return self:IsPlayerAllowedForItem(roll and roll.itemId, (roll and roll.name) or "", playerName)
 end
@@ -876,9 +868,10 @@ local function makePopup()
     f.countHover:SetScript("OnEnter", function() showRollCountTooltip(addon, f) end)
     f.countHover:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
-    -- choice brackets (top button row): BiS > MS > MU > OS > TM > Pass
+    -- choice brackets (bottom row): BiS > MS > MU > OS > TM > Pass. bisBtn anchors the row and the rest
+    -- chain off it, so this one point places them all. (The ML End/Cancel controls live top-right.)
     f.bisBtn = makeButton(f, "BiS", 34)
-    f.bisBtn:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 8, 32)
+    f.bisBtn:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 8, 10)
     f.msBtn = makeButton(f, "MS", 32)
     f.msBtn:SetPoint("LEFT", f.bisBtn, "RIGHT", 3, 0)
     f.muBtn = makeButton(f, "MU", 34)
@@ -1286,7 +1279,6 @@ function addon:ShowInterestPopup(roll, slot)
     f.tmBtn:SetScript("OnClick", function() self:ChooseInterest(roll, "tm") end)
     f.passBtn:SetScript("OnClick", function() self:ChooseInterest(roll, "pass") end)
     resetInterestButtons(f)
-    positionInterestButtons(f, roll.owner)
     applyInterestButtonAvailability(self, f, roll)   -- disable brackets the player's class can't use
 
     if roll.owner then

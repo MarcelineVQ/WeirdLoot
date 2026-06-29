@@ -43,22 +43,6 @@ SlashCmdList.WEIRDLOOT = function(msg)
     end
 end
 
-local function ensureDefaults(target, defaults)
-    if type(target) ~= "table" then
-        target = {}
-    end
-
-    for key, value in pairs(defaults) do
-        if type(value) == "table" then
-            target[key] = ensureDefaults(target[key], value)
-        elseif target[key] == nil then
-            target[key] = value
-        end
-    end
-
-    return target
-end
-
 local defaultRosterImportText = ""
 
 -- PresetRegistry: the 6 functions GetWhitelistPresets / SaveCustomWhitelistPreset /
@@ -174,7 +158,7 @@ function addon:RefreshAll()
 end
 
 function addon:PLAYER_LOGIN()
-    WeirdLootDB = ensureDefaults(WeirdLootDB, {
+    WeirdLootDB = addon.util:EnsureDefaults(WeirdLootDB, {
         testMode = false,        -- in-city testing: treat ANY bag item as session loot
         autoRoll = false,        -- newly-looted/traded-in items auto-start a live roll (default OFF)
         config = {
@@ -193,7 +177,7 @@ function addon:PLAYER_LOGIN()
     -- positions, and sort prefs. They live in WeirdLootCharDB (## SavedVariablesPerCharacter); the
     -- self.db proxy below routes .options/.ui here, so the rest of the addon still reads
     -- self.db.options / self.db.ui unchanged. config + session stay account-wide (see PLAYER_LOGIN).
-    WeirdLootCharDB = ensureDefaults(WeirdLootCharDB, {
+    WeirdLootCharDB = addon.util:EnsureDefaults(WeirdLootCharDB, {
         options = {
             resultPopupAutoCloseEnabled = true,
             resultPopupAutoCloseSeconds = 10,
@@ -250,7 +234,7 @@ function addon:PLAYER_LOGIN()
     WeirdLootDB.options = nil
     WeirdLootDB.ui = nil
 
-    WeirdLootSessionDB = ensureDefaults(WeirdLootSessionDB, {
+    WeirdLootSessionDB = addon.util:EnsureDefaults(WeirdLootSessionDB, {
         activeSession = nil,
         activeSessions = {},
         history = {},
@@ -296,7 +280,7 @@ function addon:PLAYER_LOGIN()
         -- (anagke, araea, burgah, cheezburgah, clemency, ...) from the OLD default list. The
         -- 70-entry list is now authoritative; stamp once so this only runs against pre-stamp DBs
         -- and never re-clobbers a roster the user later edits. Fresh installs already get the new
-        -- defaults via ensureDefaults, so the stamp is also set during the defaults block below.
+        -- defaults via util:EnsureDefaults, so the stamp is also set during the defaults block below.
         if not WeirdLootDB.config.rosterDefaultV2Applied then
             WeirdLootDB.config.rosterEntries = addon.util:CloneTable(addon.defaultRosterEntries or {})
             WeirdLootDB.config.rosterImportText = ""   -- forces NormalizeAllConfig to re-serialize from rosterEntries

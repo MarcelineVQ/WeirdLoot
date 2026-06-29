@@ -437,26 +437,31 @@ function self.makeWorld(playerName, isML)
 end
 
 -- ---------------------------------------------------------------------------
--- the canonical .lua load order (matches WeirdLoot.toc minus UI; UI is presentation)
+-- the canonical .lua load order, grouped by folder to mirror WeirdLoot.toc. Omits the UI tabs
+-- (heavy FrameXML, loaded by the UI smoke suite via UI_FILES) and Debug.lua (the harness provides its
+-- own LogCoreEvent stub). Popups.lua is the one UI-folder file the core battery loads (lightweight
+-- StaticPopupDialogs registration, no parse-time deps).
 -- ---------------------------------------------------------------------------
 self.ADDON_FILES = {
     "Libs/WeirdSync-1.0/WeirdSync-1.0.lua",
-    "TradeDeliver.lua", "Core.lua",
+    "Core.lua",
+    "Core/Util.lua", "Core/Config.lua", "Core/Comm.lua", "Core/Roster.lua",
     "Data/RosterDefaults.lua", "Data/BlacklistPresets.lua",
     "Data/BlacklistPresets/Priest.lua", "Data/BlacklistPresets/Mage.lua",
     "Data/BlacklistPresets/Warrior.lua", "Data/BlacklistPresets/DeathKnight.lua",
     "Data/BlacklistPresets/Hunter.lua", "Data/BlacklistPresets/Rogue.lua",
     "Data/BlacklistPresets/Shaman.lua", "Data/BlacklistPresets/Druid.lua",
     "Data/BlacklistPresets/Paladin.lua", "Data/BlacklistPresets/Warlock.lua",
-    "Popups.lua", "LootPrios.lua", "LootCore.lua", "Util.lua", "ItemInfo.lua",
-    "Config.lua", "Roster.lua", "Session.lua", "Comm.lua", "Resolver.lua", "Payout.lua",
-    "LiveRoll.lua", "AutoLoot.lua",
+    "Data/ItemInfo.lua", "Data/LootPrios.lua",
+    "Loot/LootCore.lua", "Loot/Resolver.lua", "Loot/Session.lua", "Loot/LiveRoll.lua", "Loot/AutoLoot.lua",
+    "Trade/TradeDeliver.lua", "Trade/Payout.lua",
+    "UI/Popups.lua",
 }
 
 -- UI is normally omitted (heavy FrameXML, irrelevant to loot accounting), but the UI-load smoke
 -- suite loads it into the same mocked env to prove it loads + InitializeUI runs. Keep this list in
 -- the toc's UI load order; when UI.lua is split into UI/<tab>.lua files, list them all here.
-self.UI_FILES = { "UI.lua", "UI/Export.lua", "UI/Minimap.lua", "UI/RaidersTab.lua", "UI/ResultsTab.lua", "UI/MasterTab.lua", "UI/OptionsTab.lua", "UI/LootTab.lua" }
+self.UI_FILES = { "UI/UI.lua", "UI/Common.lua", "UI/Export.lua", "UI/Minimap.lua", "UI/RaidersTab.lua", "UI/ResultsTab.lua", "UI/MasterTab.lua", "UI/OptionsTab.lua", "UI/LootTab.lua" }
 
 function self.loadUI(w)
     for _, path in ipairs(self.UI_FILES) do
