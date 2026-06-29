@@ -277,7 +277,7 @@ end
 -- ---------------------------------------------------------------------------
 local function demoRecords()
     local here = string.match(arg[0] or "", "^(.*)/tests/") or "."
-    local LootCore = loadfile(here .. "/LootCore.lua")("WeirdLoot", {})
+    local LootCore = loadfile(here .. "/Loot/LootCore.lua")("WeirdLoot", {})
 
     local recs, seq = {}, 0
     local function logger(ev, data)

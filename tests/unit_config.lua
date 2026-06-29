@@ -58,7 +58,7 @@ end
 local private = {}
 
 -- Config requires Core+Util+LootPrios loaded ahead of it (defaultItemInfo lives in Core).
-for _, file in ipairs({ "Core.lua", "LootPrios.lua", "Util.lua", "Config.lua" }) do
+for _, file in ipairs({ "Core.lua", "Data/LootPrios.lua", "Core/Util.lua", "Core/Config.lua" }) do
     local chunk = assert(loadfile(file))
     setfenv(chunk, env)
     chunk("WeirdLoot", private)

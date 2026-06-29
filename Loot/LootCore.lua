@@ -688,7 +688,7 @@ end
 -- ---------------------------------------------------------------------------
 -- self-checks: exercise the core's identity/lifecycle/reconcile/resolve invariants with a plain
 -- interpreter (luajit, 5.1 semantics). Run from the addon dir with:
---   luajit -e "local f=loadfile('LootCore.lua'); f('WeirdLoot', {}); WeirdLoot.LootCore.RunSelfChecks(true)"
+--   luajit -e "local f=loadfile('Loot/LootCore.lua'); f('WeirdLoot', {}); WeirdLoot.LootCore.RunSelfChecks(true)"
 -- Item ids below are arbitrary numbers standing in for parsed link itemIds.
 -- ---------------------------------------------------------------------------
 function LootCore.RunSelfChecks(verbose)

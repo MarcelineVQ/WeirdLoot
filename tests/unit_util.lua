@@ -13,7 +13,7 @@ F.beginSuite("util unit battery")
 local env = setmetatable({}, { __index = _G })
 env._G = env
 env.WeirdLoot = env.WeirdLoot or {}   -- Util.lua does `local addon = WeirdLoot` then `addon.util = {}`
-local chunk = assert(loadfile("Util.lua"))
+local chunk = assert(loadfile("Core/Util.lua"))
 setfenv(chunk, env)
 chunk("WeirdLoot", {})
 local addon = env.WeirdLoot
@@ -109,6 +109,27 @@ end)
 H.test("util:CloneTable: nil/non-table returns as-is", function()
     H.eq(util:CloneTable(nil), nil)
     H.eq(util:CloneTable(42), 42, "number passes through")
+end)
+
+------------------------------------------------------------------------
+-- util:EnsureDefaults (relocated from Core.lua; seeds SavedVariables defaults)
+------------------------------------------------------------------------
+H.test("util:EnsureDefaults: fills missing keys, deep-merges, preserves existing", function()
+    local target = { a = 1, nested = { keep = "me" } }
+    local out = util:EnsureDefaults(target, { a = 99, b = 2, nested = { keep = "no", added = "yes" } })
+    H.eq(out.a, 1, "existing primitive untouched")
+    H.eq(out.b, 2, "missing primitive filled")
+    H.eq(out.nested.keep, "me", "existing nested value untouched")
+    H.eq(out.nested.added, "yes", "missing nested value filled")
+end)
+H.test("util:EnsureDefaults: non-table target becomes a fresh defaulted table", function()
+    local out = util:EnsureDefaults(nil, { x = 1, y = { z = 2 } })
+    H.eq(out.x, 1, "primitive seeded")
+    H.eq(out.y.z, 2, "nested seeded")
+end)
+H.test("util:EnsureDefaults: a false value is preserved (not overwritten by default)", function()
+    local out = util:EnsureDefaults({ flag = false }, { flag = true })
+    H.eq(out.flag, false, "false is a present value, not a missing one")
 end)
 
 ------------------------------------------------------------------------

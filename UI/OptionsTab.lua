@@ -576,21 +576,3 @@ function addon:RefreshOptionsTab()
         inner.deerEditBox.editBox:SetText(self.db.deer or "")
     end
 end
-
-function addon:RefreshUI()
-    self:UpdateMinimapOwedGlow()
-    if not self.ui or not self.ui.frame then
-        return
-    end
-
-    local session = self:GetCurrentSession()
-    local lootMasterName = self:GetLootMasterName() or "Unknown"
-    local authority = self:IsAuthorizedLootMaster() and "Yes" or "No"
-    local sessionState = session.active and ("Active session " .. (session.id or "")) or "No active session"
-    self.ui.status:SetText(string.format("Loot master: %s | Authorized: %s | %s", lootMasterName, authority, sessionState))
-
-    self:RefreshLootTab()
-    self:RefreshRaidersTab()
-    self:RefreshResultsTab()
-    self:RefreshMasterTab()
-end

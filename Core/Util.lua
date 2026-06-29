@@ -92,6 +92,22 @@ function util:CloneTable(source)
     return copy
 end
 
+-- Recursively fill missing keys in `target` from `defaults` (deep for nested tables), leaving any
+-- existing value untouched. Used to seed SavedVariables defaults on login.
+function util:EnsureDefaults(target, defaults)
+    if type(target) ~= "table" then
+        target = {}
+    end
+    for key, value in pairs(defaults) do
+        if type(value) == "table" then
+            target[key] = self:EnsureDefaults(target[key], value)
+        elseif target[key] == nil then
+            target[key] = value
+        end
+    end
+    return target
+end
+
 function util:Contains(list, expected)
     if type(list) ~= "table" then
         return false
