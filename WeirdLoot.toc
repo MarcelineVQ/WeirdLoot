@@ -47,6 +47,7 @@ Trade\TradeDeliver.lua
 Trade\Payout.lua
 
 UI\UI.lua
+UI\Common.lua
 UI\Popups.lua
 UI\Export.lua
 UI\Minimap.lua
