@@ -34,7 +34,7 @@
 --   * Authority TIMING is the host's concern: RequestSync no-ops without a resolved authority;
 --     the host re-requests when its authority appears (the lib never polls for one).
 
-local MAJOR, MINOR = "WeirdSync-1.0", 2
+local MAJOR, MINOR = "WeirdSync-1.0", 3
 assert(LibStub, MAJOR .. " requires LibStub")
 local WeirdSync = LibStub:NewLibrary(MAJOR, MINOR)
 if not WeirdSync then return end -- already loaded a newer or equal version
@@ -148,7 +148,7 @@ function Channel:_sendRequest(auth)
     -- stale ack from the prior life could clear the new request's outstanding entry.
     local reqId = self.me .. ":" .. self.nonce .. "." .. self.reqSeq
     self.pendingRequest = { reqId = reqId, attempts = 1, nextAttempt = now() + self:_backoff(1) }
-    self:_send({ "RQ", self.me, reqId }, "WHISPER", auth, "NORMAL")
+    self:_send({ "RQ", self.me, reqId, self.appliedEpoch or "" }, "WHISPER", auth, "NORMAL")
     self.cb.log("req", { reqId = reqId, attempt = 1 })
 end
 
@@ -293,6 +293,11 @@ function Channel:OnReceive(sender, value)
     elseif t == "RQ" then
         if not self.cb.isAuthority() then return end
         local reqId = f[3]
+        -- The 4th field is the epoch the peer holds. A peer refuses any epoch below it, and refuses
+        -- silently, so this is the only way an authority that is behind learns it must out-rank that
+        -- epoch. The host decides what to do; it runs before the snapshot so the answer already
+        -- carries the corrected epoch.
+        self.cb.peerEpoch(f[4], sender)
         -- Coalesce per target: at most ONE snapshot in flight to a given peer. A peer retries the same
         -- reqId (and re-requests with a fresh reqId after give-up) on backoff. Emitting a full snapshot
         -- for every RQ while one is already outstanding to this peer just backlogs the wire; our own Tick
@@ -341,7 +346,14 @@ function Channel:OnReceive(sender, value)
         self.cb.log("recv-hb", { rev = rev, lastRev = self.lastRev, epoch = epoch,
             verdict = staleEpoch and "stale-epoch" or staleGen and "stale-gen" or genRestart and "gen-restart"
                 or (behind and (self.pendingRequest and "behind-pending" or "behind") or "in-sync") })
-        if staleEpoch or staleGen then return end
+        if staleGen then return end
+        if staleEpoch then
+            -- The sender passed the authority binding above, so this is our CURRENT authority running
+            -- an epoch below ours, not a stray old one. It cannot know we are refusing it: ask, so the
+            -- request carries our epoch to it. One request per heartbeat at most; never resync backward.
+            if not self.pendingRequest then self:RequestSync() end
+            return
+        end
         if behind and not self.pendingRequest then
             self.cb.log("recv-hb-gap", { rev = rev, lastRev = self.lastRev, epoch = epoch })
             self:RequestSync()
@@ -393,7 +405,7 @@ function Channel:Tick(t)
             pr.attempts = pr.attempts + 1
             local auth = self.cb.authorityName()
             if auth and auth ~= "" then
-                self:_send({ "RQ", self.me, pr.reqId }, "WHISPER", auth, "NORMAL")
+                self:_send({ "RQ", self.me, pr.reqId, self.appliedEpoch or "" }, "WHISPER", auth, "NORMAL")
                 self.cb.log("resend", { kind = "request", reqId = pr.reqId, attempt = pr.attempts })
             else
                 -- No authority resolves this tick: skip the whisper (a nil/empty target throws "missing
@@ -414,6 +426,7 @@ end
 --   authorityName()          -> string whom a peer whispers for resync
 --   rosterContains(name)     -> bool   roster-aware give-up (defaults true)
 --   epoch()                  -> string rebaseline key (e.g. session id; defaults "")
+--   peerEpoch(epoch, sender) authority: the epoch a requesting peer holds (may be "" or nil)
 --   send(value,dist,target,prio)  REQUIRED transport: deliver one logical value (host owns bytes)
 --   buildSnapshot(emit)      authority emits every state line: emit(value)
 --   applySnapshot(lines, ep) peer replaces local state from a full snapshot's line list
@@ -434,6 +447,7 @@ function WeirdSync:NewChannel(prefix, cb)
         authorityName = cb.authorityName or function() return "" end,
         rosterContains = cb.rosterContains or function() return true end,
         epoch = cb.epoch or function() return "" end,
+        peerEpoch = cb.peerEpoch or noop,
         buildSnapshot = cb.buildSnapshot or noop,
         applySnapshot = cb.applySnapshot or noop,
         applyLine = cb.applyLine or noop,

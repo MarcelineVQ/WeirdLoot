@@ -132,6 +132,7 @@ local function makeHost(name, isML, opts)
         authorityName = function() return host.authority or "" end,
         rosterContains = function(n) return host.roster[n] == true end,
         epoch = function() return opts.epoch or "S1" end,
+        peerEpoch = opts.peerEpoch,
         buildSnapshot = function(emit)
             -- emit in a stable order so snapshots are deterministic
             local ids = {}
@@ -725,6 +726,49 @@ test("a backlogged snapshot from an OLDER generation is rejected (no regression)
     check(rd.store["CUR"] ~= nil and rd.store["OLD"] == nil, "peer kept the current ledger, ignored the straggler")
     check(countEv(rd, "recv-snap-stale", function(d) return d.reason == "gen" end) >= 1,
         "older-generation snapshot rejected on the generation")
+end)
+
+-- An authority can end up on an epoch BELOW the one its peers hold (it kept a session from disk and
+-- never synced the one the raid ran since). Peers refuse it, and only a /reload clears what they
+-- hold. The peer has to say so: its request carries its epoch, and the host re-stamps above it.
+test("a request carries the epoch the peer holds, and the authority's host is told", function()
+    reset()
+    local seen = {}
+    local ml = makeHost("ML", true, { epoch = "101", peerEpoch = function(e) seen[#seen + 1] = e end })
+    local rd = makeHost("Raider", false)
+    ml.store = { ["A"] = { "A", "x" } }
+    ml.chan:Broadcast(true); settle()
+    eq(rd.chan.appliedEpoch, "101", "peer holds the authority's epoch")
+    rd.chan:RequestSync()
+    eq(WIRE[#WIRE].value[1], "RQ", "a request went out")
+    eq(WIRE[#WIRE].value[4], "101", "request carries the held epoch")
+    settle()
+    eq(seen[#seen], "101", "authority's host received the peer epoch")
+end)
+
+test("a peer refusing its authority's older epoch asks, so the authority can out-rank it", function()
+    reset()
+    local opts = { epoch = "101" }
+    opts.peerEpoch = function(e)                 -- the host's job: re-stamp above what the peer holds
+        if tonumber(e) and tonumber(e) > tonumber(opts.epoch) then opts.epoch = tostring(tonumber(e) + 1) end
+    end
+    local ml = makeHost("ML", true, opts)
+    local rd = makeHost("Raider", false)
+    ml.store = { ["A"] = { "A", "x" } }
+    ml.chan:Broadcast(true); settle()
+
+    opts.epoch = "5"                             -- authority now runs an older epoch
+    ml.store = { ["B"] = { "B", "kept" } }
+    ml.chan:Broadcast(true); deliver()
+    eq(rd.chan.appliedEpoch, "101", "older-epoch snapshot refused")
+    check(rd.store["B"] == nil, "peer did not adopt the older session")
+
+    clearWire()
+    ml.chan._nextHeartbeat = nil
+    ml.chan:Tick(CLOCK); settle()                -- heartbeat at the older epoch -> peer asks -> host re-stamps
+    eq(opts.epoch, "102", "authority re-stamped above the peer's epoch")
+    eq(rd.chan.appliedEpoch, "102", "peer adopted the authority's session")
+    check(rd.store["B"] ~= nil, "peer converged on the authority's ledger")
 end)
 
 -- ===========================================================================

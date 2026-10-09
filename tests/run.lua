@@ -3198,7 +3198,7 @@ test("handoff: a disk-restored leftover session is not rebroadcast on ML gain", 
     w.addon._mirrorActive = false            -- ...but it is NOT a live mirror (disk leftover)
     clearWire()
     w.addon:AssumeLootMasterSession()
-    eq(w.addon.session.id, "5", "epoch left untouched (no takeover)")
+    check(w.addon.session.id ~= "5", "epoch re-stamped so a later broadcast is not refused as stale")
     eq(#F.WIRE, 0, "nothing broadcast")
 end)
 
@@ -3433,7 +3433,8 @@ test("ml-prompt: Keep lands authority and runs the deferred snapshot broadcast",
     dialog(w).OnCancel()                                     -- No / Escape / override all route here
     dialog(w).OnHide()                                       -- the dialog's own hide after the click: inert
     eq(w.addon:IsAuthorizedLootMaster(), true, "authority landed")
-    eq(w.addon.session.id, "5", "session kept")
+    check(w.addon.session.active, "session kept")
+    check(tonumber(w.addon.session.id) > 5, "kept session carries a fresh epoch (got " .. tostring(w.addon.session.id) .. ")")
     local snaps = 0
     for _, m in ipairs(F.WIRE) do if m.value and m.value[1] == "SNAP" then snaps = snaps + 1 end end
     check(snaps > 0, "the held snapshot broadcast went out on Keep")
@@ -3517,7 +3518,113 @@ test("ml-prompt: when the client cannot show the dialog, authority lands as befo
     w.env.StaticPopup_Show = function() return nil end       -- no free popup slot
     w.addon:RefreshLootAuthority()
     eq(w.addon:IsAuthorizedLootMaster(), true, "no hold without a dialog")
-    eq(w.addon.session.id, "5", "session kept")
+    check(w.addon.session.active, "session kept")
+    check(tonumber(w.addon.session.id) > 5, "kept session carries a fresh epoch (got " .. tostring(w.addon.session.id) .. ")")
+end)
+
+-- ===========================================================================
+-- loot-master change onto a client that never synced the running session. Raiders refuse any epoch
+-- below the one they hold, and that memory only clears on /reload, so the new loot master must end up
+-- above it or the whole raid goes deaf to its session.
+-- ===========================================================================
+
+-- Point a client's WoW roster at mlName (raid index 1) and re-resolve authority.
+local function pointMLAt(w, mlName)
+    local player = w.env.UnitName("player")
+    w.env.GetRaidRosterInfo = function(i)
+        if i == 1 then return mlName, 0 end
+        local others = {}
+        for _, n in ipairs({ "Oldml", "Raider", "Newml" }) do
+            if n ~= mlName then others[#others + 1] = n end
+        end
+        return others[i - 1], 0
+    end
+    w.addon:RefreshLootAuthority()
+end
+
+-- Deliver the wire to every world it is addressed to until it goes quiet (requests, answers, acks).
+local function pumpAll(worlds)
+    for _ = 1, 12 do
+        local msgs = F.WIRE; F.WIRE = {}
+        if #msgs == 0 then return end
+        for _, m in ipairs(msgs) do
+            for _, w in ipairs(worlds) do
+                if m.value and m.sender ~= w.env.UnitName("player")
+                    and (m.dist ~= "WHISPER" or m.target == w.env.UnitName("player")) then
+                    w.addon:RouteComm(m.value, m.sender, m.dist or "RAID")
+                end
+            end
+        end
+    end
+end
+
+local function hasItem(w, itemId)
+    for _, lot in ipairs(w.addon.lootCore:All()) do
+        if lot.itemId == itemId then return true end
+    end
+    return false
+end
+
+-- Old loot master runs a session at a high epoch that the raider mirrors; the new loot master never
+-- synced it and holds a leftover session on disk. Returns the three worlds after the change settles.
+local function changeMLToUnsynced(fresh)
+    local old, raider, new = makeWorld("Oldml", true), makeWorld("Raider", false), makeWorld("Newml", false)
+    local all = { old, raider, new }
+    pointMLAt(old, "Oldml"); pointMLAt(raider, "Oldml"); pointMLAt(new, "Oldml")
+    old.addon:ObserveEpoch("100")
+    clearWire()
+    startSession(old); setBag(old, 40001, 1); bagUpdate(old)
+    pumpAll({ old, raider })                                  -- the new loot master misses all of it
+    eq(raider.addon.session.id, old.addon.session.id, "raider mirrors the old loot master")
+
+    leftover(new, 3600)
+    clearWire()
+    pointMLAt(new, "Newml")
+    check(new.addon._mlPromptPending, "new loot master is asked about its leftover session")
+    new.addon:AnswerFreshSessionOnML(fresh)
+    pointMLAt(old, "Newml"); pointMLAt(raider, "Newml")
+    pumpAll(all)
+    return old, raider, new, all
+end
+
+test("ml change: Keep on an unsynced loot master still reaches raiders holding a newer epoch", function()
+    local old, raider, new, all = changeMLToUnsynced(false)
+    check(tonumber(new.addon.session.id) > 101, "new loot master out-ranks the epoch the raid held (got "
+        .. tostring(new.addon.session.id) .. ")")
+    eq(raider.addon.session.id, new.addon.session.id, "raider adopted the new loot master's session")
+    setBag(new, 40002, 1); bagUpdate(new); pumpAll(all)
+    check(hasItem(raider, 40002), "raider sees a fresh drop without reloading")
+end)
+
+test("ml change: Start Fresh below the raid's epoch still reaches raiders", function()
+    local old, raider, new, all = changeMLToUnsynced(true)
+    check(tonumber(new.addon.session.id) > 101, "new loot master out-ranks the epoch the raid held (got "
+        .. tostring(new.addon.session.id) .. ")")
+    eq(raider.addon.session.id, new.addon.session.id, "raider adopted the fresh session")
+    setBag(new, 40002, 1); bagUpdate(new); pumpAll(all)
+    check(hasItem(raider, 40002), "raider sees a fresh drop without reloading")
+end)
+
+test("ml change: a sync request from a raider on an older epoch does not re-stamp the session", function()
+    local ml, raider = makeWorld("Masterlooter", true), makeWorld("Raider", false)
+    startSession(ml)
+    local epoch = ml.addon.session.id
+    ml.addon:OnPeerEpoch(tostring(tonumber(epoch) - 1))
+    ml.addon:OnPeerEpoch(epoch)
+    ml.addon:OnPeerEpoch("")
+    ml.addon:OnPeerEpoch(nil)
+    eq(ml.addon.session.id, epoch, "epoch untouched by an equal, older, or absent peer epoch")
+    raider.addon:OnPeerEpoch("999")
+    check(tonumber(raider.addon.session.id or 0) ~= 1000, "a non-authority never re-stamps")
+end)
+
+test("ml change: a sync request from outside the raid cannot move the loot master's epoch", function()
+    local ml = makeWorld("Masterlooter", true)
+    startSession(ml)
+    local epoch = ml.addon.session.id
+    clearWire()
+    ml.addon:RouteComm({ "RQ", "Stranger", "Stranger:1.1", "999999" }, "Stranger", "WHISPER")
+    eq(ml.addon.session.id, epoch, "an outsider's epoch is ignored")
 end)
 
 -- ===========================================================================

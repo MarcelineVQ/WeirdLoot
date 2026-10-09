@@ -450,7 +450,14 @@ end
 --     resume. The new ML turns payout on deliberately.
 function addon:AssumeLootMasterSession()
     if not self.session or not self.session.active then return end
-    if not self._mirrorActive then return end          -- not a live mirror: do not rebroadcast stale loot
+    if not self._mirrorActive then
+        -- Not a live mirror: do not rebroadcast stale loot from here. The session still needs a fresh
+        -- epoch, because raiders refuse any epoch below the one they hold and this id predates
+        -- whatever the raid synced since it was written to disk. Whoever broadcasts it next (the
+        -- prompt's Keep, the heartbeat) then out-ranks the previous loot master.
+        self.session.id = self:NextEpoch()
+        return
+    end
     self.session.id = self:NextEpoch()
     self.session.ownerKey = self:GetSessionOwnerKey()
     self.session.startedAt = time()                    -- our tenure starts now (shown by the ML prompt)

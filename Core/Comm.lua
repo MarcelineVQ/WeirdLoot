@@ -86,6 +86,8 @@ function addon:InitializeComm()
         authorityName  = function() return self:GetLootMasterName() end,
         rosterContains = function(name) return isInRaid(name) end,
         epoch          = function() return self:GetCurrentSession().id or "" end,
+        -- Requests are answered for anyone, but only a raid member's epoch may move ours.
+        peerEpoch      = function(epoch, sender) if isInRaid(sender) then self:OnPeerEpoch(epoch) end end,
         buildSnapshot  = function(emit) self:SyncBuildSnapshot(emit) end,
         applySnapshot  = function(lines, ep) self:SyncApplySnapshot(lines, ep) end,
         applyLine      = function(fields) self:SyncApplyLine(fields) end,
@@ -537,6 +539,20 @@ function addon:RequestSessionSync()
     -- reload, before loot-method/roster data settles) and fires it the moment it is, so a
     -- reloading raider always ends up requesting a sync instead of silently giving up.
     self.syncChannel:RequestSync()
+end
+
+-- A raider asking for a sync reports the epoch it holds. Raiders refuse any session older than that,
+-- so a loot master whose session sits below it would be ignored by them until they reload. Lift the
+-- high-water to what the raid holds, re-stamp above it, and rebaseline everyone with one snapshot.
+function addon:OnPeerEpoch(epoch)
+    self:ObserveEpoch(epoch)
+    local session = self:GetCurrentSession()
+    local theirs, ours = tonumber(epoch), tonumber(session.id)
+    if not (theirs and ours and theirs > ours) then return end
+    if not session.active or not self:IsAuthorizedLootMaster() then return end
+    session.id = self:NextEpoch()
+    self:LogCoreEvent("epoch-restamp", { epoch = session.id, peer = epoch })
+    self:AutoBroadcastSession(true)
 end
 
 -- Push the ML's named-item priority list (named-player reservations, e.g. "Item, A > B / C > LC")
