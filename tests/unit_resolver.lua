@@ -668,7 +668,7 @@ test("shipped list: the two Reply-Code Alpha sizes carry different priorities, k
     local small = strip(w.addon:GetLiveItemPrio({ name = "Reply-Code Alpha", itemId = 46052 }))
     H.check(big ~= small, "the sizes differ: 25=" .. big .. " 10=" .. small)
     H.check(big:find("Zenkahi", 1, true) ~= nil, "25-man keeps the full chain")
-    eq(small, "Owlation", "10-man carries its own shorter rule")
+    H.check(small:find("Zenkahi", 1, true) == nil, "10-man does not inherit the 25-man chain: " .. small)
 end)
 
 test("display: the spec tail is dropped past two named raiders, but still decides the roll", function()

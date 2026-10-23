@@ -145,9 +145,14 @@ def block_lines(rows, base, warn, size=None):
                 entries = names + specs
                 if entries:
                     tiers.append(" / ".join(entries))
+        ids = SIZE_ITEM_IDS.get(item.lower())
+        key = ids.get(size) if (ids and size) else None
+        if key and not tiers:
+            # With no id rule the lookup falls back to the other size's name rule. "rest" names nobody,
+            # so the drop rolls freely, but it still counts as listed and offers BiS.
+            # ponytail: key both sizes by id once LootCouncilCandidates passes the item id.
+            tiers = ["rest"]
         if tiers:
-            ids = SIZE_ITEM_IDS.get(item.lower())
-            key = ids.get(size) if (ids and size) else None
             head = str(key) if key else item
             out.append((head, f"{head}, {' > '.join(tiers)}"))
     return out
